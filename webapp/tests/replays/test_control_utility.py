@@ -46,6 +46,270 @@ def hall_round(t_end=8.0, more=None):
     return blob(players, t_end=t_end)
 
 
+COUNT_READERS = ("nightfall_counts", "dizzy_counts", "thrash_detains", "storm_surges")
+
+
+def count_rows(reader, targets=(5, 6), *, source=41, t=1.0):
+    code, name, kind = {
+        "nightfall_counts": ("BountyHunter", "X_WaveForm", "GameObject"),
+        "dizzy_counts": ("Aggrobot", "E_DiscTurret_PowerWave", "GameObject"),
+        "thrash_detains": ("Aggrobot", "RollyPolly", "Pawn"),
+        "storm_surges": ("Mage", "4_SplashGrenade", "GameObject"),
+    }[reader]
+    cast = toy_ability(code, name, 128 if reader == "nightfall_counts" else 400, 200, 0,
+                       t=t, t1=t + .5, kind=kind, id=source, hits_read=True, fired=True, yaw=0)
+    if reader == "thrash_detains":
+        cast.update(u=uv(104, 200)[0], path=[[t, *uv(104, 200)], [t + .5, *uv(400, 200)]])
+    if reader == "storm_surges":
+        # The parser's actual condensed nearsight shape: no src, code, name or target field.
+        hits = [{"k": "nearsight", "t": t, "by": 0, "ability": "harbor_storm_surge",
+                 "targets": list(targets), "hits": [[s, t + .5, 2.0] for s in targets],
+                 "u": cast["u"], "v": cast["v"]}] if targets else []
+    else:
+        status = {"nightfall_counts": "decayed", "dizzy_counts": "concussed",
+                  "thrash_detains": "detained"}[reader]
+        hits = [{"k": "status", "t": t + .5, "t1": t + 2, "by": 0, "target": s,
+                 "code": code, "name": name, "status": status, "from": "force", "src": source}
+                for s in targets]
+    return [cast, *hits]
+
+
+def count_round(reader, targets=(5, 6), **kwargs):
+    b = hall_round(more={6: ("B", [(0.0, 400, 200, 0)])})
+    b["util"] = count_rows(reader, targets, **kwargs)
+    return ce.RoundInputs(b, open_hall(), infos=[])
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS)
+def test_count_reader_groups_distinct_enemy_hits_without_naming_them(reader, monkeypatch):
+    rnd = count_round(reader, (5, 6, 5))
+    original_pos = rnd.pos
+
+    def no_enemy_position(slot, t):
+        assert rnd.team[slot] == "A", "a count reader looked up a hit enemy's position"
+        return original_pos(slot, t)
+
+    monkeypatch.setattr(rnd, "pos", no_enemy_position)
+    monkeypatch.setattr(rnd, "height", lambda *args: pytest.fail("a count reader read target height"))
+    [hit] = getattr(ut, "read_" + reader)(rnd)
+    assert (hit.kind, hit.slot, hit.count, hit.side) == ("one_of", ut.ONE_OF_SLOT, 2, "A")
+    assert hit.detail == {"needs": "status"}
+    assert hit.cast_id == 41 and hit.row_key == ut._identity(rnd.blob["util"][0])["row_key"]
+    assert hit.t == 1.5
+    assert (hit.mask is not None) == (reader in ("nightfall_counts", "dizzy_counts"))
+    if reader == "thrash_detains":
+        assert (hit.x, hit.y, hit.radius_m) == pytest.approx((400, 200, 5), abs=.1)
+    if reader == "storm_surges":
+        assert hit.radius_m == 6
+    admitted = ce.RoundInputs(rnd.blob, rnd.geo).infos
+    assert any(i.cast_id == 41 and i.kind == "one_of" and i.count == 2 for i in admitted)
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS)
+@pytest.mark.parametrize("proof", ["complete", "old", "unfired", "false_stamp"])
+def test_count_reader_zero_requires_complete_fired_source(reader, proof):
+    rnd = count_round(reader, ())
+    cast = rnd.blob["util"][0]
+    if proof == "old":
+        cast.pop("hits_read")
+    elif proof == "unfired":
+        cast.pop("fired")
+    elif proof == "false_stamp":
+        cast["hits_read"] = False
+    hits = getattr(ut, "read_" + reader)(rnd)
+    if proof != "complete":
+        assert hits == []
+        return
+    assert [i.slot for i in hits] == [5, 6]
+    assert all(i.kind == "exclude" and i.detail == {"needs": "status"} for i in hits)
+    assert all(i.cast_id == 41 and i.row_key == ut._identity(cast)["row_key"] for i in hits)
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS)
+def test_count_reader_retains_positive_hits_without_zero_proof(reader):
+    rnd = count_round(reader)
+    rnd.blob["util"][0].pop("hits_read")
+    rnd.blob["util"][0].pop("fired")
+    [hit] = getattr(ut, "read_" + reader)(rnd)
+    assert hit.kind == "one_of" and hit.count == 2
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS)
+def test_count_reader_keeps_same_owner_casts_separate(reader):
+    rnd = count_round(reader, (5,))
+    rnd.blob["util"].extend(count_rows(reader, (5, 6), source=42,
+                                      t=2.0 if reader == "storm_surges" else 1.0))
+    hits = getattr(ut, "read_" + reader)(rnd)
+    assert [(i.cast_id, i.count) for i in hits] == [(41, 1), (42, 2)]
+    assert hits[0].source != hits[1].source
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS)
+@pytest.mark.parametrize("targets", [(), (5, 6)])
+def test_count_reader_preserves_evolution_region(reader, targets):
+    rnd = count_round(reader, targets)
+    next(p for p in rnd.blob["players"] if p["slot"] == 6)["agent"] = "Veto"
+    rnd.blob["util"].append({"k": "buff", "t": 0.0, "t1": 8.0, "by": 6, "target": 6,
+                             "code": "Pine", "name": "X_Evolution"})
+    operations = ce.RoundInputs(rnd.blob, rnd.geo).infos
+    assert not any(i.kind == "exclude" and i.slot == 6 for i in operations)
+    _, actual = suspension_unknown(operations, (400, 400), immune=(6,), t=operations[0].t)
+    _, baseline = suspension_unknown([], (400, 400), immune=(6,), t=operations[0].t)
+    np.testing.assert_array_equal(actual.reached["A"][6], baseline.reached["A"][6])
+    assert actual.events["A"] == []
+
+
+@pytest.mark.parametrize("targets", [(), (5, 6)])
+@pytest.mark.parametrize("unheard", ["far", "dead", "deaf"])
+def test_storm_surge_requires_a_live_listening_teammate(targets, unheard, monkeypatch):
+    rnd = count_round("storm_surges", targets)
+    if unheard == "far":
+        monkeypatch.setattr(rnd, "pos", lambda slot, t: (-10000, -10000, 0))
+    elif unheard == "dead":
+        monkeypatch.setattr(rnd, "alive", lambda slot, t: slot != 0)
+    else:
+        rnd.nearsight[0] = [(0, 8)]
+    assert ut.read_storm_surges(rnd) == []
+
+
+def test_storm_surge_reads_whirlpool_only_and_matches_owner_time_place():
+    rnd = count_round("storm_surges")
+    cast, hit = rnd.blob["util"]
+    rnd.blob["util"].insert(0, dict(cast, kind="Projectile", id=40, fired=False))
+    rnd.blob["util"].extend([dict(hit, by=5), dict(hit, t=6, hits=[[5, 6, 2]]),
+                             dict(hit, t=6, u=uv(100, 200)[0])])
+    [out] = ut.read_storm_surges(rnd)
+    assert (out.cast_id, out.count) == (41, 2)
+
+
+@pytest.mark.parametrize("offset", ["time", "place"])
+@pytest.mark.parametrize("matched_targets", [(), (5,)])
+def test_storm_surge_unmatched_hit_blocks_nearby_count_and_zero(offset, matched_targets):
+    rnd = count_round("storm_surges", matched_targets)
+    _, hit = count_rows("storm_surges", (6,))
+    if offset == "time":
+        hit["t"] += .5
+    else:
+        hit["u"] += 3
+    rnd.blob["util"].append(hit)
+    assert ut.read_storm_surges(rnd) == []
+
+
+def test_storm_surge_unmatched_hit_blocks_only_nearby_casts_of_the_same_owner():
+    rnd = count_round("storm_surges", ())
+    _, orphan = count_rows("storm_surges", (5,))
+    orphan["t"] += .5
+    other_owner = dict(rnd.blob["util"][0], by=6, id=43)
+    rnd.blob["util"].extend([orphan, other_owner, *count_rows("storm_surges", (5,), source=44, t=2),
+                             *count_rows("storm_surges", (5, 6), source=42, t=6)])
+    out = ut.read_storm_surges(rnd)
+    assert [(i.cast_id, i.kind, i.count) for i in out] == [(43, "exclude", 1), (42, "one_of", 2)]
+
+
+@pytest.mark.parametrize("offset", ["time", "place", "ambiguous"])
+def test_storm_surge_unmatched_row_without_hits_does_not_block_zero(offset):
+    rnd = count_round("storm_surges", ())
+    _, row = count_rows("storm_surges", (5,))
+    row.update(targets=[], hits=[])
+    if offset == "time":
+        row["t"] += .5
+    elif offset == "place":
+        row["u"] += 3
+    else:
+        rnd.blob["util"].append(dict(rnd.blob["util"][0], id=42))
+    rnd.blob["util"].append(row)
+    out = ut.read_storm_surges(rnd)
+    assert [i.cast_id for i in out] == ([41, 41, 42, 42] if offset == "ambiguous" else [41, 41])
+    assert all(i.kind == "exclude" for i in out)
+
+
+def test_storm_surge_combines_hit_rows_and_refuses_ambiguous_whirlpools():
+    rnd = count_round("storm_surges", (5,))
+    cast, hit = rnd.blob["util"]
+    rnd.blob["util"].append(dict(hit, targets=[6], hits=[[6, 1.5, 2]]))
+    [out] = ut.read_storm_surges(rnd)
+    assert out.count == 2
+    rnd.blob["util"].append(dict(cast, id=42))
+    assert ut.read_storm_surges(rnd) == []
+
+
+@pytest.mark.parametrize("yaw,inside,outside", [(0, (184, 200), (112, 200)),
+                                               (90, (128, 256), (128, 144))])
+def test_nightfall_uses_its_oriented_wave_rectangle(yaw, inside, outside, monkeypatch):
+    rnd = count_round("nightfall_counts")
+    rnd.blob["util"][0]["yaw"] = yaw
+    monkeypatch.setitem(ut.FIGURES, "nightfall", {"length_m": 10, "width_m": 10})
+    [out] = ut.read_nightfall_counts(rnd)
+    assert out.mask[rnd.geo.node_at_px(*inside)]
+    assert not out.mask[rnd.geo.node_at_px(*outside)]
+    assert not out.mask[rnd.geo.node_at_px(240, 248)]
+
+
+def test_dizzy_count_is_limited_by_sight_and_range(monkeypatch):
+    rnd = count_round("dizzy_counts")
+    rnd.geo = door_hall()
+    [out] = ut.read_dizzy_counts(rnd)
+    assert not out.mask[rnd.geo.node_at_px(112, 200)]
+    assert out.mask[rnd.geo.node_at_px(344, 200)]
+    monkeypatch.setitem(ut.FIGURES, "dizzy_range_m", 10)
+    [out] = ut.read_dizzy_counts(rnd)
+    assert out.mask[rnd.geo.node_at_px(344, 200)]
+    assert not out.mask[rnd.geo.node_at_px(280, 200)]
+
+
+def test_count_reader_does_not_invent_missing_direction_or_detain_place():
+    rnd = count_round("nightfall_counts")
+    rnd.blob["util"][0].pop("yaw")
+    assert ut.read_nightfall_counts(rnd) == []
+    rnd = count_round("thrash_detains")
+    rnd.blob["util"][0].pop("path")
+    assert ut.read_thrash_detains(rnd) == []
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS[:3])
+def test_status_count_reader_ignores_unrelated_and_friendly_rows(reader):
+    rnd = count_round(reader, ())
+    _, hit = count_rows(reader, (5,))
+    rnd.blob["util"].extend([dict(hit, friendly=True),
+                             dict(hit, by=6), dict(hit, status="unrelated")])
+    out = getattr(ut, "read_" + reader)(rnd)
+    assert [i.kind for i in out] == ["exclude", "exclude"]
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS[:3])
+@pytest.mark.parametrize("src", [999, None])
+@pytest.mark.parametrize("matched_targets", [(), (5,)])
+def test_orphaned_status_hit_blocks_nearby_cast_of_its_source(reader, src, matched_targets):
+    rnd = count_round(reader, matched_targets)
+    _, orphan = count_rows(reader, (6,))
+    orphan["src"] = src
+    # An ability with this id but a different source does not resolve the hit.
+    rnd.blob["util"].extend([orphan, toy_ability("Hunter", "Q_SonarPing", 400, 200, 0, t=1, id=999)])
+    assert getattr(ut, "read_" + reader)(rnd) == []
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS[:3])
+def test_orphaned_status_hit_leaves_other_owner_and_distant_cast_usable(reader):
+    rnd = count_round(reader, ())
+    _, orphan = count_rows(reader, (5,))
+    orphan["src"] = 999
+    other_owner = dict(rnd.blob["util"][0], by=6, id=43)
+    rnd.blob["util"].extend([orphan, other_owner, *count_rows(reader, (5, 6), source=42, t=6)])
+    out = getattr(ut, "read_" + reader)(rnd)
+    assert [(i.cast_id, i.kind, i.count) for i in out] == [(43, "exclude", 1), (42, "one_of", 2)]
+
+
+@pytest.mark.parametrize("reader", COUNT_READERS[:3])
+@pytest.mark.parametrize("end", [6, None])
+def test_orphaned_status_hit_blocks_cast_throughout_its_lifetime(reader, end):
+    rnd = count_round(reader, ())
+    rnd.blob["util"][0]["t1"] = end
+    _, orphan = count_rows(reader, (5,))
+    orphan.update(src=999, t=5.5)
+    rnd.blob["util"].append(orphan)
+    assert getattr(ut, "read_" + reader)(rnd) == []
+
+
 def suspension_rows(by=0, source="zone-1", t=1.2):
     return [toy_ability("Paprika", "X_LevitateZone", 400, 200, by, t=1.0, id=source),
             {"k": "status", "t": t, "t1": t + .8, "by": by, "target": 5 if by == 0 else 0,
@@ -600,9 +864,12 @@ def test_each_reader_preserves_the_util_row_identity(reader, monkeypatch):
     elif reader == "read_hush_suspensions":
         row, hit = suspension_rows(source=41)
         b["util"] = [hit]
+    elif reader.removeprefix("read_") in COUNT_READERS:
+        row, *hits = count_rows(reader.removeprefix("read_"), (5,))
+        b["util"] = hits
     b["util"].append(row)
     rnd = ce.RoundInputs(b, open_hall())
-    monkeypatch.setattr(ut, "heard", lambda *a: reader == "read_waylay_recalls")
+    monkeypatch.setattr(ut, "heard", lambda *a: reader in ("read_waylay_recalls", "read_storm_surges"))
     monkeypatch.setattr(ut, "_sees_point", lambda rnd, s, t, *a: reader != "read_omen_ults" or t >= 1.5)
     out = getattr(ut, reader)(rnd)
     assert out, reader

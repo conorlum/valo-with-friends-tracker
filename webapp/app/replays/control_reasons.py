@@ -33,6 +33,14 @@ CLASSES = {
     "died": "other",
     "omen_channel": "other",
     "hush_suspension": "found",  # heard hit feedback, like a trip or other heard information cue
+    "nightfall_count": "roughly_placed",
+    "dizzy_count": "roughly_placed",
+    "thrash_count": "roughly_placed",
+    "storm_surge_count": "roughly_placed",
+    "nightfall_zero": "ruled_out",
+    "dizzy_zero": "ruled_out",
+    "thrash_zero": "ruled_out",
+    "storm_surge_zero": "ruled_out",
 }
 
 TWO_KIND = {"haunt", "recon"}

@@ -573,10 +573,191 @@ def read_hush_suspensions(rnd) -> list[Info]:
     return out
 
 
+# An unjoined hit makes nearby casts of its owner uncertain, even when their own rows prove they fired.
+UNMATCHED_HIT_WINDOW_S = 3.0
+
+
+def _status_counts(rnd, code: str, name: str, status: str):
+    """Distinct enemy hits per source, with no target identity leaving this helper.
+
+    Positive evidence survives old/missing firing proof; only a proven, fully read cast can say zero.
+    The count becomes known at its last hit, or at the end of a fired cast that hit nobody.
+    A hit with no matching source makes nearby casts of that owner/source unusable.
+    """
+    rows = rnd.blob.get("util") or []
+    casts = [row for row in rows if row.get("k") == "ability" and row.get("code") == code
+             and row.get("name") == name]
+    sources = {(row.get("id"), row.get("by")) for row in casts}
+    hits, unmatched = {}, []
+    for hit in rows:
+        if (hit.get("k") != "status" or hit.get("code") != code or hit.get("name") != name
+                or hit.get("status") != status or hit.get("friendly")):
+            continue
+        side, target_side = rnd.team.get(hit.get("by")), rnd.team.get(hit.get("target"))
+        if side is None or target_side in (None, side):
+            continue
+        key = (hit.get("src"), hit.get("by"))
+        if hit.get("src") is None or key not in sources:
+            unmatched.append((hit.get("by"), float(hit["t"])))
+            continue
+        targets, t = hits.setdefault(key, (set(), float(hit["t"])))
+        targets.add(hit["target"])
+        hits[key] = targets, max(t, float(hit["t"]))
+    for row in casts:
+        side = rnd.team.get(row.get("by"))
+        if side is None:
+            continue
+        # A flown source can hit long after spawning. Protect its whole life, not just its start.
+        end = row.get("t1") if row.get("t1") is not None else rnd.blob.get("t_end", math.inf)
+        if any(by == row.get("by") and float(row["t"]) - UNMATCHED_HIT_WINDOW_S <= t
+               <= float(end) + UNMATCHED_HIT_WINDOW_S for by, t in unmatched):
+            continue
+        targets, t = hits.get((row.get("id"), row.get("by")), ((), None))
+        if not targets and not (row.get("hits_read") is True and row.get("fired") is True):
+            continue
+        if t is None:
+            t = row.get("t1") if row.get("t1") is not None else row["t"]
+        yield row, side, len(targets), float(t)
+
+
+def _count_disk(row, *, at_end=False):
+    """A source's own place; a flown detain uses its final path point, never its victim's position."""
+    from app.control import engine as ce
+
+    if at_end and not row.get("path"):
+        return None
+    if at_end:
+        _, u, v, *_ = row["path"][-1]
+    else:
+        u, v = row.get("u"), row.get("v")
+    if u is None or v is None:
+        return None
+    return {"x": u * ce.PX / 10000, "y": v * ce.PX / 10000,
+            "source": f"{row.get('code')}_{row.get('name')}@{row.get('id', row['t'])}", **_identity(row)}
+
+
+def read_nightfall_counts(rnd) -> list[Info]:
+    """Nightfall's anonymous hit count over its forward wave rectangle, through walls."""
+    out = []
+    for row, side, count, t in _status_counts(rnd, "BountyHunter", "X_WaveForm", "decayed"):
+        place = _count_disk(row)
+        if place is None or row.get("yaw") is None:
+            continue
+        d = (rnd.geo.centres - (place["x"], place["y"])) * rnd.geo.m_per_px
+        a = math.radians(row["yaw"])
+        along = d[:, 0] * math.cos(a) + d[:, 1] * math.sin(a)
+        across = -d[:, 0] * math.sin(a) + d[:, 1] * math.cos(a)
+        mask = (rnd.geo.walk_n & (along >= 0) & (along <= FIGURES["nightfall"]["length_m"])
+                & (np.abs(across) <= FIGURES["nightfall"]["width_m"] / 2))
+        if not mask.any():
+            continue
+        if count:
+            out.append(Info(t, side, ONE_OF_SLOT, "one_of", "nightfall_count", count=count, mask=mask,
+                            detail={"needs": "status"}, **place))
+        else:
+            out.extend(zero_hits(rnd, t, side, "nightfall_zero", needs="status", mask=mask, **place))
+    return out
+
+
+def read_dizzy_counts(rnd) -> list[Info]:
+    """Dizzy's count covers only ground visible from the source where it fired, within range."""
+    from app.control import engine as ce
+
+    geo, out = rnd.geo, []
+    for row, side, count, t in _status_counts(rnd, "Aggrobot", "E_DiscTurret_PowerWave", "concussed"):
+        place = _count_disk(row)
+        if place is None:
+            continue
+        x, y = place["x"], place["y"]
+        z = rnd._device_z(row.get("z"))
+        own = eye = None
+        if geo.heights is not None:
+            own = geo.node_at(geo.cell_of_px(x, y), None if z is None else z + ce.hc.STAND_M)
+            eye = None if z is None or np.isnan(geo.node_z[own]) else z
+        mask = ce.cast(geo, x, y, np.arange(0, 360, ce.RAY_STEP_DEG), rnd.smokes_at(t), eye_z=eye, own=own)
+        mask &= geo.walk_n & (((geo.centres[:, 0] - x) ** 2 + (geo.centres[:, 1] - y) ** 2)
+                             <= (FIGURES["dizzy_range_m"] / geo.m_per_px) ** 2)
+        if not mask.any():
+            continue
+        if count:
+            out.append(Info(t, side, ONE_OF_SLOT, "one_of", "dizzy_count", count=count, mask=mask,
+                            detail={"needs": "status"}, **place))
+        else:
+            out.extend(zero_hits(rnd, t, side, "dizzy_zero", needs="status", mask=mask, **place))
+    return out
+
+
+def read_thrash_detains(rnd) -> list[Info]:
+    """Thrash's detain is an anonymous count around its final flight position."""
+    out = []
+    for row, side, count, t in _status_counts(rnd, "Aggrobot", "RollyPolly", "detained"):
+        place = _count_disk(row, at_end=True)
+        if place is None:
+            continue
+        place["radius_m"] = FIGURES["thrash_detain_radius_m"]
+        if count:
+            out.append(Info(t, side, ONE_OF_SLOT, "one_of", "thrash_count", count=count,
+                            detail={"needs": "status"}, **place))
+        else:
+            out.extend(zero_hits(rnd, t, side, "thrash_zero", needs="status", **place))
+    return out
+
+
+def read_storm_surges(rnd) -> list[Info]:
+    """A heard whirlpool counts the parser's nearsight hits, joined by owner, spawn time and place.
+
+    The projectile is the same cast's flight, never a second count. Unjoined hits invalidate nearby casts
+    of the same owner: neither a partial count nor a zero is proven. Empty hit lists say nothing here.
+    """
+    rows = rnd.blob.get("util") or []
+    casts = [row for row in rows if row.get("k") == "ability" and row.get("code") == "Mage"
+             and row.get("name") == "4_SplashGrenade" and row.get("kind") == "GameObject"
+             and row.get("u") is not None and row.get("v") is not None and row.get("by") in rnd.team]
+    hits, ambiguous = {}, set()
+    for row in rows:
+        if (row.get("k") != "nearsight" or row.get("ability") != "harbor_storm_surge"
+                or not row.get("hits")):
+            continue
+        matches = [i for i, cast in enumerate(casts) if row.get("by") == cast["by"]
+                   and abs(float(row["t"]) - float(cast["t"])) <= .001
+                   and row.get("u") is not None and row.get("v") is not None
+                   and abs(row["u"] - cast["u"]) <= 1 and abs(row["v"] - cast["v"]) <= 1]
+        if len(matches) != 1:
+            ambiguous.update(i for i, cast in enumerate(casts) if row.get("by") == cast["by"]
+                             and abs(float(row["t"]) - float(cast["t"])) <= UNMATCHED_HIT_WINDOW_S)
+            continue
+        index = matches[0]
+        side = rnd.team[casts[index]["by"]]
+        targets, t = hits.setdefault(index, (set(), float(casts[index]["t"])))
+        for target, hit_t, *_ in row.get("hits") or []:
+            if rnd.team.get(target) not in (None, side):
+                targets.add(target)
+                t = max(t, float(hit_t))
+        hits[index] = targets, t
+    out = []
+    for i, row in enumerate(casts):
+        if i in ambiguous:
+            continue
+        targets, t = hits.get(i, ((), float(row["t"])))
+        if not targets and not (row.get("hits_read") is True and row.get("fired") is True):
+            continue
+        side, place = rnd.team[row["by"]], _count_disk(row)
+        if not heard(rnd, side, t, place["x"], place["y"], FIGURES["storm_surge_hearing_m"]):
+            continue
+        place["radius_m"] = FIGURES["storm_surge_radius_m"]
+        if targets:
+            out.append(Info(t, side, ONE_OF_SLOT, "one_of", "storm_surge_count", count=len(targets),
+                            detail={"needs": "status"}, **place))
+        else:
+            out.extend(zero_hits(rnd, t, side, "storm_surge_zero", needs="status", **place))
+    return out
+
+
 # The readers that run, by name and in order (names, so the list is one of the constants CONTROL_REVISION pins:
 # tests/replays/test_control_format.py).
 READERS = ("read_reveals", "read_pulses", "read_knives", "read_skye_flashes", "read_leers", "read_omen_ults",
-           "read_waylay_recalls", "read_hush_suspensions")
+           "read_waylay_recalls", "read_hush_suspensions", "read_nightfall_counts", "read_dizzy_counts",
+           "read_thrash_detains", "read_storm_surges")
 
 
 def read_all(rnd) -> list[Info]:
