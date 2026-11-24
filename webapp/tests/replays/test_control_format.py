@@ -102,7 +102,10 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 26 (2026-11-15): side-wide one_of knowledge, Hush's Suspension hit feedback and radius.
           26: "49348445456575af",
           # 27 (2026-11-18): plant attempt starts reuse spike taps; constants are unchanged from 26.
-          27: "49348445456575af"}
+          27: "49348445456575af",
+          # 28 (2026-11-23): Thrash and Tejo's drone are flown drones (DRONES), and utility.json's footprint figures
+          # for the util-info-value readers (provisional, wiki-sourced where the wiki has one).
+          28: "b79b5c526e32842a"}
 
 
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
@@ -213,9 +216,27 @@ REVISION_25_CONSTANTS = ("DAMAGE_ZONE_LIFE_S", "SUPPRESSED_DEVICE_KINDS", "SUPPR
                          "SUPPRESSING_REVEAL_S", "ARENA_Z_M")
 
 
+# Revision 28 (W3): the footprint figures of the util-info-value build and the two flown drones they add to DRONES.
+REVISION_28_FIGURES = ("drone", "creature", "hunters_fury", "nightfall", "dizzy_range_m", "thrash_detain_radius_m",
+                       "storm_surge_radius_m", "storm_surge_hearing_m", "fakeout")
+REVISION_27_DRONES = {"Hunter_E_Drone": (ce.FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
+
+
+def _without_the_info_figures(monkeypatch):
+    for name in REVISION_28_FIGURES:
+        monkeypatch.delitem(ut.FIGURES, name)
+    monkeypatch.setattr(ce, "DRONES", dict(REVISION_27_DRONES))
+
+
+def test_without_the_info_figures_the_revision_27_digest_is_unchanged(monkeypatch):
+    _without_the_info_figures(monkeypatch)
+    assert _constants_digest() == PINNED[27]
+
+
 def _without_the_suspension(monkeypatch):
     # W10's airborne constants also enter this digest. Historical revisions predate them;
     # HEIGHT_RULES_REVISION is not read here and stays at 9 for the current height build.
+    _without_the_info_figures(monkeypatch)
     monkeypatch.delattr(hc, "AIRBORNE_STATUSES", raising=False)
     monkeypatch.setattr(hc, "AIRBORNE_ABILITIES", ("Wushu_Q_CycloneBoost", "Wushu_E_Dash",
                                                 "Terra_Q_DoubleDash", "Clay_Q_Explosion"))

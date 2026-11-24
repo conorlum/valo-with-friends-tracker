@@ -219,8 +219,13 @@ SUPPRESSED_DEVICE_KINDS = ("trip", "camera", "turret", "area")
 SUPPRESSING_STATUS_ROWS = ("Sequoia_Q_FragileMissile_TrajectoryWarning",)
 SUPPRESSING_REVEAL_S = {"Cashew_4_SonarPing": 8.0}
 from app.replays.format import ARENA_Z_M  # noqa: E402,F401 - keep the public control constant
-# Flown drones: (cone half-angle, range in m or None).
-DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
+# Flown drones: (cone half-angle, range in m or None). Thrash and Tejo's Stealth Drone (revision 28) take their
+# figures from utility.json (provisional).
+DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5),
+          "Aggrobot_RollyPolly": (utility.FIGURES["drone"]["thrash"]["half_deg"],
+                                  utility.FIGURES["drone"]["thrash"]["range_m"]),
+          "Cashew_4_Spider_LockOn": (utility.FIGURES["drone"]["tejo"]["half_deg"],
+                                     utility.FIGURES["drone"]["tejo"]["range_m"])}
 VIPER_WALL = "Pandemic_E_SmokeScreenManager"   # the condenser's `points` and `on` (extras.py)
 # Ability walls (W14; the 2026-10-05 review items 20, 26-28), each with its condenser keys (extras.py): what blocks
 # sight and what blocks walking are separate properties. Blaze: sight only (it can be walked through). Sage's Barrier

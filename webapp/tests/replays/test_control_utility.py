@@ -14,7 +14,7 @@ from app.control.encode import encode_data
 from app.gaps.detect import judged_against_before
 from app.replays import control_format as cf
 from tests.replays.control_toys import HALL, blob, door_hall, open_hall, toy_geometry
-from tests.replays.control_toys import toy_ability
+from tests.replays.control_toys import toy_ability, uv
 
 # A west of everything, facing the west wall: it sees almost nothing of the hall. B5 and B6 stand east, out of view.
 A_HIDDEN = ("A", [(0.0, 104, 200, 180)])
@@ -579,3 +579,61 @@ def test_applied_footprint_contains_only_nodes_removed_from_a_small_region(kind,
     unknown._operate("A", 5, [operation], reached.copy(), reached.copy(), {}, None, None,
                      1.0, 1.2, SimpleNamespace(t_start=0.0), spotted={5} if spotted else set())
     assert unknown.applied["A"] == [(41, None, kind, 5, tuple(np.flatnonzero(removed)))]
+
+
+# ---------------------------------------------------------------- Thrash and Tejo's drone as flown drones (W3)
+
+FLOWN = {"Aggrobot": "RollyPolly", "Cashew": "4_Spider_LockOn"}
+
+
+def flown_drone(code, possessed=None):
+    extra = {} if possessed is None else {"possessed": [list(p) for p in possessed]}
+    return toy_ability(code, FLOWN[code], 110, 196, 0, t=0.0, t1=3.0, kind="Pawn",
+                       path=[[0.0, *uv(110, 196)], [3.0, *uv(112, 196)]], yaws=[[0.0, 0]], **extra)
+
+
+def flown_watch(code, t, possessed=((0.0, 2.0),)):
+    geo = open_hall()
+    b = blob({0: A_HIDDEN, 5: ("B", [(0.0, 400, 280, 0)])}, t_end=4.0, util=[flown_drone(code, possessed)])
+    rnd = ce.RoundInputs(b, geo)
+    assert [w.kind for w in rnd.watchers] == ["drone"]
+    return geo, ce.Tick(rnd, t).holders[0].watch
+
+
+def seen_at(geo, watch, x, y):
+    return bool(watch[geo.node_at(geo.cell_of_px(x, y), None)])
+
+
+@pytest.mark.parametrize("code", ["Aggrobot", "Cashew"])
+def test_a_flown_thrash_or_tejo_drone_sees_within_its_cone_and_range_only(code):
+    geo, watch = flown_watch(code, 1.0)
+    assert seen_at(geo, watch, 180, 196)                 # ahead, inside the range
+    assert not seen_at(geo, watch, 330, 196)             # ahead, past 18-20 m (about 130-145 px)
+    assert not seen_at(geo, watch, 140, 286)             # 71 degrees off the heading: outside either cone
+
+
+def test_the_two_drones_have_their_own_cones():
+    geo, thrash = flown_watch("Aggrobot", 1.0)
+    _, tejo = flown_watch("Cashew", 1.0)
+    assert not seen_at(geo, thrash, 130, 226) and seen_at(geo, tejo, 130, 226)     # 56 degrees: past 45, within 60
+    assert seen_at(geo, thrash, 240, 196) and not seen_at(geo, tejo, 250, 196)    # 20 m against 18 m
+
+
+@pytest.mark.parametrize("code", ["Aggrobot", "Cashew"])
+def test_outside_its_possessed_span_a_drone_sees_nothing(code):
+    geo, watch = flown_watch(code, 2.5)
+    assert not watch.any()
+
+
+@pytest.mark.parametrize("code", ["Aggrobot", "Cashew"])
+def test_a_drone_with_no_possessed_span_counts_its_whole_life_and_is_marked(code):
+    rnd = ce.RoundInputs(blob({0: A_HIDDEN, 5: ("B", [(0.0, 400, 280, 0)])}, t_end=4.0,
+                              util=[flown_drone(code)]), open_hall())
+    assert rnd.missing["drone flown intervals (whole life used)"] == 1
+
+
+def test_the_drone_table_is_built_from_the_figures():
+    fig = ut.FIGURES["drone"]
+    assert ce.DRONES["Aggrobot_RollyPolly"] == (fig["thrash"]["half_deg"], fig["thrash"]["range_m"])
+    assert ce.DRONES["Cashew_4_Spider_LockOn"] == (fig["tejo"]["half_deg"], fig["tejo"]["range_m"])
+    assert ce.DRONES["Guide_Q_PossessableScout"] == (45.0, 22.5)
