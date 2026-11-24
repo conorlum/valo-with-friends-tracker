@@ -333,3 +333,242 @@ def test_refused_actions_and_brush_operations_do_not_checkpoint():
     }''', map_data(2, {0, 1}))
     assert got["refused"] == [None, None] + [False] * 9
     assert got["unchanged"] and got["undo"] is False
+
+
+def placement_data(grid, walk, cells, *, bands=None, floors=None):
+    return map_data(grid, walk, draft={"names": NAMES, "cells": areas_draft.encode_cells(cells),
+                                       "bands": bands or {}}, floors=floors)
+
+
+@pytest.mark.parametrize("old", [0, 1])
+@pytest.mark.parametrize("protection", ["hand", "bands", "floors", "both"])
+def test_place_respects_area_walls_and_independent_floor_protections(old, protection):
+    cells = [old] * 6 + [3, 0] + [0] * 56
+    bands = {"1": [[0, 10, old], [20, 30, 2]]} if protection == "bands" else {}
+    if protection == "both":
+        bands = {"1": [[0, 10, old]]}
+    floors = {"1": [[0, 10], [20, 30]]} if protection in ("floors", "both") else {}
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      if (p.protection === "hand") a.paint([1], a.cells[1]);
+      const beforeBands = JSON.stringify(a.bands), old = a.cells[1];
+      const placed = a.place(0, "New", 3);
+      return {placed, protected: a.cells[1] === old, cells: a.cells,
+              bandsUnchanged: beforeBands === JSON.stringify(a.bands), hand: [...a.hand],
+              parent: a._row(placed.id).parent};
+    }''', {"data": placement_data(8, set(range(7)), cells, bands=bands, floors=floors),
+           "protection": protection})
+    assert got["placed"]["id"] == 4 and got["placed"]["count"] >= 1
+    assert got["protected"] and got["bandsUnchanged"]
+    assert got["cells"][0] == 4 and got["cells"][6:8] == [3, 0]
+    assert got["hand"] == ([1] if protection == "hand" else [])
+    assert got["parent"] == 3  # A non-touching parent is permitted.
+
+
+@pytest.mark.parametrize("reason", ["wall", "hand", "bands", "floors", "both", "taken", "parent", "deep"])
+def test_refused_place_is_atomic_and_does_not_checkpoint(reason):
+    bands = {"0": [[0, 10, 1], [20, 30, 2]]} if reason == "bands" else {}
+    if reason == "both":
+        bands = {"0": [[0, 10, 1]]}
+    floors = {"0": [[0, 10], [20, 30]]} if reason in ("floors", "both") else {}
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      if (p.reason === "hand") a.paint([0], 1);
+      if (p.reason === "deep") { a.addName("Leaf", 2); a._undoStack = []; }
+      const state = () => JSON.stringify({model:a, hand:[...a.hand]});
+      const before = state();
+      const result = a.place(0, p.reason === "taken" ? "Mid" : "New",
+                             p.reason === "parent" ? 99 : p.reason === "deep" ? 4 : null);
+      return {error: typeof result.error === "string", unchanged: before === state(), undo: a.undo()};
+    }''', {"data": placement_data(2, {1} if reason == "wall" else {0, 1}, [1, 1, 0, 0],
+                                  bands=bands, floors=floors), "reason": reason})
+    assert got == {"error": True, "unchanged": True, "undo": False}
+
+
+@pytest.mark.parametrize("click,expected", [(0, [4, 1, 1, 1, 1]), (2, [1, 1, 4, 4, 4])])
+def test_place_uses_centroid_ties_and_strict_walking_distance(click, expected):
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      a.queue = ["New", "Later"];
+      const result = a.place(p.click, "New");
+      return {result, cells: a.cells.slice(0, 5), queue: a.queue, hand: [...a.hand]};
+    }''', {"data": placement_data(5, set(range(5)), [1] * 5 + [0] * 20), "click": click})
+    assert got == {"result": {"id": 4, "count": expected.count(4)}, "cells": expected,
+                   "queue": ["Later"], "hand": []}
+
+
+@pytest.mark.parametrize("old", [0, 1])
+def test_place_does_not_cross_a_blocked_diagonal_or_another_area(old):
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      return {result: a.place(0, "New"), cells: a.cells};
+    }''', placement_data(3, {0, 4, 5, 8}, [old, 0, 0, 0, old, 3, 0, 0, old]))
+    assert got["result"] == {"id": 4, "count": 1}
+    assert got["cells"] == [4, 0, 0, 0, old, 3, 0, 0, old]
+
+
+def test_place_takes_only_the_connected_unnamed_pocket():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      return {result: a.place(0, "New"), cells: a.cells};
+    }''', placement_data(4, {0, 1, 2, 3, 15}, [0, 0, 3, 0] + [0] * 12))
+    assert got["result"] == {"id": 4, "count": 2}
+    assert got["cells"] == [4, 4, 3, 0] + [0] * 12
+
+
+@pytest.mark.parametrize("outside_walkable", [False, True])
+def test_named_place_distances_follow_the_clicked_area_around_a_detour(outside_walkable):
+    clicked_area = {0, 1, 2, 3, 4, 9, 14, 19, 24, 23, 22, 21, 20, 15, 10}
+    walk = set(range(25)) if outside_walkable else clicked_area
+    cells = [1 if cell in clicked_area else 3 if outside_walkable else 0 for cell in range(25)]
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      const result = a.place(10, "New");
+      return {result, cells: a.cells};
+    }''', placement_data(5, walk, cells))
+    # The centre is 14. Cell 0 is close in a straight line, but far around the U.
+    expected = cells.copy()
+    for cell in (10, 15, 20, 21):
+        expected[cell] = 4
+    assert got == {"result": {"id": 4, "count": 4}, "cells": expected}
+
+
+def test_place_can_take_a_named_singleton():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      return {result: a.place(0, "New"), cells: a.cells};
+    }''', placement_data(2, {0, 1}, [1, 3, 0, 0]))
+    assert got == {"result": {"id": 4, "count": 1}, "cells": [4, 3, 0, 0]}
+
+
+@pytest.mark.parametrize("action", ["paint", "fill", "erase"])
+def test_noop_brush_and_fill_protect_and_undo_restores_hand(action):
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      a.checkpoint();
+      const changed = p.action === "fill" ? a.fill(0, 1) :
+        p.action === "erase" ? a.erase([3]) : a.paint([0], 1);
+      const protectedCell = p.action === "erase" ? 3 : 0;
+      const hand = [...a.hand], refused = a.place(protectedCell, "New");
+      const undone = a.undo(), afterHand = [...a.hand];
+      const placed = a.place(protectedCell, "New");
+      return {changed, hand, refused: !!refused.error, undone, afterHand, placed};
+    }''', {"data": placement_data(2, {0, 1, 3}, [1, 1, 0, 0]), "action": action})
+    assert got["changed"] == 0 and got["refused"] and got["undone"]
+    assert got["hand"] == {"paint": [0], "fill": [0, 1], "erase": [3]}[action]
+    assert got["afterHand"] == [] and got["placed"]["count"] >= 1
+
+
+def test_loaded_hand_compares_name_strings_not_ids_and_ignores_walls():
+    names = [{**NAMES[0], "id": 8}, {**NAMES[2], "id": 9}]
+    got = run_node('''function run(p) { return [...T.Areas.fromData(p).hand]; }''',
+                   map_data(2, {0, 1, 2}, draft={"names": NAMES, "cells": [[1, 4]]},
+                            existing={"names": names, "cells": [[8, 1], [9, 1], [0, 2]]}))
+    assert got == [1, 2]
+
+
+def test_shrink_reassigns_on_foot_only_selected_cells_and_leaves_unreachable_unnamed():
+    walk = {0, 1, 2, 3, 4, 9, 14, 19, 24, 23, 22, 21, 20, 15, 10, 12}
+    cells = [0] * 25
+    for cell, id in {0: 2, 22: 3, 10: 1, 12: 1, 15: 1}.items():
+        cells[cell] = id
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p); a.hand.add(10);
+      const count = a.shrink([0, 10, 12], 1);
+      return {count, cells: a.cells, hand: [...a.hand], undo: a.undo()};
+    }''', placement_data(5, walk, cells))
+    assert got["count"] == 2
+    assert [got["cells"][i] for i in (0, 10, 12, 15, 22)] == [2, 3, 0, 1, 3]
+    assert got["hand"] == [10] and got["undo"] is False
+
+
+@pytest.mark.parametrize("action", ["shrink", "delete"])
+def test_reassignment_ties_choose_lowest_name_id(action):
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      if (p.action === "shrink") a.shrink([2], 1); else a.deleteName(1);
+      return a.cells.slice(0, 5);
+    }''', {"data": placement_data(5, set(range(5)), [3, 0, 1, 0, 2] + [0] * 20), "action": action})
+    assert got == [3, 0, 2, 0, 2]
+
+
+def test_shrink_floor_picker_reassigns_only_the_selected_name_and_floor():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      const count = a.shrink([1, 2], 1, 1);
+      return {count, cells: a.cells.slice(0, 3), bands: a.bands, hand: [...a.hand]};
+    }''', placement_data(3, {0, 1, 2}, [3, 1, 2] + [0] * 6,
+                         bands={"0": [[0, 10, 3], [20, 30, 2]],
+                                "1": [[0, 10, 1], [20, 30, 1]],
+                                "2": [[0, 10, 2], [20, 30, 3]]}))
+    assert got["count"] == 1 and got["cells"] == [3, 1, 2] and got["hand"] == []
+    assert got["bands"]["1"] == [[0, 10, 1], [20, 30, 2]]
+    assert got["bands"]["2"] == [[0, 10, 2], [20, 30, 3]]
+
+
+def test_delete_promotes_children_reassigns_bands_and_exports_valid_file():
+    names = linked_names() + [{**NAMES[0], "id": 5, "name": "E", "parent": 2}]
+    obj = painted_object({0: 2, 1: 3, 2: 4, 3: 5}, names=names,
+                         bands={"0": [[0, 10, 2], [20, 30, 4]],
+                                "1": [[0, 10, 3], [20, 30, 2]]})
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p); a.hand.add(0);
+      const deleted = a.deleteName(2);
+      return {deleted, cells: a.cells.slice(0, 4), text: a.exportText(), hand: [...a.hand]};
+    }''', map_data(128, {0, 1, 2, 3}, existing=obj, name="Sunset"))
+    assert got["deleted"] and got["cells"][1:] == [3, 4, 5]
+    exported = json.loads(got["text"])
+    assert areas.validate(exported) == []
+    rows = {row["id"]: row for row in exported["names"]}
+    assert 2 not in rows and rows[3]["parent"] == 1 and "also_parents" not in rows[3]
+    assert rows[5]["parent"] is None and rows[5]["super_source"] == "auto"
+    assert all(2 not in row.get("also_parents", []) for row in rows.values())
+    assert all(band[2] != 2 for bands in exported["bands"].values() for band in bands)
+    assert 0 in got["hand"]
+
+
+def test_delete_removes_secondary_parent_without_changing_primary_or_cells():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      const deleted = a.deleteName(1);
+      return {deleted, row: a._row(3), cells: a.cells};
+    }''', map_data(2, {0, 1}, draft={"names": linked_names(), "cells": [[3, 1], [4, 1], [0, 2]]}))
+    assert got["deleted"] and got["row"]["parent"] == 2
+    assert "also_parents" not in got["row"] and got["cells"] == [3, 4, 0, 0]
+
+
+@pytest.mark.parametrize("action", ["shrink", "delete"])
+def test_vacating_without_another_named_source_becomes_unnamed(action):
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      if (p.action === "shrink") a.shrink([0], 1); else a.deleteName(1);
+      return {cells: a.cells, hand: [...a.hand], bands: a.bands};
+    }''', {"data": placement_data(2, {0}, [1, 0, 0, 0]), "action": action})
+    assert got == {"cells": [0, 0, 0, 0], "hand": [], "bands": {}}
+
+
+def test_unknown_delete_and_shrink_are_atomic_and_do_not_checkpoint():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p), before = JSON.stringify(a);
+      const deleted = a.deleteName(99), count = a.shrink([0], 99);
+      return {deleted, count, unchanged: before === JSON.stringify(a), undo: a.undo()};
+    }''', placement_data(2, {0}, [1, 0, 0, 0]))
+    assert got == {"deleted": False, "count": 0, "unchanged": True, "undo": False}
+
+
+@pytest.mark.parametrize("action", ["place", "shrink", "delete"])
+def test_undo_exact_state_and_single_checkpoint_after_spatial_action(action):
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      a.hand.add(1); a.queue = ["New", "Later"];
+      const state = () => JSON.stringify({cells:a.cells, bands:a.bands, names:a.names,
+                                        next:a._nextId, hand:[...a.hand], queue:a.queue});
+      const before = state();
+      if (p.action === "place") a.place(0, "New", 3);
+      if (p.action === "shrink") { a.checkpoint(); a.shrink([0, 1], 1); }
+      if (p.action === "delete") a.deleteName(1);
+      const changed = state() !== before, undo = a.undo(), restored = state() === before;
+      return {changed, undo, restored, exhausted: a.undo()};
+    }''', {"data": placement_data(3, {0, 1, 2}, [1, 1, 3] + [0] * 6,
+                                  bands={"1": [[0, 10, 1], [20, 30, 2]]}), "action": action})
+    assert got == {"changed": True, "undo": True, "restored": True, "exhausted": False}

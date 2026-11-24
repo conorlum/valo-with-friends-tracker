@@ -2064,6 +2064,14 @@
     this._draftRegions = areaDecode(data.draft.cells, size).map(function (id) { return draftRegions.get(id); });
     this._nextId = this.names.length ? this.names[this.names.length - 1].id + 1 : 1;
     this.hand = new Set();
+    if (data.existing) {
+      var draftCells = areaDecode(data.draft.cells, size);
+      var draftNames = new Map(data.draft.names.map(function (row) { return [row.id, row.name]; }));
+      var savedNames = new Map(this.names.map(function (row) { return [row.id, row.name]; }));
+      this.cells.forEach(function (id, cell) {
+        if (this.walk[cell] && savedNames.get(id) !== draftNames.get(draftCells[cell])) this.hand.add(cell);
+      }, this);
+    }
     this.queue = [];
     this._undoStack = [];
     this.autoSupers();
@@ -2123,6 +2131,7 @@
       if (!this.walk[cell]) continue;
       var ranges = this.floorBands(cell), index = band == null ? 0 : areaFloorIndex(ranges, band);
       if (index < 0) continue;
+      this.hand.add(cell);
       var ground = this.cells[cell], bands = this.bands[cell];
       if (band == null || !ranges.length) {
         if (ground === nameId && !bands) continue;
@@ -2159,6 +2168,156 @@
       }
     }
     return this.paint(queue, nameId, band);
+  };
+
+  AreasModel.prototype._multiFloor = function (cell) {
+    return (this.bands[cell] || []).length > 1 || (this.floors[cell] || []).length > 1;
+  };
+
+  AreasModel.prototype._walkNeighbours = function (cell) {
+    var grid = this.grid, x = cell % grid, y = Math.floor(cell / grid), out = [];
+    for (var yy = Math.max(0, y - 1); yy < Math.min(grid, y + 2); yy++) {
+      for (var xx = Math.max(0, x - 1); xx < Math.min(grid, x + 2); xx++) {
+        var next = yy * grid + xx;
+        if (next !== cell && this.walk[next] && this.walk[y * grid + xx] && this.walk[yy * grid + x]) out.push(next);
+      }
+    }
+    return out;
+  };
+
+  // Sorted seeds make the first visit at each BFS depth choose the lowest name id.
+  AreasModel.prototype._walkFlood = function (sources, allowed) {
+    var distances = new Array(this.cells.length).fill(Infinity), owners = new Array(this.cells.length).fill(0);
+    var queue = [];
+    sources.slice().sort(function (a, b) { return a.id - b.id || a.cell - b.cell; }).forEach(function (source) {
+      if (allowed.has(source.cell) && this.walk[source.cell] && distances[source.cell] === Infinity) {
+        distances[source.cell] = 0;
+        owners[source.cell] = source.id;
+        queue.push(source.cell);
+      }
+    }, this);
+    for (var head = 0; head < queue.length; head++) {
+      var here = queue[head];
+      for (var next of this._walkNeighbours(here)) {
+        if (!allowed.has(next) || distances[next] !== Infinity) continue;
+        distances[next] = distances[here] + 1;
+        owners[next] = owners[here];
+        queue.push(next);
+      }
+    }
+    return {distances: distances, owners: owners};
+  };
+
+  AreasModel.prototype._walkDistances = function (sources, allowed) {
+    return this._walkFlood(Array.from(sources, function (cell) { return {cell: cell, id: 0}; }), allowed).distances;
+  };
+
+  AreasModel.prototype.place = function (cell, name, parentId) {
+    if (!this.walk[cell]) return {error: "Choose a walkable cell"};
+    if (this.hand.has(cell)) return {error: "This cell is hand-painted"};
+    if (this._multiFloor(cell)) return {error: "Use the brush and floor picker for multiple floors"};
+    if (!this._availableName(name)) return {error: "Choose an unused name"};
+    var id = this._nextId, names = this.names.concat({
+      id: id, name: name.trim(), parent: parentId == null ? null : parentId, super: "Mid", super_source: "auto"
+    });
+    if (!areaLinksValid(names)) return {error: "Invalid parent"};
+    var from = this.cells[cell], allowed = new Set(), sumX = 0, sumY = 0, grid = this.grid;
+    this.cells.forEach(function (old, index) {
+      if (!this.walk[index] || old !== from) return;
+      if (!from && (this.hand.has(index) || this._multiFloor(index))) return;
+      allowed.add(index);
+      sumX += index % grid;
+      sumY += Math.floor(index / grid);
+    }, this);
+    var clicked = this._walkDistances([cell], allowed), centred = null;
+    if (from && allowed.size > 1) {
+      var centre, best = Infinity, count = allowed.size;
+      for (var candidate of allowed) {
+        if (candidate === cell) continue;
+        var dx = (candidate % grid) * count - sumX, dy = Math.floor(candidate / grid) * count - sumY;
+        var score = dx * dx + dy * dy;
+        if (score < best) { centre = candidate; best = score; }
+      }
+      centred = this._walkDistances([centre], allowed);
+    }
+    var placed = [];
+    for (var target of allowed) {
+      if (this.hand.has(target) || this._multiFloor(target) || clicked[target] === Infinity) continue;
+      if (target === cell || !centred || clicked[target] < centred[target]) placed.push(target);
+    }
+    this.checkpoint();
+    this.names = names;
+    this._nextId++;
+    placed.forEach(function (target) { this.cells[target] = id; delete this.bands[target]; }, this);
+    this.queue = this.queue.filter(function (queued) { return queued !== name.trim(); });
+    this.autoSupers();
+    return {id: id, count: placed.length};
+  };
+
+  AreasModel.prototype._nearestRemaining = function (nameId) {
+    var sources = [], allowed = new Set();
+    this.cells.forEach(function (id, cell) {
+      if (!this.walk[cell]) return;
+      allowed.add(cell);
+      var ids = [id].concat((this.bands[cell] || []).map(function (band) { return band[2]; }));
+      ids.forEach(function (other) { if (other && other !== nameId) sources.push({cell: cell, id: other}); });
+    }, this);
+    return this._walkFlood(sources, allowed).owners;
+  };
+
+  // Change only entries being vacated; this path deliberately preserves hand protection.
+  AreasModel.prototype._vacate = function (cells, nameId, band, owners) {
+    var changed = 0;
+    for (var cell of new Set(cells)) {
+      if (!this.walk[cell]) continue;
+      var bands = this.bands[cell], replacement = owners[cell];
+      if (band == null) {
+        if (this.cells[cell] !== nameId && !(bands || []).some(function (row) { return row[2] === nameId; })) continue;
+        if (bands) this._saveBands(cell, bands.map(function (row) {
+          return [row[0], row[1], row[2] === nameId ? replacement : row[2]];
+        }));
+        else this.cells[cell] = replacement;
+      } else {
+        if (this.nameAt(cell, band) !== nameId) continue;
+        var ranges = this.floorBands(cell), index = areaFloorIndex(ranges, band);
+        if (!ranges.length) this.cells[cell] = replacement;
+        else {
+          bands = bands || ranges.map(function (range) { return [range[0], range[1], this.cells[cell]]; }, this);
+          bands[index][2] = replacement;
+          this._saveBands(cell, bands);
+        }
+      }
+      changed++;
+    }
+    return changed;
+  };
+
+  AreasModel.prototype.shrink = function (cells, nameId, band) {
+    if (!this._row(nameId)) return 0;
+    var count = this._vacate(cells, nameId, band, this._nearestRemaining(nameId));
+    this.autoSupers();
+    return count;
+  };
+
+  AreasModel.prototype.deleteName = function (id) {
+    if (!this._row(id)) return false;
+    var names = this.names.filter(function (row) { return row.id !== id; }).map(function (row) {
+      var edited = Object.assign({}, row), also = (row.also_parents || []).filter(function (parent) { return parent !== id; });
+      if (row.parent === id) {
+        edited.parent = also.length ? also.shift() : null;
+        if (edited.parent === null) edited.super_source = "auto";
+      }
+      if (also.length) edited.also_parents = also;
+      else delete edited.also_parents;
+      return edited;
+    });
+    if (!areaLinksValid(names)) return false;
+    var owners = this._nearestRemaining(id);
+    this.checkpoint();
+    this.names = names;
+    this._vacate(this.cells.map(function (_, cell) { return cell; }), id, null, owners);
+    this.autoSupers();
+    return true;
   };
 
   AreasModel.prototype._availableName = function (name, id) {
