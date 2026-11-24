@@ -117,6 +117,53 @@ def test_reveal_row_key_uses_the_same_join_as_effects_after_json_transport():
     assert cast["effects"] == [{"target": 5, "how": "reveal", "t0": 7.0, "t1": 8.0, "known": True}]
 
 
+def test_fury_blast_without_an_actor_joins_the_ult_cast():
+    blast = {"k": "blast", "t": 7.0, "by": 0, "code": "Hunter", "name": "X_LaserMulti",
+             "u": 2000, "v": 2000, "yaw": 0, "hits": []}
+    key = [blast[k] for k in ("by", "code", "name", "t")]
+    out = run([blast], payload(entry(row_key=key)))
+    fury = next(c for c in out["casts"] if c["ability_id"] == "Sova/Hunter's Fury")
+    assert fury["info"] == MEASURE
+
+
+@pytest.mark.parametrize("uses", [
+    [(0, 7.0), (0, 9.0), (0, 12.0)],
+    [(0, 7.0), (5, 7.0)],
+    [(0, 7.0), (0, 12.0), (0, 13.01)],
+])
+def test_fury_blasts_group_by_owner_and_the_original_use_window(uses):
+    blasts = [{"k": "blast", "t": t, "by": by, "code": "Hunter", "name": "X_LaserMulti",
+               "u": 2000, "v": 2000, "yaw": 0, "hits": []} for by, t in uses]
+    measures = [entry(row_key=[r[k] for k in ("by", "code", "name", "t")]) for r in blasts]
+    casts = run(blasts, payload(*measures))["casts"]
+    expected = {
+        ((0, 7.0), (0, 9.0), (0, 12.0)): [(0, 7.0, 13.0, 3)],
+        ((0, 7.0), (5, 7.0)): [(0, 7.0, 13.0, 1), (5, 7.0, 13.0, 1)],
+        ((0, 7.0), (0, 12.0), (0, 13.01)): [(0, 7.0, 13.0, 2), (0, 13.01, 19.01, 1)],
+    }[tuple(uses)]
+    assert [(c["by"], c["t"], c["t_end"]) for c in casts] == [e[:3] for e in expected]
+    assert all(c["ability_id"] == "Sova/Hunter's Fury" for c in casts)
+    assert [c["info"] for c in casts] == [{k: n * v for k, v in MEASURE.items()} for _, _, _, n in expected]
+
+
+def test_no_blast_rows_keep_the_complete_pre_w8_casts():
+    import hashlib
+    import json
+
+    util = [recon(), toy_ability("Hunter", "Q_SonarBolt", 200, 200, 0, t=5.5, t1=10,
+                                kind="GameObject", id=102),
+            toy_ability("Gumshoe", "4_TripWire", 250, 200, 5, t=0, t1=20, kind="GameObject", id=201),
+            toy_ability("Wraith", "4_Smoke", 300, 200, 0, t=15, t1=20, id=301)]
+    players = {0: ("A", [(0.0, 120, 200, 0)]), 5: ("B", [(0.0, 400, 200, 180)])}
+    rnd, blob = round_of(players, util=util, geo=open_hall(), t_decided=25.0)
+    casts = extract.build_casts(rnd, blob)
+    packed = [{field: getattr(c, field) for field in c.__slots__} for c in casts]
+    text = json.dumps(packed, sort_keys=True, default=sorted, separators=(",", ":"))
+    # Recorded from HEAD's build_casts before W8's blast loop; every slot, including the original rows.
+    assert len(casts) == 3
+    assert hashlib.sha256(text.encode()).hexdigest() == "62349334494a0d190c37736a3acd4508e9ce5efa7eed1c97263883da77667da8"
+
+
 def test_info_cast_id_takes_precedence_over_another_rows_key():
     other = recon(t=16, actor=102)
     key = [other[k] for k in ("by", "code", "name", "t")]

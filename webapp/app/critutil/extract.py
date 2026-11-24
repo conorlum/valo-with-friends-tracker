@@ -73,6 +73,8 @@ def _parents_of(row) -> frozenset:
 def _entry_of(row) -> dict | None:
     """The ability table's entry for a row (matched on `<code>_<name>`), None when the row has no code or fits none."""
     key = _code_name(row)
+    if row.get("k") == "blast" and key == "Hunter_X_LaserMulti":
+        return next(e for e in abilities.load() if e["agent"] == "Sova" and e["ability"] == "Hunter's Fury")
     return _entry_for(key) if key else None
 
 
@@ -326,6 +328,20 @@ def build_casts(rnd, blob: dict) -> list[_Cast]:
                 c.entry = parent
                 c.kinds = set(parent.get("kinds") or ())
         casts.append(c)
+    # Fury's fired blasts have no actor and leave no ordinary ability object. Keep the shots of one
+    # six-second use together so their row keys reach a scored cast just as reveal rows do.
+    for row in sorted((r for r in util if r.get("k") == "blast" and _code_name(r) == "Hunter_X_LaserMulti"),
+                      key=lambda r: r["t"]):
+        host = next((c for c in reversed(casts) if c.by == row.get("by") and c.entry == _entry_of(row)
+                     and c.t - _EPS <= float(row["t"]) <= c.t_end), None)
+        if host is None:
+            c = _Cast(len(casts), row, rnd)
+            c.kinds = set()
+            casts.append(c)
+        else:
+            # A shot doesn't extend the use's lifetime.
+            host.rows.append(row)
+            host.names.append(row["name"])
     for c in casts:
         c.kinds = set(c.kinds) | _kinds_of(c.names, c.rows)
         if any(_ult_row(r) for r in c.rows):

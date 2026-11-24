@@ -13,6 +13,9 @@ owner's team had enemies alive and the round was not yet decided:
 - `held_m2s`: square metres times seconds of its cells that no teammate's own view covered: ground only it held.
 - `crossed_s`: seconds the unknown was inside its cells (an enemy could be past it or in it).
 
+Separately, InfoMeasure reads the engine's applied operations and watcher footprints for per-cast clear
+area, located enemies and hold seconds. Its failure leaves these legacy items intact.
+
 Pure numpy over the record; never changes the engine's arrays.
 """
 
@@ -49,6 +52,11 @@ class UnknownProbe:
                       uv=(molly.u, molly.v))
         self.prev_t: float | None = None
         self.error: str | None = None
+        self.info_error: str | None = None
+        try:
+            self.info = InfoMeasure(self)
+        except Exception as error:  # reporting must never disable legacy holds
+            self.info_error = f"{type(error).__name__}: {error}"
 
     def _add(self, what, kind, by, t0, t1, mask, side=None, watcher=None, uv=None):
         ring = None if mask is None else (self.topo.dilate(mask) & ~mask)
@@ -72,6 +80,11 @@ class UnknownProbe:
 
     def step(self, rec) -> None:
         """One tick. Errors are kept, never raised: the gap run is never failed by this probe."""
+        if getattr(self, "info_error", None) is None and hasattr(self, "info"):
+            try:
+                self.info.step(rec)
+            except Exception as error:  # noqa: BLE001 - independent from legacy reporting
+                self.info_error = f"{type(error).__name__}: {error}"
         if self.error is not None:
             return
         try:
@@ -141,12 +154,172 @@ class UnknownProbe:
         return arr if len(arr) == self.n else self.rnd.geo.to_nodes(arr)
 
     def finish(self) -> dict:
-        return {"error": self.error,
+        out = {"error": self.error,
                 "items": [{"what": i["what"], "kind": i["kind"], "by": i["by"], "t0": round(i["t0"], 2),
                            "t1": round(i["t1"], 2), "id": i["id"], "uv": None if i["uv"] is None else list(i["uv"]),
                            "up_s": round(i["up_s"], 2), "front_s": round(i["front_s"], 2),
                            "held_m2s": round(i["held_m2s"], 1), "crossed_s": round(i["crossed_s"], 2)}
                           for i in self.items]}
+        if hasattr(self, "info_error"):
+            try:
+                out["info"] = None if self.error or self.info_error else self.info.finish()
+            except Exception:  # noqa: BLE001 - preserve the legacy figures even if serialization fails
+                out["info"] = None
+        return out
+
+
+class InfoMeasure:
+    """Applied information and held edges, independent of the legacy shared-cell accounting.
+
+    Regions belong to the engine and change in place. Keep our own previous masks, including each enemy's
+    region for locate attribution. Identity comes only from applied operations or watcher actors/items.
+    """
+
+    def __init__(self, probe):
+        from app.critutil.extract import _hold_items_by_cast, build_casts
+
+        self.probe, self.rnd = probe, probe.rnd
+        self.casts = build_casts(self.rnd, self.rnd.blob)
+        self.by_id = {actor: cast for cast in self.casts for actor in cast.ids}
+        self.rows = {tuple(row.get(k) for k in ("by", "code", "name", "t")): row
+                     for row in self.rnd.blob.get("util") or ()}
+        self.by_item = {index: self.casts[i] for i, index in
+                        _hold_items_by_cast(self.rnd, self.casts, {"items": probe.items}).items()}
+        self.previous: dict = {}
+        self.prev_t = None
+        self.measures: dict = {}
+        self.located: dict = {}
+        self.started: set = set()
+        self.held = [(item, index) for index, item in enumerate(probe.items)]
+        for w in self.rnd.watchers:
+            if w.kind == "drone" and w.by is not None and self.rnd.team.get(w.by) is not None:
+                row_key = next((key for key, row in self.rows.items()
+                                if row.get("by") == w.by and row.get("path") is w.path), None)
+                self.held.append(({"kind": w.kind, "by": w.by, "t0": w.t0, "t1": w.t1,
+                                   "side": self.rnd.team[w.by], "watcher": w, "mask": None,
+                                   "id": w.src, "row_key": row_key, "uv": None}, None))
+
+    def _entry(self, *, cast_id=None, row_key=None, item=None, index=None, t=0.0):
+        from app.critutil.extract import _cast_of_row
+
+        actor = item.get("id") if item is not None else None
+        identity = cast_id if cast_id is not None else actor
+        if row_key is None and item is not None:
+            row_key = item.get("row_key")
+        cast = self.by_id.get(identity)
+        if cast is None and row_key is not None:
+            row = self.rows.get(tuple(row_key))
+            if row is not None:
+                cast = _cast_of_row(row, self.casts, self.by_id)
+        if cast is None and item is not None:
+            cast = self.by_item.get(index)
+        if cast is not None and (cast.entry or {}).get("ability") == "Spycam dart":
+            # Use the same live-camera join as extract._info_by_cast before sharing any cells.
+            cast = _cast_of_row({"by": cast.by, "t": t, "code": "Gumshoe", "name": "E_PossessableCamera"},
+                                [c for c in self.casts if (c.entry or {}).get("ability") == "Spycam"], self.by_id)
+        key = (("cast", identity) if identity is not None else
+               ("row", tuple(row_key)) if row_key is not None else ("item", index))
+        if cast is not None:
+            key = ("joined", cast.i)
+        if key not in self.measures:
+            from app.critutil.info import empty
+
+            self.measures[key] = {"cast_id": identity, "row_key": row_key, "item": index, "id": actor,
+                                  "by": item["by"] if item is not None else (row_key[0] if row_key else None),
+                                  "kind": item["kind"] if item is not None else "info",
+                                  "t0": float(item["t0"] if item is not None else t),
+                                  "uv": None if item is None or item["uv"] is None else list(item["uv"]),
+                                  **empty()}
+        elif item is not None:
+            self.measures[key].update(item=index, id=actor, kind=item["kind"], by=item["by"])
+        return key
+
+    def step(self, rec):
+        t = float(rec.t)
+        dt = 0.0 if self.prev_t is None else min(max(t - self.prev_t, 0.0), MAX_DT_S)
+        self.prev_t = t
+        current = {side: {enemy: self.probe._nodes(np.asarray(arr) >= 0).copy()
+                          for enemy, arr in enemies.items()} for side, enemies in (rec.unknown or {}).items()}
+        if t >= self.rnd.t_decided:
+            self.previous = current
+            return
+        for side, enemies in current.items():
+            if not enemies:
+                continue
+            u = np.zeros(self.probe.n, bool)
+            before = np.zeros(self.probe.n, bool)
+            seen = np.zeros(self.probe.n, bool)
+            for arr in enemies.values():
+                u |= arr
+            for arr in self.previous.get(side, {}).values():
+                before |= arr
+            for p in rec.players.values():
+                if p.team == side and p.view is not None:
+                    seen |= self.probe._nodes(p.view)
+            removed = before & ~u & ~seen
+            footprints = {}
+            for cast_id, row_key, kind, enemy, nodes in (getattr(rec, "applied", {}) or {}).get(side, ()):
+                if kind not in ("exclude", "restrict", "locate") or enemy not in enemies:
+                    continue
+                if cast_id is None and row_key is None:
+                    continue
+                key = self._entry(cast_id=cast_id, row_key=row_key, t=t)
+                mask = _mask_of(nodes, self.probe.n)
+                footprints.setdefault(key, np.zeros(self.probe.n, bool))[:] |= mask
+                if (kind == "locate" and enemy in self.previous.get(side, {})
+                        and not (enemies[enemy] & seen).any()):
+                    self.located.setdefault(key, set()).add(enemy)
+                    self.measures[key]["located"] = len(self.located[key])
+            watchers = []
+            for index, (item, legacy_index) in enumerate(self.held):
+                if item["side"] != side or not self.probe._live(item, t):
+                    continue
+                mask, w = item["mask"], item["watcher"]
+                dynamic = item["kind"] in ("camera", "drone", "turret")
+                if dynamic:
+                    if w.in_use is not None and not any(a <= t < b for a, b in w.in_use):
+                        continue
+                    p = rec.players.get(item["by"])
+                    if p is None or p.utility is None:
+                        continue
+                    mask = self.probe._nodes(p.utility).copy()
+                    for other, _ in self.held:
+                        if (other["by"] == item["by"] and other["kind"] in STATIC_KINDS
+                                and self.probe._live(other, t)):
+                            mask &= ~other["mask"]
+                if not mask.any():
+                    continue
+                key = self._entry(item=item, index=legacy_index, t=t)
+                if dynamic and (item["kind"] != "turret" or index not in self.started):
+                    footprints.setdefault(key, np.zeros(self.probe.n, bool))[:] |= mask
+                self.started.add(index)
+                watchers.append((key, mask, self.probe.topo.dilate(mask) & ~mask, dynamic))
+            clears = {key: mask & removed for key, mask in footprints.items()}
+            count = np.zeros(self.probe.n, np.int32)
+            for mask in clears.values():
+                count += mask
+            for key, mask in clears.items():
+                if mask.any():
+                    # Geometry.area carries the floor weights, just as held_m2s does.
+                    self.measures[key]["cleared_m2"] += sum(
+                        self.rnd.geo.area(mask & (count == n)) / n for n in np.unique(count[mask])
+                    ) * self.probe.cell_m2
+            clearing = {key for key, _, _, dynamic in watchers
+                        if dynamic and key in clears and clears[key].any()}
+            holding = set()
+            for key, mask, ring, _ in watchers:
+                if key in clearing:
+                    continue
+                if not (mask & u).any() and (ring & u).any() and (ring & ~u).any():
+                    holding.add(key)
+            for key in holding:
+                self.measures[key]["hold_s"] += dt
+        self.previous = current
+
+    def finish(self):
+        return [{**measure, "cleared_m2": round(float(measure["cleared_m2"]), 1),
+                 "hold_s": round(float(measure["hold_s"]), 2), "located": int(measure["located"]),
+                 "t0": round(float(measure["t0"]), 2)} for measure in self.measures.values()]
 
 
 def _mask_of(nodes, n: int) -> np.ndarray:
