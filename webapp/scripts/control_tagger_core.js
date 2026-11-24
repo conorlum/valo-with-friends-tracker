@@ -2027,6 +2027,29 @@
     return roots;
   }
 
+  function areaLinksValid(names) {
+    var byId = new Map();
+    for (var row of names) {
+      if (!Number.isInteger(row.id) || row.id < 1 || byId.has(row.id)) return false;
+      if (row.parent !== null && !Number.isInteger(row.parent)) return false;
+      if (Object.prototype.hasOwnProperty.call(row, "also_parents")) {
+        var also = row.also_parents;
+        if (row.parent === null || !Array.isArray(also) || !also.length ||
+            also.some(function (id) { return !Number.isInteger(id) || id < 1 || id === row.id || id === row.parent; }) ||
+            new Set(also).size !== also.length) return false;
+      }
+      byId.set(row.id, row);
+    }
+    function visit(id, path) {
+      if (!byId.has(id) || path.indexOf(id) !== -1 || path.length >= 3) return false;
+      var row = byId.get(id), parents = row.parent === null ? [] : [row.parent];
+      return parents.concat(row.also_parents || []).every(function (parent) {
+        return visit(parent, path.concat(id));
+      });
+    }
+    return names.every(function (row) { return visit(row.id, []); });
+  }
+
   function AreasModel(data) {
     var source = data.existing || data.draft, size = data.grid * data.grid;
     var draftRegions = new Map(data.draft.names.map(function (row) { return [row.id, row.super]; }));
@@ -2040,8 +2063,29 @@
     Object.values(this.bands).forEach(function (bands) { bands.sort(areaBandOrder); });
     this._draftRegions = areaDecode(data.draft.cells, size).map(function (id) { return draftRegions.get(id); });
     this._nextId = this.names.length ? this.names[this.names.length - 1].id + 1 : 1;
+    this.hand = new Set();
+    this.queue = [];
+    this._undoStack = [];
     this.autoSupers();
   }
+
+  AreasModel.prototype.checkpoint = function () {
+    this._undoStack.push(clone({cells: this.cells, bands: this.bands, names: this.names,
+                               _nextId: this._nextId, hand: Array.from(this.hand), queue: this.queue}));
+    if (this._undoStack.length > 50) this._undoStack.shift();
+  };
+
+  AreasModel.prototype.undo = function () {
+    var saved = this._undoStack.pop();
+    if (!saved) return false;
+    this.cells = saved.cells;
+    this.bands = saved.bands;
+    this.names = saved.names;
+    this._nextId = saved._nextId;
+    this.hand = new Set(saved.hand);
+    this.queue = saved.queue;
+    return true;
+  };
 
   AreasModel.prototype._row = function (id) {
     return this.names.find(function (row) { return row.id === id; });
@@ -2129,7 +2173,8 @@
     var names = this.names.concat({
       id: id, name: name.trim(), parent: parentId == null ? null : parentId, super: "Mid", super_source: "auto"
     });
-    if (!areaRoots(names)) return null;
+    if (!areaLinksValid(names)) return null;
+    this.checkpoint();
     this.names = names;
     this._nextId++;
     this.autoSupers();
@@ -2139,6 +2184,7 @@
   AreasModel.prototype.rename = function (id, name) {
     var row = this._row(id);
     if (!row || !this._availableName(name, id)) return false;
+    this.checkpoint();
     row.name = name.trim();
     this.autoSupers();
     return true;
@@ -2150,9 +2196,32 @@
     var names = this.names.map(function (row) {
       if (row.id !== id) return row;
       var source = row.parent !== null && parent === null ? "auto" : row.super_source;
-      return Object.assign({}, row, {parent: parent, super_source: source});
+      var edited = Object.assign({}, row, {parent: parent, super_source: source});
+      if (edited.also_parents) {
+        var also = edited.also_parents.filter(function (other) { return other !== parent; });
+        if (parent === null || !also.length) delete edited.also_parents;
+        else edited.also_parents = also;
+      }
+      return edited;
     });
-    if (!areaRoots(names)) return false;
+    if (!areaLinksValid(names)) return false;
+    this.checkpoint();
+    this.names = names;
+    this.autoSupers();
+    return true;
+  };
+
+  AreasModel.prototype.setAlsoParents = function (id, ids) {
+    if (!this._row(id) || !Array.isArray(ids)) return false;
+    var names = this.names.map(function (row) {
+      if (row.id !== id) return row;
+      var edited = Object.assign({}, row);
+      if (ids.length) edited.also_parents = ids.slice().sort(function (a, b) { return a - b; });
+      else delete edited.also_parents;
+      return edited;
+    });
+    if (!areaLinksValid(names)) return false;
+    this.checkpoint();
     this.names = names;
     this.autoSupers();
     return true;
@@ -2164,11 +2233,19 @@
     var ancestor = into;
     while (ancestor && ancestor !== from) ancestor = this._row(ancestor.parent);
     var names = this.names.filter(function (row) { return row.id !== fromId; }).map(function (row) {
-      if (ancestor && row.id === intoId) return Object.assign({}, row, {parent: from.parent});
-      if (row.parent === fromId) return Object.assign({}, row, {parent: intoId});
-      return row;
+      var edited = Object.assign({}, row);
+      if (ancestor && row.id === intoId) edited.parent = from.parent;
+      else if (row.parent === fromId) edited.parent = intoId;
+      if (row.also_parents) {
+        var also = Array.from(new Set(row.also_parents.map(function (id) { return id === fromId ? intoId : id; })))
+          .filter(function (id) { return id !== edited.id && id !== edited.parent; });
+        if (also.length) edited.also_parents = also.sort(function (a, b) { return a - b; });
+        else delete edited.also_parents;
+      }
+      return edited;
     });
-    if (!areaRoots(names)) return false;
+    if (!areaLinksValid(names)) return false;
+    this.checkpoint();
     this.names = names;
     this.cells = this.cells.map(function (id) { return id === fromId ? intoId : id; });
     Object.keys(this.bands).forEach(function (cell) {
@@ -2215,6 +2292,7 @@
   AreasModel.prototype.setSuper = function (id, region) {
     var root = areaRoots(this.names).get(id);
     if (!root || AREA_REGIONS.indexOf(region) === -1) return false;
+    this.checkpoint();
     root.super = region;
     root.super_source = "set";
     this.autoSupers();
@@ -2222,9 +2300,13 @@
   };
 
   AreasModel.prototype.confirmSuper = function (id) {
+    var root = areaRoots(this.names).get(id);
+    if (!root) return false;
+    this.checkpoint();
     this.autoSupers();
-    var row = this._row(id);
-    return row ? this.setSuper(id, row.super) : false;
+    root.super_source = "set";
+    this.autoSupers();
+    return true;
   };
 
   AreasModel.prototype.stillAuto = function () {
@@ -2243,7 +2325,17 @@
     }
     var path = [];
     for (var row = this._row(id); row; row = this._row(row.parent)) path.push(row.name);
-    return path.reverse();
+    path.reverse();
+    var pending = [id], seen = new Set(), also = [];
+    while (pending.length) {
+      var current = pending.pop(), row = this._row(current);
+      if (!row || seen.has(current)) continue;
+      seen.add(current);
+      if (path.indexOf(row.name) === -1) also.push(row.name);
+      if (row.parent !== null) pending.push(row.parent);
+      pending.push.apply(pending, row.also_parents || []);
+    }
+    return path.concat(also.sort());
   };
 
   AreasModel.prototype.pinStatus = function (pins) {
@@ -2260,7 +2352,13 @@
 
   AreasModel.prototype.exportText = function () {
     var names = this.autoSupers().map(function (row) {
-      return {id: row.id, name: row.name, parent: row.parent, super: row.super, super_source: row.super_source};
+      var name = {id: row.id, name: row.name, parent: row.parent};
+      if (row.also_parents && row.also_parents.length) {
+        name.also_parents = row.also_parents.slice().sort(function (a, b) { return a - b; });
+      }
+      name.super = row.super;
+      name.super_source = row.super_source;
+      return name;
     });
     return JSON.stringify({version: 1, map: this.map, reviewed: true, names: names,
                            cells: areaEncode(this.cells), bands: this.bands}, null, 1) + "\n";

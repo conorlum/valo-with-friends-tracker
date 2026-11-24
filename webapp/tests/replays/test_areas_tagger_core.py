@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from app.coach import areas, areas_draft
 from tests.coach.test_areas import NAMES, painted_object
 from tests.replays.test_map_feature_tagger import run_node
@@ -150,8 +152,12 @@ def test_similarity_and_affine_transforms_map_reference_points_exactly():
     assert got["degenerate"] is None
 
 
-def test_export_text_matches_python_and_retains_the_saved_world_bands():
+@pytest.mark.parametrize("also_parents", [False, True])
+def test_export_text_matches_python_and_retains_the_saved_world_bands(also_parents):
     names = [NAMES[2], {**NAMES[1], "name": "Marché"}, NAMES[0]]
+    if also_parents:
+        names[1]["also_parents"] = [4, 3]
+        names.append({**NAMES[2], "id": 4, "name": "Tower"})
     existing = painted_object({0: 1, 10: 3}, names=names, bands={"0": [[60, 90, 2], [0, 30, 1]]})
     existing["reviewed"] = False
     data = map_data(128, {0, 10}, floors={"0": [[-2, 20], [58, 82]]}, existing=existing, name="Sunset")
@@ -163,3 +169,167 @@ def test_export_text_matches_python_and_retains_the_saved_world_bands():
     assert got[:2] == [expected, expected]
     assert got[2] == [[0, 30], [60, 90]]
     assert areas.validate(json.loads(got[0])) == []
+
+
+def linked_names():
+    return [
+        {**NAMES[0], "id": 1, "name": "A"},
+        {**NAMES[0], "id": 2, "name": "B"},
+        {**NAMES[0], "id": 3, "name": "C", "parent": 2, "also_parents": [1]},
+        {**NAMES[0], "id": 4, "name": "D", "parent": 3},
+    ]
+
+
+@pytest.mark.parametrize("id,ids", [
+    (3, [4]), (3, [1, 1]), (1, [2]), (3, [99]), (3, [3]), (3, [2]),
+    (3, [0]), (3, [-1]), (3, [True]), (3, [1.5]), (3, "1"), (99, [1]),
+    (5, [4]), (3, [5]),
+])
+def test_also_parent_rejections_are_atomic_and_do_not_checkpoint(id, ids):
+    names = linked_names() + [{**NAMES[0], "id": 5, "name": "E", "parent": 1}]
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data), before = JSON.stringify(a);
+      const accepted = a.setAlsoParents(p.id, p.ids);
+      return {accepted, unchanged: before === JSON.stringify(a), undo: a.undo()};
+    }''', {"data": map_data(2, {0}, existing={"names": names, "cells": [[0, 4]]}), "id": id, "ids": ids})
+    assert got == {"accepted": False, "unchanged": True, "undo": False}
+
+
+def test_parent_edits_check_all_paths_and_clear_or_remove_extra_parents():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      const fourth = a.addName("E", 4), cycle = a.setParent(1, 4), depth = a.setParent(2, 1);
+      const accepted = a.setAlsoParents(4, [1, 2]), switched = a.setParent(4, 1);
+      const afterSwitch = JSON.parse(JSON.stringify(a._row(4)));
+      const cleared = a.setParent(4, null), afterClear = JSON.parse(JSON.stringify(a._row(4)));
+      const emptied = a.setAlsoParents(3, []);
+      return {fourth, cycle, depth, accepted, switched, afterSwitch, cleared, afterClear, emptied,
+              afterEmpty: a._row(3)};
+    }''', map_data(2, {0}, existing={"names": linked_names(), "cells": [[0, 4]]}))
+    assert (got["fourth"], got["cycle"], got["depth"]) == (None, False, False)
+    assert got["accepted"] and got["switched"] and got["cleared"] and got["emptied"]
+    assert got["afterSwitch"]["also_parents"] == [2]
+    assert got["afterClear"]["parent"] is None
+    assert "also_parents" not in got["afterClear"]
+    assert "also_parents" not in got["afterEmpty"]
+
+
+def test_add_and_reparent_refuse_depth_four_only_through_extra_parent():
+    names = linked_names()[:3]
+    names[2]["also_parents"] = [5]
+    names.append({**NAMES[0], "id": 5, "name": "E", "parent": 1})
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p), before = JSON.stringify(a);
+      const added = a.addName("Too deep", 3), changed = a.setParent(1, 2);
+      return {added, changed, unchanged: before === JSON.stringify(a), undo: a.undo()};
+    }''', map_data(2, {0}, existing={"names": names, "cells": [[0, 4]]}))
+    assert got == {"added": None, "changed": False, "unchanged": True, "undo": False}
+
+
+def test_merge_rewrites_extra_parents_and_drops_duplicates_parent_and_self():
+    names = linked_names()[:3] + [
+        {**NAMES[0], "id": 4, "name": "D", "parent": 2, "also_parents": [1, 3]},
+        {**NAMES[0], "id": 5, "name": "E", "parent": 1, "also_parents": [3]},
+    ]
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      return {merged: a.merge(1, 3), names: a.names};
+    }''', map_data(2, {0}, existing={"names": names, "cells": [[0, 4]]}))
+    assert got["merged"]
+    rows = {row["id"]: row for row in got["names"]}
+    assert "also_parents" not in rows[3]
+    assert rows[4]["also_parents"] == [3]
+    assert rows[5]["parent"] == 3 and "also_parents" not in rows[5]
+
+
+def test_merge_refuses_cycle_through_second_parent_without_changing_any_state():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p), before = JSON.stringify(a);
+      const merged = a.merge(1, 4);
+      return {merged, unchanged: before === JSON.stringify(a), undo: a.undo()};
+    }''', map_data(2, {0}, existing={"names": linked_names(), "cells": [[1, 4]],
+                                  "bands": {"0": [[0, 10, 1], [20, 30, 4]]}}))
+    assert got == {"merged": False, "unchanged": True, "undo": False}
+
+
+def test_second_parent_pin_and_fixture_agree_with_python(monkeypatch):
+    from tests.coach import test_area_cases
+
+    # Same five-field shape as the owner-confirmed case rows.
+    pin = {"map": "Sunset", "u": 0, "v": 0, "z": None, "area": "A"}
+    obj = painted_object({0: 4}, names=linked_names())
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      return {status: a.pinStatus([p.pin]), fixture: a.fixtureFromPins([p.pin]),
+              path: a._pinPath(p.pin), text: a.exportText()};
+    }''', {"data": map_data(128, {0}, existing=obj, name="Sunset"), "pin": pin})
+    assert got["status"][0]["ok"] and got["fixture"] == [pin]
+    assert got["path"] == ["B", "C", "D", "A"]
+    painted = areas.from_raw("Sunset", got["text"].encode())
+    assert painted is not None
+    result = areas.area_at("Sunset", 0, 0, painted_table={"Sunset": painted})
+    assert result["path"] == ["B", "C", "D"] and result["also"] == ["A"]
+    monkeypatch.setattr(test_area_cases.json, "loads", lambda _: got["fixture"])
+    monkeypatch.setattr(areas, "load_painted", lambda *args, **kwargs: painted)
+    test_area_cases.test_owner_confirmed_area_cases()
+
+
+def test_undo_restores_full_state_after_parent_edit_merge_and_id_allocation():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      const empty = a.undo();
+      a.hand.add(0); a.queue.push({id: 2, cells: [1]});
+      const state = () => JSON.stringify({cells:a.cells, bands:a.bands, names:a.names,
+                                        next:a._nextId, hand:[...a.hand], queue:a.queue});
+      const before = state(), edited = a.setParent(2, 3), parent = state();
+      a.hand.add(1); a.queue[0].cells.push(2);
+      const mergedBefore = state(), merged = a.merge(2, 3);
+      const undoMerge = a.undo(), restoredMerge = state() === mergedBefore;
+      const undoParent = a.undo(), restoredParent = state() === before;
+      const id = a.addName("New"), undoAdd = a.undo(), restoredId = state() === before;
+      return {empty, edited, parentChanged: parent !== before, merged, undoMerge, restoredMerge,
+              undoParent, restoredParent, id, undoAdd, restoredId, exhausted: a.undo()};
+    }''', map_data(2, {0, 1}, existing={"names": NAMES, "cells": [[2, 1], [1, 3]],
+                                    "bands": {"0": [[0, 10, 2], [20, 30, 3]]}}))
+    assert got == {"empty": False, "edited": True, "parentChanged": True, "merged": True,
+                   "undoMerge": True, "restoredMerge": True, "undoParent": True, "restoredParent": True,
+                   "id": 4, "undoAdd": True, "restoredId": True, "exhausted": False}
+
+
+def test_checkpoint_retains_only_the_last_fifty_snapshots():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      for (let i = 0; i < 51; i++) { a.checkpoint(); a.cells[0] = i + 1; }
+      const restored = [];
+      while (a.undo()) restored.push(a.cells[0]);
+      return restored;
+    }''', map_data(2, {0}))
+    assert got == list(range(50, 0, -1))
+
+
+@pytest.mark.parametrize("action", [
+    'a.addName("New", 1)', 'a.rename(2, "Corner")', 'a.setParent(2, 3)',
+    'a.setAlsoParents(2, [3])', 'a.setSuper(2, "B")', 'a.confirmSuper(2)', 'a.merge(2, 3)',
+])
+def test_each_one_shot_action_takes_exactly_one_checkpoint(action):
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p);
+      const before = JSON.stringify(a.names), accepted = ACTION;
+      const undo = a.undo(), restored = JSON.stringify(a.names) === before;
+      return {accepted: !!accepted, undo, restored, exhausted: a.undo()};
+    }'''.replace("ACTION", action), map_data(2, {0}))
+    assert got == {"accepted": True, "undo": True, "restored": True, "exhausted": False}
+
+
+def test_refused_actions_and_brush_operations_do_not_checkpoint():
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p), before = JSON.stringify(a);
+      const refused = [a.addName("Mid"), a.addName("Deep", 99), a.rename(99, "New"),
+        a.rename(2, "Mid"), a.setParent(1, 2), a.setParent(2, 99), a.setSuper(99, "A"),
+        a.setSuper(1, "Unknown"), a.confirmSuper(99), a.merge(1, 99), a.merge(1, 1)];
+      const unchanged = before === JSON.stringify(a);
+      a.paint([0], 1); a.erase([0]); a.fill(0, 2);
+      return {refused, unchanged, undo: a.undo()};
+    }''', map_data(2, {0, 1}))
+    assert got["refused"] == [None, None] + [False] * 9
+    assert got["unchanged"] and got["undo"] is False
