@@ -4,8 +4,10 @@ one match. Impact ranks where to look first; the detectors' flags add what Impac
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 
 from app.coach import areas, detectors, fights
+from app.critutil import info
 
 VERSION = 1
 _PLAYER_KEYS = ("slot", "name", "agent", "team", "side")
@@ -29,10 +31,34 @@ def _economy(players: dict, stats: dict) -> dict | None:
 
 
 # Abilities whose hits the replay does not record, so `enemies_affected` undercounts them: Bassquake leaves no
-# effect row at all, Nightfall only its damage (not its debuff). Measured on a Sunset match, 2026-11-14: six
-# Bassquakes with zero rows while enemies stood in the cone, a Nightfall over four enemies with one row.
+# effect row at all, Nightfall only its damage (not its debuff) on casts without info. Measured on a Sunset
+# match, 2026-11-14: six Bassquakes with zero rows while enemies stood in the cone, a Nightfall over four
+# enemies with one row.
 HITS_NOT_RECORDED = {"Bassquake": "none", "Nightfall": "damage only"}
 SMOKE_NEAR_M = 10.0         # a smoke whose centre is this close to where a cast landed is listed with it
+
+
+def _info_facts(cast: dict, table: dict) -> dict:
+    measured = info.figure(cast)
+    if measured is None:
+        return {}
+    out = {fact: measured[metric] for metric, fact in (
+        ("cleared_m2", "cleared_m2"), ("located", "located"), ("hold_s", "held_back_s"))
+        if measured.get(metric) is not None}
+    ability = cast.get("ability_id") or f"{cast.get('agent')}/{cast.get('ability')}"
+    ranks = table.get(ability) or {}
+    for metric, abilities in (("cleared_m2", info.CLEAR_ABILITIES), ("hold_s", info.HOLD_ABILITIES)):
+        if ability not in abilities or measured.get(metric) is None:
+            continue
+        rank = ranks.get(metric) or {}
+        n, thresholds = rank.get("n", 0), rank.get("points")
+        if n < 10 or not thresholds or len(thresholds) != 101:
+            continue
+        # Highest whole percentile threshold reached; ties take the upper rank, bounded to 0..100.
+        pct = max(0, min(100, bisect_right(thresholds, measured[metric]) - 1))
+        out.setdefault("ability_pct", {})[metric] = pct
+        out.setdefault("ability_n", {})[metric] = n
+    return out
 
 
 def _metres(view, a: tuple, b: tuple) -> float:
@@ -67,10 +93,11 @@ def _landing(c: dict, casts, view) -> dict:
     return out
 
 
-def util_facts(round_util: dict | None, slot: int, view=None) -> list[dict]:
+def util_facts(round_util: dict | None, slot: int, view=None, *, info_table: dict | None = None) -> list[dict]:
     """The player's casts this round from Critical Util (app/services/replay_util.py): what each did, measured, and
     its value (the change in the side's round-win chance after it, percentage points). Slots, never names.
-    `view` (the round's RoundView) names where each cast landed."""
+    `view` (the round's RoundView) names where each cast landed. `info_table` is the payload-wide compact
+    percentile table stored once in the snapshot's context."""
     out = []
     casts = (round_util or {}).get("casts") or ()
     for c in casts:
@@ -82,7 +109,8 @@ def util_facts(round_util: dict | None, slot: int, view=None) -> list[dict]:
                 "enemies_affected": c.get("enemies") or 0, "kills": len(ours),
                 "teammates_hit": len(mates), "teammate_died_affected": c.get("harm_died") or 0,
                 "followed": c.get("followed"), "wasted": bool(c.get("wasted"))}
-        if c.get("ability") in HITS_NOT_RECORDED:
+        fact.update(_info_facts(c, info_table or {}))
+        if c.get("ability") in HITS_NOT_RECORDED and (c["ability"] != "Nightfall" or info.figure(c) is None):
             fact["hits_recorded"] = HITS_NOT_RECORDED[c["ability"]]
         if c.get("trigger") is not None and c["trigger"] > c["t"]:
             fact["trigger"] = c["trigger"]      # a device's first trigger, break or touch on an enemy
@@ -129,7 +157,7 @@ def build(snap, slot: int) -> dict:
             "utility": [{k: v for k, v in row.items() if k != "by"} for row in view.utility(by=slot)],
             "flags": detectors.flags(view, slot, (control or {}).get("knew"), role, fights=round_fights),
             "fights": [{key: value for key, value in fight.items() if key != "flags"} for fight in round_fights],
-            "util_facts": util_facts(snap.util(n), slot, view),
+            "util_facts": util_facts(snap.util(n), slot, view, info_table=snap.context.get("util_info")),
             "gaps": snap.gaps(n)})
         if score is not None and winner is not None:
             score["own" if winner == subject["team"] else "enemy"] += 1

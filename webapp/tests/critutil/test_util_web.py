@@ -436,7 +436,7 @@ def test_pages_and_payload_keep_the_cached_values_build_unchanged(db, linked):
     put_model(db, util_model.fit(ESTIMATOR_ROWS), {linked.match_id})
     put_util(db, linked, 1)
     built = replay_util.build_corpus(db)
-    assert set(built) == {"ability_prior", "estimator", "fingerprints", "fit", "gate", "matches",
+    assert set(built) == {"ability_prior", "estimator", "fingerprints", "fit", "gate", "info", "matches",
                           "overlap", "prior_sums", "rows", "same_type_overlap", "spread", "spread_by_mode"}
     key = replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False), util_model.load(db))
     replay_util._store_values(db, key, built)
@@ -548,6 +548,109 @@ def test_page_modes_toggle_and_failing_lengths(db, monkeypatch):
     assert "Baseline not validated for windows of: 5, 7 s" in allp
     assert "Baseline not validated for windows" not in default
     assert "compares it with every player" in allp and "compares each cast with your own" in default
+
+
+@pytest.fixture
+def info_page(db, monkeypatch):
+    from app.models.player import Player
+    from app.routers import util_page
+    from app.services import circle
+
+    viewer, friend, outside = [Player(display_name=name) for name in ("Viewer", "Friend", "Outside")]
+    db.add_all([viewer, friend, outside])
+    db.flush()
+
+    def tables(mean):
+        return {section: [{"ability_id": "Cypher/Spycam", "agent": "Cypher", "ability": "Spycam",
+                           "metric": metric, "mean": mean, "min": 0.0, "max": mean * 2,
+                           "n": 12, "matches": 3, "ci": [mean - 1, mean + 1]}]
+                for section, metric in (("clears", "cleared_m2"), ("holds", "hold_s"))}
+
+    stored = {"rows": [], "info": {"overall": tables(340.0),
+              "players": {str(friend.id): tables(41.0), str(outside.id): tables(999.0)},
+              "below_bar": {str(viewer.id): 2, str(outside.id): 7}}}
+    monkeypatch.setattr(replay_util, "page_values", lambda db_: (stored, True))
+    monkeypatch.setattr(circle, "circle_ids", lambda db_, pid: {friend.id})
+    monkeypatch.setattr(util_page, "get_current_player", lambda request, db_: viewer)
+    monkeypatch.setattr("app.templates.get_current_player", lambda request, db_: None)
+
+    def html():
+        return util_page.util_page(request(None), db).body.decode()
+
+    return stored, html
+
+
+def test_info_tables_show_stored_statistics_and_only_circle_names(info_page):
+    stored, html = info_page
+    before = json.dumps(stored, sort_keys=True)
+    rendered = html()
+    wins_end = rendered.index("</section>", rendered.index("<h2>Which util wins rounds</h2>"))
+    assert wins_end < rendered.index("<h2>Clears</h2>") < rendered.index("<h2>Holds</h2>")
+    for heading, unit in (("Clears", "m²"), ("Holds", "s")):
+        section = rendered.split(f"<h2>{heading}</h2>")[1].split("</section>")[0]
+        assert 'class="util-table"' in section
+        assert "Cypher Spycam" in section and "<td>Friend</td>" in section
+        for mean in (340, 41):
+            assert f"{mean:.1f} {unit}" in section
+            assert f"{mean - 1:.1f}–{mean + 1:.1f} {unit}" in section
+            assert f"0.0–{mean * 2:.1f} {unit}" in section
+        assert section.count("<td>12 casts, 3 matches</td>") == 2
+        assert "95%" in section
+    assert "2 friend rows hidden: under 10 casts or 3 matches" in rendered
+    assert "Outside" not in rendered and "999.0" not in rendered
+    assert json.dumps(stored, sort_keys=True) == before
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_old_info_build_shows_updating_empty_state(info_page, missing):
+    stored, html = info_page
+    if missing:
+        stored.pop("info")
+    else:
+        stored["info"] = None
+    rendered = html()
+    for heading in ("Clears", "Holds"):
+        section = rendered.split(f"<h2>{heading}</h2>")[1].split("</section>")[0]
+        assert "Updating" in section and "last build" in section
+
+
+def test_empty_info_tables_are_distinct_from_an_updating_build(info_page):
+    stored, html = info_page
+    stored["info"] = {"overall": {"clears": [], "holds": []}, "players": {}, "below_bar": {}}
+    rendered = html()
+    for heading in ("Clears", "Holds"):
+        section = rendered.split(f"<h2>{heading}</h2>")[1].split("</section>")[0]
+        assert "Not enough casts yet." in section and "Updating" not in section
+
+
+def test_logged_out_page_shows_only_the_original_login_note(info_page, monkeypatch):
+    from app.routers import util_page
+
+    _, html = info_page
+    monkeypatch.setattr(util_page, "get_current_player", lambda request, db_: None)
+    rendered = html()
+    assert "Critical Util shows you and your friends&#39; utility, so it needs a login." in rendered
+    assert "<h2>Clears</h2>" not in rendered and "<h2>Holds</h2>" not in rendered
+    assert 'class="util-table"' not in rendered
+
+
+def test_logged_out_page_does_not_load_the_stored_build(info_page, monkeypatch):
+    from app.routers import util_page
+
+    _, html = info_page
+    monkeypatch.setattr(util_page, "get_current_player", lambda request, db_: None)
+    monkeypatch.setattr(replay_util, "page_values", lambda db_: pytest.fail("logged-out page read the build"))
+    html()
+
+
+def test_info_tables_are_404_in_demo_mode(info_page, monkeypatch):
+    from fastapi import HTTPException
+
+    _, html = info_page
+    monkeypatch.setattr(settings, "demo_mode", True)
+    with pytest.raises(HTTPException) as exc:
+        html()
+    assert exc.value.status_code == 404
 
 
 def test_coach_util_facts_are_the_players_casts_with_ids():

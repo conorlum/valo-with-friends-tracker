@@ -1922,15 +1922,17 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     as the `ability` and `shot` kinds, after the kinds `condense()` wrote, and re-measures the
     sizes. Another pass over the events file and one over movement, both streamed (W-b). The
     planted spike's row then names the carrier before the plant in `player_state` (revision 15)."""
-    from app.replays.extras import WorldPositions, build_extras, util_entries  # extras imports this module
+    from app.replays.extras import (WorldPositions, build_extras, fury_pawns, join_fakeout_flashes,
+                                    read_raw, util_entries)  # imports this module
 
     players = build_players(export, agents_by_code)
     windows = read_game_state(export).windows
-    positions = WorldPositions(export.movement, players)
+    raw = read_raw(events_path, frozenset(players.pawn_slot))
+    positions = WorldPositions(export.movement, players, player_yaws=fury_pawns(raw))
     first = replay.rounds[min(replay.rounds)] if replay.rounds else {"players": []}
     teams = {row["slot"]: row.get("side") for row in first.get("players", [])}
     extras = build_extras(events_path, players, windows, game_map, agents_by_code, positions.at, positions.path,
-                          teams=teams, pawn_yaws=positions.yaws,
+                          teams=teams, pawn_yaws=positions.yaws, raw=raw,
                           alive_by_round={n: blob.get("alive", {}) for n, blob in replay.rounds.items()})
     spike_counts: dict[str, int] = {}
     joins: Counter[str] = Counter()
@@ -1938,7 +1940,7 @@ def attach_extras(replay: CondensedReplay, export: Export, events_path: Path, ga
     decay_checks = []
     figures = load_decay_figures()
     for n, blob in replay.rounds.items():
-        blob["util"] = blob["util"] + util_entries(extras.rounds.get(n, {}))
+        blob["util"] = join_fakeout_flashes(blob["util"] + util_entries(extras.rounds.get(n, {})))
         decay_statuses = [e for e in blob["util"] if e.get("status") == "decayed"]
         blob["util"] = statuses_while_alive(blob["util"] + high_tide_slows(blob), blob.get("alive"))
         if any(not e.get("friendly") and e.get("from") != "friendly" for e in decay_statuses):

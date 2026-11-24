@@ -21,7 +21,7 @@ import numpy as np
 from app.control.geometry import see_over_labels
 from app.control.observe import PlayerView, TickRecord
 
-FORMAT = 1
+FORMAT = 2
 
 
 def cache_dir() -> Path:
@@ -78,7 +78,8 @@ class Writer:
                    + (p.own,)
                    for s, p in rec.players.items()}
         events = {side: list(ev) for side, ev in rec.events.items()}
-        self.ticks.append((rec.t, players, diff, gone, events, list(rec.smokes), unknown.geo.n))
+        applied = {side: list(ops) for side, ops in getattr(rec, "applied", {"A": [], "B": []}).items()}
+        self.ticks.append((rec.t, players, diff, gone, events, list(rec.smokes), unknown.geo.n, applied))
         self.logs = unknown.log          # route logs only grow: the last tick's holds every entry any tick used
 
     def close(self, missing: dict | None = None) -> None:
@@ -118,7 +119,7 @@ def replay(path: Path):
         body = pickle.load(f)
     logs, state = body["logs"], {}
     checked_panels = set()
-    for t, players, diff, gone, events, smokes, n in body["ticks"]:
+    for t, players, diff, gone, events, smokes, n, applied in body["ticks"]:
         _restore_panel_immutability(smokes, checked_panels)
         for k in gone:
             state.pop(k, None)
@@ -138,7 +139,7 @@ def replay(path: Path):
                                air=len(f) in (11, 14),
                                floor=f[-2] if len(f) in (11, 14) and not isinstance(f[-2], bool) else None)
                  for s, f in players.items()}
-        yield TickRecord(t, views, unknown, events, smokes), logs
+        yield TickRecord(t, views, unknown, events, smokes, applied), logs
 
 
 def _restore_panel_immutability(smokes, checked):

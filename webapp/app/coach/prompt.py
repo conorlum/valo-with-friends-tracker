@@ -48,6 +48,7 @@ distance in metres from the smoke's centre and its radius), a device's first "tr
 for an ability whose hits the replay records only in part ("none" or "damage only"). "sight_line_s" is seconds of
 enemy sight lines cut, added up over every line, never how long the smoke lasted ("life_s"). Evidence for an instance must be about that instance's round. Every answer is
 recomputed when your report is checked, so only real answers count. Use no other tool and read no file.
+"cleared_m2" is area cleared in m², "located" counts enemies located, "held_back_s" is seconds held back, and "ability_pct" ranks each metric among "ability_n" stored casts of that ability (at least 10).
 
 Each round's "fights" gives the player's guns and the enemy's guns, with sources showing what was held or
 inferred from shots, metres and range verdicts, the alive man count, and whether the player was "lone".

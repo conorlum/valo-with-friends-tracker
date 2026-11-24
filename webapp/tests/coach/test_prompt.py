@@ -1,6 +1,13 @@
 from app.coach import prompt
 from app.coach.playbook import Playbook
 
+
+def test_prompt_explains_the_util_info_figures():
+    text = prompt.run_prompt(BOOK, BRIEF)
+    assert ('"cleared_m2" is area cleared in m², "located" counts enemies located, '
+            '"held_back_s" is seconds held back, and "ability_pct" ranks each metric among '
+            '"ability_n" stored casts of that ability (at least 10).') in text
+
 BOOK = Playbook("4", ("trading", "rotation"), "# Principles\n- Trade your teammate.")
 BRIEF = {"v": 1, "subject": {"name": "Owner#1"}, "match": {"map": "Ascent"}, "rounds": [], "ranked": [],
          "areas": ["A Main"], "data_gaps": {}, "players": []}

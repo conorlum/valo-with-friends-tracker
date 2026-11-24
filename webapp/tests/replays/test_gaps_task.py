@@ -152,7 +152,15 @@ def test_the_notes_carry_the_compute_time_missing_inputs(tmp_path, monkeypatch):
 def test_a_cache_in_another_format_is_a_miss(tmp_path, monkeypatch):
     from app.gaps import cache
     compute_task(_task(tmp_path, monkeypatch))
-    monkeypatch.setattr(cache, "FORMAT", cache.FORMAT + 1)        # the file on disk is now the old format
+    # A v1 header must be a miss, even if the body otherwise looks current.
+    import pickle
+    [path] = tmp_path.glob("*.ticks.pkl.gz")
+    with gzip.open(path, "rb") as stream:
+        head, body = pickle.load(stream), pickle.load(stream)
+    head["format"] = 1
+    with gzip.open(path, "wb") as stream:
+        pickle.dump(head, stream)
+        pickle.dump(body, stream)
     calls = _engine_calls(monkeypatch)
     again = compute_task(_task(tmp_path, monkeypatch, gaps_only=True))
     assert again["gaps"]["run"]["status"] == "ok" and len(calls) == 1

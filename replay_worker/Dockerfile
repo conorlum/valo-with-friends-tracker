@@ -43,6 +43,7 @@ COPY webapp/app/critutil /srv/webapp/app/critutil
 # (Its app/replays sources, the grid and minimap scale behind every area lookup, come with app/replays above.)
 COPY webapp/app/services/__init__.py /srv/webapp/app/services/__init__.py
 COPY webapp/app/services/util_values.py /srv/webapp/app/services/util_values.py
+COPY webapp/app/services/stats_math.py /srv/webapp/app/services/stats_math.py
 COPY webapp/app/services/util_model.py /srv/webapp/app/services/util_model.py
 COPY webapp/app/coach/__init__.py /srv/webapp/app/coach/__init__.py
 COPY webapp/app/coach/areas.py /srv/webapp/app/coach/areas.py

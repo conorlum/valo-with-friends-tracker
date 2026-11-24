@@ -134,6 +134,155 @@ def test_the_build_keeps_the_pages_keys_and_dumps_as_json(passing):
     assert len(out["same_type_overlap"]["flash"]) == 46
 
 
+def test_info_build_counts_zero_but_not_unknown_or_after_decided(passing):
+    stored, ctx = toy_corpus()
+    for m, value in enumerate((0.0, 12.0, 24.0), 1):
+        cast = v2_cast(0, t=8.0, seen_end=11.0, agent="Sova", ability_id="Sova/Recon Bolt",
+                       info={"cleared_m2": value, "located": 0, "hold_s": 0.0})
+        unknown = {**cast, "i": 1, "info": None}
+        old = {k: v for k, v in cast.items() if k != "info"} | {"i": 2}
+        late = {**cast, "i": 3, "t": 41.0, "after_decided": True,
+                "info": {"cleared_m2": 999.0, "located": 1, "hold_s": 0.0}}
+        stored[m] = {1: v2_round([cast, unknown, old, late], t_decided=40.0)}
+    out = replay_util.build_from_rounds(stored, ctx, MODEL, {FRIEND}, painted_table={})
+    (row,) = out["info"]["overall"]["clears"]
+    assert row["ability_id"] == "Sova/Recon Bolt"
+    assert (row["mean"], row["min"], row["max"], row["n"], row["matches"]) == (12.0, 0.0, 24.0, 3, 3)
+    assert row["ci"] == [0.0, 24.0]
+    assert out["info"]["overall"]["holds"] == []
+    assert out["info"]["percentiles"] == {}, "fewer than ten measured casts has no percentile table"
+    assert "info" not in out["rows"][0], "the stored build must not gain per-cast info payloads"
+    assert out["info"]["players"] == {}
+    assert out["info"]["below_bar"] == {str(FRIEND): 1}
+
+
+def test_info_summary_clusters_by_match_and_is_order_independent():
+    from app.critutil import info
+    from app.services.stats_math import cluster_bootstrap_ci
+
+    casts = [{"ability_id": "Cypher/Spycam", "player_id": FRIEND, "match": 1 + i % 3,
+              "info": {"cleared_m2": float(i), "located": 0, "hold_s": float(2 * i)}} for i in range(10)]
+    calls = []
+
+    def ci(fn, groups):
+        calls.append(groups)
+        return cluster_bootstrap_ci(fn, groups)
+
+    out = info.summarise(casts, ci=ci)
+    assert out == info.summarise(reversed(casts), ci=cluster_bootstrap_ci)
+    assert len(calls) == 4  # overall and player, for clears and holds
+    assert sorted(map(len, calls[0].values())) == [3, 3, 4]
+    for key, metric, scale in (("clears", "cleared_m2", 1), ("holds", "hold_s", 2)):
+        (row,) = out["overall"][key]
+        assert row["metric"] == metric
+        assert (row["n"], row["matches"]) == (10, 3)
+        assert (row["mean"], row["min"], row["max"]) == (4.5 * scale, 0.0, 9.0 * scale)
+        points = out["percentiles"]["Cypher/Spycam"][metric]
+        assert len(points) == 101
+        assert points == pytest.approx([9.0 * scale * p / 100 for p in range(101)])
+        assert row["ci"] == list(cluster_bootstrap_ci(
+            lambda groups: sum(map(sum, groups)) / sum(map(len, groups)),
+            {m: [float(scale * i) for i in range(10) if 1 + i % 3 == m] for m in (1, 2, 3)}))
+    assert set(out["players"]) == {str(FRIEND)}
+    assert set(out) == {"overall", "players", "percentiles", "below_bar"}
+
+
+def test_info_summary_size_is_bounded_by_abilities_not_casts():
+    from app.critutil import info
+    from app.services.stats_math import cluster_bootstrap_ci
+
+    cast = {"ability_id": "Cypher/Spycam", "player_id": FRIEND, "match": 1,
+            "info": {"cleared_m2": 0.0, "located": 0, "hold_s": 0.0}}
+    small = info.summarise([cast] * 10, ci=cluster_bootstrap_ci)
+    large = info.summarise([cast] * 1000, ci=cluster_bootstrap_ci)
+    assert len(json.dumps(large)) - len(json.dumps(small)) < 20
+
+
+@pytest.mark.parametrize("n, matches, included", [(9, 3, False), (10, 2, False), (10, 3, True)])
+def test_info_stores_only_d5_player_rows_and_never_bootstraps_below_bar(n, matches, included):
+    from app.critutil import info
+
+    casts = [{"ability_id": "Sova/Recon Bolt", "player_id": FRIEND, "match": 1 + i % matches,
+              "info": info.empty()} for i in range(n)]
+    calls = []
+
+    def ci(fn, groups):
+        calls.append(groups)
+        return (0.0, 0.0)
+
+    out = info.summarise(casts, ci=ci)
+    assert len(calls) == (2 if included else 1), "below-bar player rows must not run a bootstrap"
+    assert out["below_bar"] == ({} if included else {str(FRIEND): 1})
+    assert set(out["players"]) == ({str(FRIEND)} if included else set())
+    if included:
+        (row,) = out["players"][str(FRIEND)]["clears"]
+        assert (row["n"], row["matches"]) == (10, 3)
+
+
+def test_info_fifty_one_cast_opponents_store_only_counts():
+    from app.critutil import info
+
+    casts = [{"ability_id": "Sova/Recon Bolt", "player_id": i, "match": i,
+              "info": info.empty()} for i in range(1, 51)]
+    calls = []
+
+    def ci(fn, groups):
+        calls.append(groups)
+        return (0.0, 0.0)
+
+    out = info.summarise(casts, ci=ci)
+    assert len(calls) == 1, "only the overall row needs a bootstrap"
+    assert out["players"] == {}
+    assert out["below_bar"] == {str(i): 1 for i in range(1, 51)}
+    assert out["overall"]["clears"][0]["n"] == 50
+
+
+def test_info_build_keeps_a_qualifying_linked_account_without_friendships(passing):
+    stored, ctx = toy_corpus()
+    stored = {m: {1: v2_round([
+        v2_cast(i, agent="Sova", ability_id="Sova/Recon Bolt", t=8.0, seen_end=11.0,
+                info={"cleared_m2": 0.0, "located": 0, "hold_s": 0.0})
+        for i in range(4 if m == 1 else 3)])} for m in (1, 2, 3)}
+    out = replay_util.build_from_rounds(stored, ctx, MODEL, friend_players=frozenset(), painted_table={})
+    (row,) = out["info"]["players"][str(FRIEND)]["clears"]
+    assert (row["n"], row["matches"]) == (10, 3)
+    assert out["info"]["below_bar"] == {}
+    assert replay_util.page_for(out, {FRIEND})["info"]["players"][FRIEND]["clears"] == [row]
+
+
+def test_info_player_can_have_both_eligible_rows_and_a_below_bar_count():
+    from app.critutil import info
+
+    casts = [{"ability_id": "Sova/Recon Bolt", "player_id": FRIEND, "match": 1 + i % 3,
+              "info": info.empty()} for i in range(10)]
+    casts.append({"ability_id": "Cypher/Trapwire", "player_id": FRIEND, "match": 4, "info": info.empty()})
+    out = info.summarise(casts, ci=lambda fn, groups: (0.0, 0.0))
+    assert len(out["players"][str(FRIEND)]["clears"]) == 1
+    assert out["players"][str(FRIEND)]["holds"] == []
+    assert out["below_bar"] == {str(FRIEND): 1}
+    page = replay_util.page_for({"rows": [], "info": out}, {FRIEND})["info"]
+    assert set(page["players"]) == {FRIEND}
+    assert page["omitted"] == 1
+
+
+@pytest.mark.parametrize("ability_id, section, name", [
+    ("KAY/O/ZERO/point", "clears", "ZERO/point"),
+    ("KAY/O/FRAG/ment", "holds", "FRAG/ment"),
+])
+def test_info_ability_names_keep_slashes_and_unlinked_players_only_count_overall(ability_id, section, name):
+    from app.critutil import info
+    from app.services.stats_math import cluster_bootstrap_ci
+
+    out = info.summarise([{"ability_id": ability_id, "player_id": None, "match": 1,
+                           "info": info.empty()}], ci=cluster_bootstrap_ci)
+    (row,) = out["overall"][section]
+    assert (row["agent"], row["ability"]) == ("KAY/O", name)
+    assert row["n"] == row["matches"] == 1
+    assert row["mean"] == row["min"] == row["max"] == 0.0
+    assert row["ci"] == [0.0, 0.0]
+    assert out["players"] == {}
+
+
 def test_the_real_gate_builds_and_dumps_too():
     out = build()
     json.dumps(out)

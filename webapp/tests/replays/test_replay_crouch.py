@@ -134,7 +134,8 @@ def test_condenser_attaches_string_slot_keys_and_marks_empty_rounds(tmp_path, st
     # CONDENSE 30: held gun generations. CONDENSE 31: Hush.
     # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
     # CONDENSE 32: overheal and combined decay timelines (R9).
-    assert fmt.CONDENSE_REVISION == 32
+    # CONDENSE 33: the parser's missing hit rows, `src`, `hits_read` / `fired` (W2).
+    assert fmt.CONDENSE_REVISION == 33
 
 
 def test_a_legacy_blob_without_crouch_reads_unchanged():

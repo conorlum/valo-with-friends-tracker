@@ -65,8 +65,9 @@ def test_health_parts_invalidate_the_old_condensed_recipe(monkeypatch):
     # CONDENSE 30: held gun generations. CONDENSE 31: Hush.
     # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
     # R9: CONDENSE 32 stores overheal and combined decay timelines.
-    assert fmt.CONDENSE_REVISION == 32 and fmt.FORMAT_VERSION == 1
-    assert ".c32.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    # CONDENSE 33: the parser's missing hit rows, `src`, `hits_read` / `fired` (W2).
+    assert fmt.CONDENSE_REVISION == 33 and fmt.FORMAT_VERSION == 1
+    assert ".c33.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
     monkeypatch.setattr(fmt, "CONDENSE_REVISION", 31)
     assert fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789") == "2b66c65a7b11.c31.f1.aabcdef01"
 

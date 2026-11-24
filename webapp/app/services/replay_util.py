@@ -19,7 +19,7 @@ from collections import defaultdict
 
 from app.config import settings
 from app.coach import areas
-from app.critutil import abilities, constants
+from app.critutil import abilities, constants, info
 from app.critutil.corpus import (  # re-export the portable build and its helpers
     COMBO_S, COMBO_UV, EXAMPLES_KEPT, FULL_BUY_THRESHOLD, LABELS, MIN_CASTS, NO_LIFT,
     PAGE_VERSION, PISTOL_ROUNDS, SHRINK_K,
@@ -291,6 +291,25 @@ def page_for(corpus: dict, circle: set[int], mode: str = "yours") -> dict:
     out: dict = {"n": len(rows), "fit": corpus.get("fit"), "estimator": corpus.get("estimator"),
                  "overlap": corpus.get("overlap") or {}, "mode": mode,
                  "failing": [L for L in range(1, util_values.MAX_L + 1) if not gate[L - 1]["pass"]] if gate else []}
+    stored_info = corpus.get("info")
+    out["info"] = None
+    if stored_info is not None:
+        friends = {}
+        omitted = sum(n for key, n in stored_info.get("below_bar", {}).items() if int(key) in circle)
+        for key, tables in stored_info["players"].items():
+            pid = int(key)  # JSON object keys are strings in the stored build.
+            if pid not in circle:
+                continue
+            kept = {"clears": [], "holds": []}
+            for section in kept:
+                for row in tables[section]:
+                    if info.friend_row_eligible(row["n"], row["matches"]):
+                        kept[section].append(row)
+                    else:
+                        omitted += 1
+            if any(kept.values()):
+                friends[pid] = kept
+        out["info"] = {"overall": stored_info["overall"], "players": friends, "omitted": omitted}
 
     def compared(r):
         return r[lk] if r.get(lk) is not None and r.get(gk) else None
@@ -452,6 +471,19 @@ def _ult_table(rows):
 # --- the replay viewer's tab
 
 
+def _info_percentiles(summary: dict | None) -> dict:
+    """Only ability-level ranks and sample sizes, shared once by the payload's rounds."""
+    summary = summary or {}
+    out = {}
+    for section, metric in (("clears", "cleared_m2"), ("holds", "hold_s")):
+        for row in (summary.get("overall") or {}).get(section) or ():
+            ability = row["ability_id"]
+            points = ((summary.get("percentiles") or {}).get(ability) or {}).get(metric)
+            if row["n"] >= 10 and points is not None and len(points) == 101:
+                out.setdefault(ability, {})[metric] = {"n": row["n"], "points": points}
+    return out
+
+
 def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) -> dict:
     """The tab's body for one linked replay: each player's casts with values, best and worst, unused util, harm.
     Opponents named by agent.
@@ -557,6 +589,7 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
                         "kills": c.get("kills") or [], "harm": c.get("harm") or [], "effects": c.get("effects") or [],
                         "cover": c.get("cover"), "presence": c.get("presence"), "trigger": c.get("trigger"),
                         "hold": c.get("hold"),
+                        "info": c.get("info"),
                         # where it landed (minimap uv; the thrown piece's spot, not the hand's): the coach names
                         # the area and the smokes around it (app/coach/brief.py util_facts)
                         "u": c.get("u"), "v": c.get("v"),
@@ -573,6 +606,7 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
                               "worst": [pick(r) for r in ranked[:3] if r["value"] < 0],
                               "value": round(100 * sum(r["value"] for r in mine), 2)}
     return {"players": players, "rounds": rounds_out, "summary": summary, "stale": stale,
+            "info": _info_percentiles(corpus.get("info")),
             "failed": sorted(failed), "estimator": bool(model and model.get("n")),
             "weights_fitted": weights != util_values.DEFAULT_WEIGHTS,
             "baseline": bool(corpus.get("rows")), "updating": updating}

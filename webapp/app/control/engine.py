@@ -219,8 +219,13 @@ SUPPRESSED_DEVICE_KINDS = ("trip", "camera", "turret", "area")
 SUPPRESSING_STATUS_ROWS = ("Sequoia_Q_FragileMissile_TrajectoryWarning",)
 SUPPRESSING_REVEAL_S = {"Cashew_4_SonarPing": 8.0}
 from app.replays.format import ARENA_Z_M  # noqa: E402,F401 - keep the public control constant
-# Flown drones: (cone half-angle, range in m or None).
-DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
+# Flown drones: (cone half-angle, range in m or None). Thrash and Tejo's Stealth Drone (revision 28) take their
+# figures from utility.json (provisional).
+DRONES = {"Hunter_E_Drone": (FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5),
+          "Aggrobot_RollyPolly": (utility.FIGURES["drone"]["thrash"]["half_deg"],
+                                  utility.FIGURES["drone"]["thrash"]["range_m"]),
+          "Cashew_4_Spider_LockOn": (utility.FIGURES["drone"]["tejo"]["half_deg"],
+                                     utility.FIGURES["drone"]["tejo"]["range_m"])}
 VIPER_WALL = "Pandemic_E_SmokeScreenManager"   # the condenser's `points` and `on` (extras.py)
 # Ability walls (W14; the 2026-10-05 review items 20, 26-28), each with its condenser keys (extras.py): what blocks
 # sight and what blocks walking are separate properties. Blaze: sight only (it can be walked through). Sage's Barrier
@@ -2700,6 +2705,8 @@ class Unknown:
         # knowledge operations (app/control/utility.py, W09)
         # side -> this tick's display reasons [(t, enemy, kind, reason, source)]: never read by the gap detector
         self.reasons: dict[str, list[tuple[float, int, str, str, str]]] = {"A": [], "B": []}
+        # Reporting only: (cast id, original util row key, kind, enemy slot, footprint node ids).
+        self.applied: dict[str, list[tuple]] = {"A": [], "B": []}
         # side -> enemy -> {source id: node}: a hypothesis's origin, kept through the sliver cleanup
         self.protect: dict[str, dict[int, dict[str, int]]] = {"A": {}, "B": {}}
         self.cleared: dict[str, set[str]] = {"A": set(), "B": set()}      # sources vision has cleared: never again
@@ -2802,9 +2809,20 @@ class Unknown:
         for side in ("A", "B"):
             self.events[side] = []
             self.reasons[side] = []
+            self.applied[side] = []
             self._fresh[side] = set()
             enemies = self._enemies(tick, side)
-            side_infos = [i for i in infos if i.side == side]
+            # Conditional utility is learned only through a living teammate's own view now.
+            # tick.view predates Memory and excludes watchers; neither can witness a tether/decoy.
+            views = getattr(tick, "view", {})
+            side_infos = [i for i in infos if i.side == side and
+                          (i.detail.get("needs_view") is None or any(
+                              h.team == side and (rnd is None or rnd.alive(s, t))
+                              and s in views and views[s][i.detail["needs_view"]]
+                              for s, h in tick.holders.items()))]
+            # A locate's footprint is its enemy's region on the record before this tick, even if
+            # earlier operations or a locating event replace it before the locate is applied.
+            previous = {s: np.isfinite(r) for s, r in self.reached[side].items()} if side_infos else {}
             first_one_of = next((j for j, i in enumerate(side_infos) if i.kind == "one_of"), len(side_infos))
             # Every Info already has its exact analytical instant. Advance all enemies to that instant
             # before resolving side-wide evidence; only operations ordered before it run in this pass.
@@ -2908,7 +2926,8 @@ class Unknown:
                 mine = [i for i in early_infos if i.slot == slot]
                 if mine or slot in self.paused[side]:
                     reached, before, sources, area, centre = self._operate(
-                        side, slot, mine, reached, before, sources, area, centre, since, t, rnd)
+                        side, slot, mine, reached, before, sources, area, centre, since, t, rnd, previous, spotted,
+                        report=slot not in spotted)  # the sighting below overwrites every early operation
                 if h is not None and slot in spotted:
                     reached = np.full(n, np.inf)    # spotted: there, and nowhere else
                     self.seen[side][slot] = (h.cell, t)
@@ -2967,22 +2986,28 @@ class Unknown:
             for info in late_infos:
                 if info.kind == "one_of":
                     fp = utility.footprint(info, self.geo)
-                    # D9: the sound says at least one enemy is in the zone. One already seen there
-                    # explains it, so it says nothing about any other enemy's uncertainty region.
+                    # R11: enemies already seen in the footprint explain that many of the count.
                     # A point locate ordered earlier at this instant counts too; old sightings and
                     # locating areas do not establish that an enemy is still inside the footprint.
-                    if any(fp[node] for node in known.values()):
+                    left = info.count - sum(bool(fp[node]) for node in known.values())
+                    if left <= 0:
                         self.ignored["one_of explained by a seen enemy"] += 1
                         continue
                     candidates = [s for s, state in prepared.items()
-                                  if utility.affects("status", rnd.evolution, s, info.t)
+                                  if not (s in known and fp[known[s]])
+                                  and utility.affects("status", rnd.evolution, s, info.t)
                                   and (np.isfinite(state[0]) & (state[0] <= info.t) & fp).any()]
                     if not candidates:
                         self.ignored["one_of with no candidate"] += 1
+                    if len(candidates) > left and info.mask is not None:
+                        # A mask has no single true point from which to seed a hypothesis.
+                        self.ignored["one_of mask with too many candidates"] += 1
+                        continue
                     derived = [utility.Info(info.t, side, s,
-                                            "restrict" if len(candidates) == 1 else "hypothesis", info.reason,
+                                            "restrict" if len(candidates) <= left else "hypothesis", info.reason,
                                             x=info.x, y=info.y, radius_m=info.radius_m, mask=info.mask,
-                                            source=info.source, seq=info.seq, z=info.z, detail=info.detail)
+                                            source=info.source, seq=info.seq, z=info.z, detail=info.detail,
+                                            cast_id=info.cast_id, row_key=info.row_key)
                                for s in candidates]
                 else:
                     derived = [info] if info.slot in prepared else []
@@ -2992,7 +3017,7 @@ class Unknown:
                     # No time elapses here: equal-time later operations (including another one_of) see
                     # these results, without spreading again or counting a pause interval twice.
                     reached, before, sources, area, centre = self._operate(
-                        side, slot, [operation], reached, before, sources, area, centre, t, t, rnd)
+                        side, slot, [operation], reached, before, sources, area, centre, t, t, rnd, previous, spotted)
                     if (operation.kind == "locate" and operation.t == t
                             and operation.x is not None and operation.y is not None):
                         known[slot] = self.geo.node_at_px(operation.x, operation.y, operation.z)
@@ -3011,7 +3036,7 @@ class Unknown:
         self._prev_t = t
 
     def _operate(self, side: str, slot: int, infos: list, reached: np.ndarray, before: np.ndarray, sources: dict,
-                 area, centre, since: float, t: float, rnd):
+                 area, centre, since: float, t: float, rnd, previous=None, spotted=frozenset(), report=True):
         """Applies the knowledge operations about enemy `slot` in (since, t] in their order (utility.py), and a
         pause's held time. Returns (reached, before, sources, area, centre). An operation that would leave the
         enemy nowhere is ignored and counted: the evidence and the region disagree, and the region is kept."""
@@ -3020,6 +3045,8 @@ class Unknown:
         paused = self.paused[side].get(slot)
         for info in infos:
             te = float(info.t)
+            region = np.isfinite(reached)
+            footprint = None
             if info.kind == "pause":
                 if paused is None:
                     paused = te
@@ -3032,6 +3059,7 @@ class Unknown:
                     self.ignored["locate without a place"] += 1
                     continue
                 node = self.geo.node_at_px(info.x, info.y, info.z)
+                footprint = (previous or {}).get(slot, np.zeros(self.geo.n, bool))
                 reached = np.full(self.geo.n, np.inf)
                 reached[node] = te
                 before = np.full(self.geo.n, np.inf)
@@ -3044,6 +3072,7 @@ class Unknown:
             elif info.kind in ("restrict", "exclude"):
                 fp = utility.footprint(info, self.geo)
                 ruled_out = ~fp if info.kind == "restrict" else fp
+                footprint = ruled_out & region
                 keep = np.isfinite(reached) & ~ruled_out
                 if not keep.any():
                     self.ignored[f"{info.kind} that would leave the enemy nowhere"] += 1
@@ -3080,6 +3109,10 @@ class Unknown:
                     continue
                 reached = np.where(keep, reached, np.inf)
             self.reasons[side].append((te, slot, info.kind, info.reason, info.source))
+            changed = region ^ np.isfinite(reached)
+            if report and changed.any() and not (info.kind == "locate" and slot in spotted):
+                nodes = tuple(np.flatnonzero(changed if footprint is None else footprint).tolist())
+                self.applied[side].append((info.cast_id, info.row_key, info.kind, slot, nodes))
         if paused is not None:
             held += max(0.0, t - max(paused, start))
         if held > 0:

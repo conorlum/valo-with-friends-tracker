@@ -112,6 +112,14 @@ Teammate statuses (revision 22): a `status` row whose ability object put it on a
 see these rows (app/control/engine.py `control_view`); Critical Util counts them as harm
 (app/critutil/extract.py). Only effects naming the object are kept: the caster-container path stays enemies only.
 
+Hit reading (revision 33; app/replays/extras.py `HITS_READ`, `GUID_SOURCES`): an `ability` row whose source's hits are read
+has `"hits_read": true` (an older blob has none, and a row with no hit in it proves nothing), and `"fired": true` when the
+export proves the util went off (the row itself for a Nightfall wave or a Dizzy blast, Thrash's explosion one-shot, a
+Fakeout's flash one-shot). A `status` row of a source in GUID_SOURCES has `"src"`: the id of that source's `ability` row.
+A Fakeout row that flashed has `"flash": {"t", "hits": [enemy slots], ["yaw"]}` (`yaw`: the decoy's facing, map degrees).
+`{"k": "blast", "t", "by", "code": "Hunter", "name": "X_LaserMulti", "hits": [enemy slots], "hits_read": true, "fired": true,
+["u", "v"], ["yaw"], ["final"]}` is one Hunter's Fury blast.
+
 Player state (docs/superpowers/specs/2026-10-06-replay-player-state-design.md; optional, its own version): a
 top-level `"player_state": {"version": 1, "vitals", "damage_taken", "spike", "ult", "orbs", "charges", "overheal",
 "decay"}`, defined and validated by app/replays/player_state.py. `encode_blob` and `decode_blob` keep a normalized
@@ -138,7 +146,11 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 32
+CONDENSE_REVISION = 33
+# 33: the parser's missing hit rows (2026-11-23): Prowler's nearsight, Wingman's concuss, Thrash's detain and Seekers'
+#     nearsight as `status` rows, Hunter's Fury as `blast` rows (hits, origin, aim), a Fakeout's `flash` (hits, facing);
+#     `src` (the source's `ability` id) on every status source a map-control or Critical Util reader tells apart by cast;
+#     `hits_read` / `fired` on the source rows whose hits are now read (R15: only a stamped row can be called a miss).
 # 32: every spike plant attempt, held or let go, in `player_state.plants` (2026-11-18); hits that leave HP or armor
 #     unlisted keep them; `overheal` and `decay` parts; more decay sources (2026-11-18); arena tracks and kill ax/ay;
 #     hold rows name abilities, spike, defuser and flex items (2026-11-21).

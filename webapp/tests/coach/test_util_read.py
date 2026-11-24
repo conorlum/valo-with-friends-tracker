@@ -153,6 +153,53 @@ def test_read_only_never_builds_with_stale_or_missing_products(monkeypatch, excl
     forbidden.assert_not_called()
 
 
+def test_match_payload_carries_only_compact_info_once_without_another_read(monkeypatch):
+    from tests.coach.test_brief import _info_table
+
+    db = Mock()
+    row = SimpleNamespace(round_number=1, gaps_revision=1, fingerprint="fp", status="ok",
+                          data={"casts": []})
+    other_row = SimpleNamespace(round_number=2, gaps_revision=1, fingerprint="fp", status="ok",
+                                data={"casts": []})
+    db.query.return_value.filter.return_value.all.return_value = [row, other_row]
+    replay = SimpleNamespace(id=1, round_count=2)
+    monkeypatch.setattr(snapshot.replays, "page_context", lambda *a: {"players": {}})
+    monkeypatch.setattr(replay_util, "_replay_context", lambda *a: {})
+    monkeypatch.setattr(util_model, "load", lambda db: None)
+    stored_info = _info_table()
+    stored_info["players"] = {"synthetic-player-row": {"clears": [{"n": 40}]}}
+    stored_info["below_bar"] = {"synthetic-player-row": 1}
+    small = _info_table(9, agent="Fade", ability="Nightfall")
+    stored_info["overall"]["clears"].extend(small["overall"]["clears"])
+    values = Mock(return_value=("current", {"info": stored_info,
+                                           "fingerprints": {"1": {"1": "fp", "2": "fp"}}}))
+    monkeypatch.setattr(replay_util, "_values_row", values)
+    monkeypatch.setattr(replay_util, "current_rows", lambda *a, **kw: [])
+    monkeypatch.setattr(replay_util, "corpus_key", lambda *a: "current")
+    monkeypatch.setattr(replay_util, "Freshness", lambda db: SimpleNamespace(current=lambda *a: True))
+    payload = replay_util.match_payload(db, replay, read_only=True)
+    assert payload["info"] == {"Sova/Owl Drone": {
+        metric: {"n": 11, "points": points}
+        for metric, points in stored_info["percentiles"]["Sova/Owl Drone"].items()}}
+    assert all("info" not in rnd for rnd in payload["rounds"].values())
+    assert "synthetic-player-row" not in str(payload)
+    assert "players" not in payload["info"] and "overall" not in payload["info"]
+    values.assert_called_once_with(db)
+
+
+def test_snapshot_read_keeps_payload_wide_info_in_context(reader, monkeypatch):
+    table = {"Sova/Owl Drone": {"hold_s": {"n": 11, "points": [float(p) for p in range(101)]}}}
+    original = replay_util.match_payload
+
+    def payload(*args, **kwargs):
+        return {**original(*args, **kwargs), "info": table}
+
+    monkeypatch.setattr(replay_util, "match_payload", payload)
+    data = reader.read()
+    assert data["context"]["util_info"] == table
+    assert all("info" not in rnd["util"] for rnd in data["rounds"].values())
+
+
 def test_payload_error_is_reported_after_deadline(reader, monkeypatch, caplog):
     monkeypatch.setattr(replay_util, "match_payload", Mock(side_effect=RuntimeError("unreadable utility")))
     with pytest.raises(snapshot.SnapshotError, match="RuntimeError: unreadable utility"):

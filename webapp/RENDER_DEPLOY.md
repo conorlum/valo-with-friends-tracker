@@ -593,6 +593,13 @@ build's inputs. `/health` reports `util.digest`: the digest over every file the 
 or no build is opened (a mismatch over 30 min is a Site health row, `remote:digest`). The worker image copies every
 file the digest covers.
 
+The information-measures release bumps `CONDENSE_REVISION` 32 → 33, `CONTROL_REVISION` 27 → 28 and
+`GAPS_REVISION` 6 → 7 once each; `GAPS_PROTOCOL` stays 3. After deploy, the revision bumps trigger re-parsing,
+then control, gaps and the util build for the refreshed replay. Replays without an archived `.vrf` keep their
+old blob, get no new hit rows and show `info` as unknown. The worker image must ship the changed `app/replays`,
+`app/control` and `app/critutil`, plus `app/services/stats_math.py`; the util build digest changes and must match
+between site and worker.
+
 **What the merge sets off.** On the restart the util-build loop sees util rows that are stale for the new code. Once
 util rows have been quiet for 120 s it pushes what the worker lacks and opens the first build; the site then checks
 and stores it. The local `util_rebuild` child no longer starts on the friends site. Expect the first build to take

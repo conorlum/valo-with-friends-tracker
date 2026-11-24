@@ -33,6 +33,25 @@ CLASSES = {
     "died": "other",
     "omen_channel": "other",
     "hush_suspension": "found",  # heard hit feedback, like a trip or other heard information cue
+    "nightfall_count": "roughly_placed",
+    "dizzy_count": "roughly_placed",
+    "thrash_count": "roughly_placed",
+    "storm_surge_count": "roughly_placed",
+    "nightfall_zero": "ruled_out",
+    "thrash_zero": "ruled_out",
+    "storm_surge_zero": "ruled_out",
+    "prowler_hit": "found",
+    "wingman_hit": "found",
+    "boom_bot_hit": "found",
+    "seekers_hit": "found",
+    "hunters_fury_hit": "found",
+    "seize_hit": "found",
+    "fakeout_direction": "roughly_placed",
+    "prowler_miss": "ruled_out",
+    "wingman_miss": "ruled_out",
+    "boom_bot_miss": "ruled_out",
+    "seekers_miss": "ruled_out",
+    "hunters_fury_miss": "ruled_out",
 }
 
 TWO_KIND = {"haunt", "recon"}

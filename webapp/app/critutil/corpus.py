@@ -17,7 +17,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.critutil.build_digest import KEY_RE  # noqa: F401 - the worker checks keys with the same pattern
+from app.critutil import info
 from app.services import util_model, util_values
+from app.services.stats_math import cluster_bootstrap_ci
 
 
 PAGE_VERSION = 2
@@ -362,7 +364,16 @@ def build_from_rounds(stored: dict, ctx: dict, model, friend_players=frozenset()
         o["casts"] += 1
         level = r.get("base_level")
         o["none" if level is None else "full" if level == util_values.BASE_LEVELS[0] else "fallback"] += 1
-    return {"rows": out_rows, "fit": fit, "ability_prior": ability_prior, "spread": spread_by_mode["all"],
+    def info_casts():
+        # Read only the casts _cast_rows scored. Keep their measures transient: the stored build adds tables,
+        # never another per-cast payload. Unknown info on an old or failed probe stays unknown; zeros count.
+        for row in out_rows:
+            item = _item_of(prepared[row["replay"]][row["round"]], row) or {}
+            yield {"ability_id": item.get("ability_id"), "agent": row["agent"], "ability": row["ability"],
+                   "player_id": row["player_id"], "match": row["match"], "info": info.figure(item)}
+
+    return {"rows": out_rows, "info": info.summarise(info_casts(), ci=cluster_bootstrap_ci),
+            "fit": fit, "ability_prior": ability_prior, "spread": spread_by_mode["all"],
             "spread_by_mode": spread_by_mode, "prior_sums": prior_sums, "overlap": overlap,
             "matches": sorted({ctx[rid]["match_id"] for rid in stored}),
             "gate": {"all": _gate_list(gates["all"]), "yours": _gate_list(gates["yours"]),

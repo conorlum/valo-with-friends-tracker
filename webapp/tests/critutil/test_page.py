@@ -60,6 +60,58 @@ def corpus(rows, personal=None):
             "estimator": {}, "personal": personal or {}}
 
 
+@pytest.mark.parametrize("n, matches, included", [(9, 3, False), (10, 2, False), (10, 3, True)])
+def test_info_friend_rows_need_ten_casts_and_three_matches_after_json(n, matches, included):
+    from app.critutil import info
+    from app.services.stats_math import cluster_bootstrap_ci
+
+    casts = [{"player_id": pid, "match": 1 + i % matches, "ability_id": ability,
+              "info": {"cleared_m2": float(i), "located": 0, "hold_s": float(i)}}
+             for pid in (1, 2) for ability in ("Sova/Recon Bolt", "Cypher/Trapwire", "Cypher/Spycam")
+             for i in range(n)]
+    summary = info.summarise(casts, ci=cluster_bootstrap_ci)
+    assert summary["below_bar"] == ({} if included else {"1": 4, "2": 4})
+    if not included:
+        assert summary["players"] == {}
+    stored = json.loads(json.dumps({"rows": [], "info": summary}))
+    page = replay_util.page_for(stored, {1})["info"]
+    assert page["overall"] == stored["info"]["overall"]
+    assert all(r["n"] == 2 * n and r["matches"] == matches
+               for rows in page["overall"].values() for r in rows)
+    assert page["omitted"] == (0 if included else 4)
+    assert set(page["players"]) == ({1} if included else set())
+    if included:
+        assert {r["ability_id"] for r in page["players"][1]["clears"]} == {"Sova/Recon Bolt", "Cypher/Spycam"}
+        assert {r["ability_id"] for r in page["players"][1]["holds"]} == {"Cypher/Trapwire", "Cypher/Spycam"}
+    assert summary == stored["info"], "page shaping must not mutate the cached build"
+    assert replay_util.page_for(stored, set())["info"]["players"] == {}
+    assert replay_util.page_for(stored, set())["info"]["omitted"] == 0
+
+
+def test_old_build_has_no_info_tables():
+    assert replay_util.page_for(corpus([]), {1})["info"] is None
+
+
+def test_info_omitted_sums_only_the_circle_counts_including_players_without_rows():
+    summary = {"overall": {"clears": [], "holds": []}, "players": {}, "percentiles": {},
+               "below_bar": {"1": 1, "2": 3, "3": 7}}
+    stored = json.loads(json.dumps({"rows": [], "info": summary}))
+    page = replay_util.page_for(stored, {1, 2})["info"]
+    assert page["omitted"] == 4
+    assert page["players"] == {}
+    assert replay_util.page_for(stored, {3})["info"]["omitted"] == 7
+    assert replay_util.page_for(stored, {4})["info"]["omitted"] == 0
+
+
+@pytest.mark.parametrize("n, matches", [(9, 3), (10, 2)])
+def test_info_page_still_guards_below_d5_stored_rows(n, matches):
+    summary = {"overall": {"clears": [], "holds": []}, "percentiles": {},
+               "players": {"1": {"clears": [{"n": n, "matches": matches}], "holds": []}}}
+    page = replay_util.page_for({"rows": [], "info": summary}, {1})["info"]
+    assert page["players"] == {}
+    assert page["omitted"] == 1
+
+
 def test_page_is_friends_only_and_lineups_need_five_casts():
     rows = [row(1, 0.03, i, match=1 + i % 3, rnd=i) for i in range(6)] + [row(2, 0.05, i, rnd=i) for i in range(6)]
     page = replay_util.page_for(corpus(rows), {1})
@@ -164,6 +216,31 @@ console.log(JSON.stringify({expr}));
 """
     return json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, encoding="utf-8",
                                      check=True).stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize("measured, expected", [
+    ({"cleared_m2": 339.6, "located": 2, "hold_s": 0}, ["cleared 340 m², located 2"]),
+    ({"cleared_m2": 339.6, "located": 0, "hold_s": 0}, ["cleared 340 m²"]),
+    ({"cleared_m2": 0, "located": 2, "hold_s": 0}, ["cleared 0 m², located 2"]),
+    ({"cleared_m2": 0, "located": 0, "hold_s": 40.6}, ["held the unknown back 41 s"]),
+    ({"cleared_m2": 339.6, "located": 2, "hold_s": 40.6},
+     ["cleared 340 m², located 2", "held the unknown back 41 s"]),
+    ({"cleared_m2": 0, "located": 0, "hold_s": 0}, []),
+    (None, ["held the unknown back for 99 s"]),
+])
+def test_viewer_info_facts_replace_only_the_old_front_sentence(measured, expected):
+    assert _node("u.facts(rows[0], players)", [{"info": measured, "hold": {"front_s": 99}}]) == expected
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_viewer_old_info_facts_keep_other_hold_measurements():
+    hold = {"front_s": 99, "held_m2s": 200, "up_s": 10, "crossed_s": 3}
+    old, measured = _node("rows.map(r => u.facts(r, players))", [
+        {"hold": hold}, {"hold": hold, "info": {"cleared_m2": 0, "located": 0, "hold_s": 0}}])
+    assert old == ["held the unknown back for 99 s", "held 20 m² no teammate watched",
+                   "the unknown got past it for 3 s"]
+    assert measured == old[1:]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")

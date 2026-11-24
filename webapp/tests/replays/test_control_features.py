@@ -36,6 +36,7 @@ def test_every_committed_maps_control_inputs_and_fingerprint_are_as_recorded():
 def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch, tmp_path):
     from app.control import engine
     from app.replays import control_format
+    from tests.replays.test_control_format import REVISION_28_FIGURES
 
     monkeypatch.setattr(engine, "JUMP_SIGHT", False)
     # The preceding fixture deliberately pinned revision 9, rather than the then-current 21.
@@ -44,9 +45,11 @@ def test_without_jump_the_previous_legacy_fingerprints_are_unchanged(monkeypatch
     # Card #6: regenerate only the 11 reviewed maps whose tags and masks changed;
     # Haven and Icebox retain their previous fingerprints.
     monkeypatch.setattr(control_format, "CONTROL_REVISION", 9)
-    # W11's radius also enters the fingerprint: disable it when checking the older figures.
+    # W11's radius and revision 28's info figures enter the file hash too. Restore the
+    # earlier numeric inputs, using the same figure set as _without_the_info_figures.
     old_utility = json.loads(control_format.UTILITY_FILE.read_text(encoding="utf-8"))
-    old_utility.pop("hush_suspension_radius_m")
+    for name in ("hush_suspension_radius_m",) + REVISION_28_FIGURES:
+        old_utility.pop(name)
     old_path = tmp_path / "utility.json"
     old_path.write_text(json.dumps(old_utility), encoding="utf-8")
     monkeypatch.setattr(control_format, "UTILITY_FILE", old_path)

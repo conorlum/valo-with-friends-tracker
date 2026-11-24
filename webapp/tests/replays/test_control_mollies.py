@@ -662,7 +662,7 @@ def test_the_knowledge_picture_does_not_walk_through_the_fire():
 
 
 def test_cached_and_live_gaps_agree_on_a_molly_round(tmp_path):
-    assert cache.FORMAT == 1, "no gaps cache shape change for the molly rule"
+    assert cache.FORMAT == 2, "cast-operation reporting uses tick cache v2"
     geo = corridor()
     _, players, _, _, _, owner = ROLES[0]
     data = corridor_blob(players, [molly(owner, 1.03)], t_end=8.0)

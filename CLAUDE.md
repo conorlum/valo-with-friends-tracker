@@ -168,11 +168,26 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
   Critical Moments, with its own failure status: who each cast affected, kills on affected enemies, teammates it
   hit, sight lines a smoke cut, enemies held back or waiting at an area cast, a device's trigger, defuses stopped,
   heals that kept someone alive, deaths holding util after engaging first. Stored in `replay_round_util`
-  (migration 0029) under the gap run's keys (`GAPS_REVISION` 5, gap protocol 3: the site and the worker image
+  (migration 0029) under the gap run's keys (`GAPS_REVISION` 7, gap protocol 3: the site and the worker image
   must both speak it, `replay_worker/Dockerfile` ships `app/critutil`). The gap run also steps an unknown probe
   (`app/critutil/unknown.py`): how long each trip, camera, turret or molly held the map-control unknown at its edge.
   Statuses on teammates are kept from `CONDENSE_REVISION` 22, flagged `friendly`; control and Critical Moments
   never see them (`RoundInputs` reads `engine.control_view(blob)`).
+- Per-cast `info` (`app/critutil/unknown.py` `InfoMeasure`, attached by `extract.py`) measures ground cleared
+  (`cleared_m2`), enemies located (`located`) and seconds holding unknown at an edge (`hold_s`). A listed ability
+  that did nothing has zeros; an old row or failed probe has `None` (unknown). Legacy `hold` fields are unchanged.
+  `app/critutil/info.py` `summarise`, called by `corpus.py`, builds per-ability Clears and Holds tables, overall and
+  per friend, with mean, min–max, cast and match counts and a match-clustered 95% interval. Friend rows need at least
+  10 casts over 3 matches; smaller samples are counted. `/util` reads these through `replay_util.page_for`; the
+  replay tab shows the per-cast figures. The coach receives these as `cleared_m2`, `located`, `held_back_s`,
+  `ability_pct` and `ability_n` (`app/coach/brief.py`, `checker.py`, `prompt.py`, `snapshot.py`).
+- Information readers (`app/control/utility.py`) include Nightfall, Dizzy, Thrash's detain, Storm Surge, creatures,
+  Hunter's Fury, Seize and Fakeout; Seize and Fakeout require a living teammate's sight. Thrash and Tejo's drone are
+  flown drones. `app/replays/extras.py` supplies new hit rows and source stamps (`src`, `hits_read`, `fired`).
+  `ZERO_HIT_EXCLUDES` gates zero-hit exclusions; `CREATURE_MISSES` gates creature misses and is off for Prowler,
+  Wingman and Seekers after measured false clears exceeded 5%. Boom Bot stays hits-only. A fired Dizzy counts at
+  least one enemy in its sight and never rules ground out. New footprints in `app/control/utility.json` are
+  provisional, wiki-sourced where available.
 - Values are the site's (`app/services/util_values.py`): the change in the caster's side's round-win chance.
   Kills go through one ledger per round, each kill's swing split once between the casts with evidence on it and
   the gunplay. Jobs with no kill (cover, hold, stall, triggers, heals, soft teammate harm) go through a few

@@ -102,7 +102,16 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 26 (2026-11-15): side-wide one_of knowledge, Hush's Suspension hit feedback and radius.
           26: "49348445456575af",
           # 27 (2026-11-18): plant attempt starts reuse spike taps; constants are unchanged from 26.
-          27: "49348445456575af"}
+          27: "49348445456575af",
+          # 28 (2026-11-23): Thrash and Tejo's drone are flown drones (DRONES), and utility.json's footprint figures
+          # for the util-info-value readers (provisional, wiki-sourced where the wiki has one).
+          # Re-pinned in place for the four anonymous count readers and their unmatched-hit window (W5).
+          # Re-pinned for creature hits/misses, per-source switches and Hunter's Fury blasts (W6).
+          # Re-pinned for Seize/Fakeout evidence conditional on a living teammate's view (W7).
+          # Re-pinned for W9's measured creature switches (Prowler, Wingman and Seekers misses off, R14).
+          # Re-pinned for W5.1: Dizzy's firing counts and never excludes, Nightfall's wave speed and delay,
+          # the per-source zero-hit switch (ZERO_HIT_EXCLUDES) and Dizzy's firing moment.
+          28: "6a8765e864d1162a"}
 
 
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
@@ -213,9 +222,75 @@ REVISION_25_CONSTANTS = ("DAMAGE_ZONE_LIFE_S", "SUPPRESSED_DEVICE_KINDS", "SUPPR
                          "SUPPRESSING_REVEAL_S", "ARENA_Z_M")
 
 
+# Revision 28 (W3): the footprint figures of the util-info-value build and the two flown drones they add to DRONES.
+REVISION_28_FIGURES = ("drone", "creature", "hunters_fury", "nightfall", "dizzy_range_m", "thrash_detain_radius_m",
+                       "storm_surge_radius_m", "storm_surge_hearing_m", "fakeout")
+REVISION_27_DRONES = {"Hunter_E_Drone": (ce.FOV_HALF, None), "Guide_Q_PossessableScout": (45.0, 22.5)}
+REVISION_27_READERS = ("read_reveals", "read_pulses", "read_knives", "read_skye_flashes", "read_leers",
+                       "read_omen_ults", "read_waylay_recalls", "read_hush_suspensions")
+
+
+def _without_the_info_figures(monkeypatch):
+    _without_creature_and_fury_readers(monkeypatch)
+    for name in REVISION_28_FIGURES:
+        monkeypatch.delitem(ut.FIGURES, name)
+    monkeypatch.setattr(ce, "DRONES", dict(REVISION_27_DRONES))
+    monkeypatch.setattr(ut, "READERS", REVISION_27_READERS)
+    monkeypatch.delattr(ut, "UNMATCHED_HIT_WINDOW_S")
+
+
+def _without_creature_and_fury_readers(monkeypatch):
+    _without_seen_util_readers(monkeypatch)
+    monkeypatch.setattr(ut, "READERS", REVISION_27_READERS + ("read_nightfall_counts", "read_dizzy_counts",
+                                                          "read_thrash_detains", "read_storm_surges"))
+    monkeypatch.delattr(ut, "CREATURE_MISSES")
+
+
+def _without_seen_util_readers(monkeypatch):
+    monkeypatch.setattr(ut, "READERS", REVISION_27_READERS + ("read_nightfall_counts", "read_dizzy_counts",
+                                                          "read_thrash_detains", "read_storm_surges",
+                                                          "read_creatures", "read_hunters_fury"))
+    # W9: the digest before the false-clear probe had every creature's misses on
+    monkeypatch.setattr(ut, "CREATURE_MISSES", dict.fromkeys(ut.CREATURE_MISSES, True))
+    # W5.1: the digest before the per-source zero-hit switch and Nightfall's wave timing (utility.json)
+    monkeypatch.delattr(ut, "ZERO_HIT_EXCLUDES")
+    monkeypatch.delattr(ut, "DIZZY_SHOT_WINDOW_S")
+    monkeypatch.delattr(ut, "DIZZY_FIRE_S")
+    monkeypatch.setitem(ut.FIGURES, "nightfall", {"length_m": 40.0, "width_m": 20.0})
+
+
+def test_without_seen_util_readers_the_previous_revision_28_digest_is_unchanged(monkeypatch):
+    _without_seen_util_readers(monkeypatch)
+    assert _constants_digest() == "ceeeff67b91a7099"
+
+
+def test_without_creature_and_fury_readers_the_previous_revision_28_digest_is_unchanged(monkeypatch):
+    _without_creature_and_fury_readers(monkeypatch)
+    assert _constants_digest() == "0b5b2db7287aafad"
+
+
+def test_without_count_readers_the_previous_revision_28_digest_is_unchanged(monkeypatch):
+    _without_creature_and_fury_readers(monkeypatch)
+    monkeypatch.setattr(ut, "READERS", REVISION_27_READERS)
+    monkeypatch.delattr(ut, "UNMATCHED_HIT_WINDOW_S")
+    assert _constants_digest() == "b79b5c526e32842a"
+
+
+def test_without_unmatched_hit_window_the_previous_count_reader_digest_is_unchanged(monkeypatch):
+    _without_creature_and_fury_readers(monkeypatch)
+    monkeypatch.delattr(ut, "UNMATCHED_HIT_WINDOW_S")
+    assert _constants_digest() == "bdb5fe481df2e81e"
+
+
+def test_without_the_info_figures_the_revision_27_digest_is_unchanged(monkeypatch):
+    _without_the_info_figures(monkeypatch)
+    assert _constants_digest() == PINNED[27]
+
+
 def _without_the_suspension(monkeypatch):
     # W10's airborne constants also enter this digest. Historical revisions predate them;
     # HEIGHT_RULES_REVISION is not read here and stays at 9 for the current height build.
+    _without_the_info_figures(monkeypatch)
     monkeypatch.delattr(hc, "AIRBORNE_STATUSES", raising=False)
     monkeypatch.setattr(hc, "AIRBORNE_ABILITIES", ("Wushu_Q_CycloneBoost", "Wushu_E_Dash",
                                                 "Terra_Q_DoubleDash", "Clay_Q_Explosion"))
@@ -234,7 +309,9 @@ def test_without_the_suspension_the_revision_25_digest_is_unchanged(monkeypatch)
 
 def test_control_suspension_readers_are_pinned():
     assert ut.READERS == ("read_reveals", "read_pulses", "read_knives", "read_skye_flashes", "read_leers",
-                          "read_omen_ults", "read_waylay_recalls", "read_hush_suspensions")
+                          "read_omen_ults", "read_waylay_recalls", "read_hush_suspensions",
+                          "read_nightfall_counts", "read_dizzy_counts", "read_thrash_detains", "read_storm_surges",
+                          "read_creatures", "read_hunters_fury", "read_seize", "read_fakeout")
 
 
 def _without_the_suppression_sources(monkeypatch):

@@ -6,6 +6,48 @@ from tests.coach.test_areas import NAMES, painted_object, write_paint
 from tests.coach.test_snapshot import CONTEXT
 
 THEMES = ("trading", "rotation")
+
+
+@pytest.mark.parametrize("metric", ["cleared_m2", "hold_s"])
+@pytest.mark.parametrize("field", ["title", "body", "caption"])
+@pytest.mark.parametrize("claim, valid", [("34th percentile", True), ("99th percentile", False),
+                                         ("percentile 34", True), ("percentile 99", False),
+                                         ("11th percentile", False), ("2nd cast", True)])
+def test_percentile_claims_need_cited_ability_ranks(snap, metric, field, claim, valid):
+    fact = {"round": 1, "t": 10, "ability_pct": {metric: 34}, "ability_n": {metric: 11}, "located": 99}
+    log = {"u": flag_entry([1, 10, "util_fact"], fact)}
+    fields = {"title": "Utility use", "body": "Utility used.", "caption": "Utility used."}
+    fields[field] = f"This was the {claim}."
+    instances = [{"round": 1, "t": 10, "caption": fields.pop("caption"), "evidence": ["u"]}]
+    assert bool(problems(snap, log, polarity="good", instances=instances, **fields)) is (not valid)
+
+
+@pytest.mark.parametrize("body", [
+    "You cleared 340 m².", "You cleared 340m².", "You located 2 enemies.",
+    "You held them back for 6.5 s.", "That was at percentile 34 among 11 casts.",
+])
+def test_util_info_figures_ground_cited_points(snap, body):
+    fact = {"round": 1, "t": 10, "cleared_m2": 340, "located": 2, "held_back_s": 6.5,
+            "ability_pct": {"cleared_m2": 34, "hold_s": 65},
+            "ability_n": {"cleared_m2": 11, "hold_s": 11}}
+    log = {"u": flag_entry([1, 10, "util_fact"], fact)}
+    instances = [{"round": 1, "t": 10, "caption": "", "evidence": ["u"]}]
+    assert problems(snap, log, polarity="good", body=body, instances=instances) == []
+
+
+@pytest.mark.parametrize("body", [
+    "You cleared 341 m².", "You located 3 enemies.", "You held them back for 7.5 s.",
+    "That was at percentile 35 among 11 casts.", "That was at percentile 34 among 12 casts.",
+    "You cleared 6.5 m².", "You stood 340 m away.", "You held them back for 340 s.",
+    "You held them back for 34 s.", "You held them back for 11 s.", "You cleared 34 m².",
+])
+def test_util_info_wrong_figure_or_unit_is_refused(snap, body):
+    fact = {"round": 1, "t": 10, "cleared_m2": 340, "located": 2, "held_back_s": 6.5,
+            "ability_pct": {"cleared_m2": 34, "hold_s": 34},
+            "ability_n": {"cleared_m2": 11, "hold_s": 11}}
+    log = {"u": flag_entry([1, 10, "util_fact"], fact)}
+    instances = [{"round": 1, "t": 10, "caption": "", "evidence": ["u"]}]
+    assert problems(snap, log, polarity="good", body=body, instances=instances)
 KNEW = {"A": {"5": [[5.0, 12.0, 8000, 8000]]}, "B": {}}     # side A has P5 in view from 5 s to 12 s
 SHARES = {"t": [0.0], "cells": {}, "areas": {}, "knew": KNEW, "group_side": None}
 

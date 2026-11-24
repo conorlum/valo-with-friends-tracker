@@ -49,7 +49,10 @@ def util_page(request: Request, db: Session = Depends(get_db), mode: str = "your
         c["name"] = names.get(c["player_id"], "?")
     players = sorted(({"name": names.get(pid, "?"), **block} for pid, block in page["players"].items()),
                      key=lambda p: (p["name"] != names.get(viewer.id), p["name"].lower()))
+    info_players = sorted(({"name": names.get(pid, "?"), **block}
+                           for pid, block in page["info"]["players"].items()),
+                          key=lambda p: (p["name"] != names.get(viewer.id), p["name"].lower())) if page["info"] else []
     return templates.TemplateResponse(request, "util/page.html", {
         "page": page, "players": players, "thin_note": THIN_NOTE, "phase_words": PHASE_WORDS, "login_note": None,
-        "mode": mode, "updating_note": None if current else UPDATING_NOTE,
+        "mode": mode, "updating_note": None if current else UPDATING_NOTE, "info_players": info_players,
     })
