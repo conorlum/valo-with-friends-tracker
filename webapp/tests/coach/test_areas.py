@@ -130,6 +130,128 @@ def test_export_is_deterministic():
     assert json.loads(areas.dumps(obj)) == obj
 
 
+def test_also_parents_validate_and_round_trip():
+    obj = painted_object({0: 2})
+    obj["names"][1]["also_parents"] = [3]
+    assert areas.validate(obj) == []
+    encoded = areas.dumps(obj)
+    assert json.loads(encoded) == obj
+    child = json.loads(encoded)["names"][1]
+    assert list(child) == ["id", "name", "parent", "also_parents", "super", "super_source"]
+    assert areas.validate(json.loads(encoded)) == []
+
+
+@pytest.mark.parametrize("parents", [[3, 3], [1], [2], [99], [], ["3"], [True], [0], [-1], [3.0], None, 3])
+def test_invalid_also_parents_are_refused(parents):
+    obj = painted_object({0: 2})
+    obj["names"][1]["also_parents"] = parents
+    assert any("also_parents" in problem for problem in areas.validate(obj))
+
+
+def test_also_parents_on_root_are_refused():
+    obj = painted_object({})
+    obj["names"][0]["also_parents"] = [3]
+    assert any("also_parents" in problem for problem in areas.validate(obj))
+
+
+def test_cycle_through_also_parents_is_refused():
+    obj = painted_object({})
+    obj["names"].append({"id": 4, "name": "Lower Mid", "parent": 1,
+                         "also_parents": [2], "super": "Mid", "super_source": "auto"})
+    obj["names"][1]["also_parents"] = [4]
+    assert any("cycle" in problem for problem in areas.validate(obj))
+
+
+def test_fourth_level_only_through_also_parents_is_refused():
+    obj = painted_object({})
+    obj["names"].extend([
+        {"id": 4, "name": "A Upper", "parent": 3, "super": "A", "super_source": "auto"},
+        {"id": 5, "name": "A Ledge", "parent": 4, "super": "A", "super_source": "auto"},
+    ])
+    obj["names"][1]["also_parents"] = [5]
+    assert any("more than three levels" in problem for problem in areas.validate(obj))
+    obj["names"][1]["also_parents"] = [4]
+    assert areas.validate(obj) == []
+
+
+def test_export_without_also_parents_preserves_literal_bytes():
+    obj = painted_object({}, names=[NAMES[0]])
+    assert areas.validate(obj) == []
+    assert areas.dumps(obj) == '''{
+ "version": 1,
+ "map": "Sunset",
+ "reviewed": true,
+ "names": [
+  {
+   "id": 1,
+   "name": "Mid",
+   "parent": null,
+   "super": "Mid",
+   "super_source": "auto"
+  }
+ ],
+ "cells": [
+  [
+   0,
+   16384
+  ]
+ ],
+ "bands": {}
+}
+'''
+
+
+def test_area_and_tree_expose_also_parents(tmp_path):
+    obj = painted_object({0: 2, 1: 4})
+    obj["names"][1]["also_parents"] = [3]
+    obj["names"].append({"id": 4, "name": "Lower Mid", "parent": 1,
+                         "super": "Mid", "super_source": "auto"})
+    write_paint(tmp_path, obj)
+    painted = areas.load_painted("Sunset", tmp_path)
+    assert painted.ancestors == {1: frozenset({1}), 2: frozenset({1, 2, 3}),
+                                 3: frozenset({3}), 4: frozenset({1, 4})}
+    assert areas.area_at("Sunset", 0, 0, areas_dir=tmp_path) == {
+        "name": "Top Mid", "super": "Mid", "path": ["Mid", "Top Mid"],
+        "approximate": False, "also": ["A Site"],
+    }
+    assert "also" not in areas.area_at("Sunset", fmt.UV_SCALE / cf.GRID, 0, areas_dir=tmp_path)
+    assert areas.tree("Sunset", tmp_path) == [
+        {"name": "Mid", "parent": None, "super": "Mid"},
+        {"name": "Top Mid", "parent": "Mid", "also_parents": ["A Site"], "super": "Mid"},
+        {"name": "A Site", "parent": None, "super": "A"},
+        {"name": "Lower Mid", "parent": "Mid", "super": "Mid"},
+    ]
+
+
+def test_all_ancestors_are_inherited_and_sorted_by_name(tmp_path):
+    obj = painted_object({0: 5})
+    obj["names"][1]["also_parents"] = [3]
+    obj["names"].extend([
+        {"id": 4, "name": "B Site", "parent": None, "super": "B", "super_source": "set"},
+        {"id": 5, "name": "Mid Ledge", "parent": 1, "also_parents": [4, 2],
+         "super": "Mid", "super_source": "auto"},
+    ])
+    assert areas.validate(obj) == []
+    assert json.loads(areas.dumps(obj))["names"][4]["also_parents"] == [2, 4]
+    assert obj["names"][4]["also_parents"] == [4, 2]
+    write_paint(tmp_path, obj)
+    assert areas.load_painted("Sunset", tmp_path).ancestors[5] == frozenset({1, 2, 3, 4, 5})
+    assert areas.area_at("Sunset", 0, 0, areas_dir=tmp_path) == {
+        "name": "Mid Ledge", "super": "Mid", "path": ["Mid", "Mid Ledge"],
+        "approximate": False, "also": ["A Site", "B Site", "Top Mid"],
+    }
+    assert areas.tree("Sunset", tmp_path)[4]["also_parents"] == ["B Site", "Top Mid"]
+
+
+def test_parent_already_in_first_path_adds_no_also_key(tmp_path):
+    obj = painted_object({0: 4})
+    obj["names"].append({"id": 4, "name": "Mid Ledge", "parent": 2, "also_parents": [1],
+                         "super": "Mid", "super_source": "auto"})
+    assert areas.validate(obj) == []
+    write_paint(tmp_path, obj)
+    assert "also" not in areas.area_at("Sunset", 0, 0, areas_dir=tmp_path)
+
+
 @pytest.mark.parametrize("upper_lo", [19, 20])
 def test_differently_named_floor_bands_cannot_overlap_inclusively(upper_lo):
     obj = painted_object({0: 1}, bands={"0": [[0, 20, 1], [upper_lo, 40, 2]]})
