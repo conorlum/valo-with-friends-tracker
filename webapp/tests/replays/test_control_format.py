@@ -106,7 +106,8 @@ PINNED = {1: "956a0fb740a1cee8", 2: "8e37c7fd96bbfc68", 3: "fca2f5ec6baeb745", 4
           # 28 (2026-11-23): Thrash and Tejo's drone are flown drones (DRONES), and utility.json's footprint figures
           # for the util-info-value readers (provisional, wiki-sourced where the wiki has one).
           # Re-pinned in place for the four anonymous count readers and their unmatched-hit window (W5).
-          28: "0b5b2db7287aafad"}
+          # Re-pinned for creature hits/misses, per-source switches and Hunter's Fury blasts (W6).
+          28: "ceeeff67b91a7099"}
 
 
 # heights.py constants only the height build reads (box_tops.judge from height_build.build): they move
@@ -226,6 +227,7 @@ REVISION_27_READERS = ("read_reveals", "read_pulses", "read_knives", "read_skye_
 
 
 def _without_the_info_figures(monkeypatch):
+    _without_creature_and_fury_readers(monkeypatch)
     for name in REVISION_28_FIGURES:
         monkeypatch.delitem(ut.FIGURES, name)
     monkeypatch.setattr(ce, "DRONES", dict(REVISION_27_DRONES))
@@ -233,13 +235,26 @@ def _without_the_info_figures(monkeypatch):
     monkeypatch.delattr(ut, "UNMATCHED_HIT_WINDOW_S")
 
 
+def _without_creature_and_fury_readers(monkeypatch):
+    monkeypatch.setattr(ut, "READERS", REVISION_27_READERS + ("read_nightfall_counts", "read_dizzy_counts",
+                                                          "read_thrash_detains", "read_storm_surges"))
+    monkeypatch.delattr(ut, "CREATURE_MISSES")
+
+
+def test_without_creature_and_fury_readers_the_previous_revision_28_digest_is_unchanged(monkeypatch):
+    _without_creature_and_fury_readers(monkeypatch)
+    assert _constants_digest() == "0b5b2db7287aafad"
+
+
 def test_without_count_readers_the_previous_revision_28_digest_is_unchanged(monkeypatch):
+    _without_creature_and_fury_readers(monkeypatch)
     monkeypatch.setattr(ut, "READERS", REVISION_27_READERS)
     monkeypatch.delattr(ut, "UNMATCHED_HIT_WINDOW_S")
     assert _constants_digest() == "b79b5c526e32842a"
 
 
 def test_without_unmatched_hit_window_the_previous_count_reader_digest_is_unchanged(monkeypatch):
+    _without_creature_and_fury_readers(monkeypatch)
     monkeypatch.delattr(ut, "UNMATCHED_HIT_WINDOW_S")
     assert _constants_digest() == "bdb5fe481df2e81e"
 
@@ -272,7 +287,8 @@ def test_without_the_suspension_the_revision_25_digest_is_unchanged(monkeypatch)
 def test_control_suspension_readers_are_pinned():
     assert ut.READERS == ("read_reveals", "read_pulses", "read_knives", "read_skye_flashes", "read_leers",
                           "read_omen_ults", "read_waylay_recalls", "read_hush_suspensions",
-                          "read_nightfall_counts", "read_dizzy_counts", "read_thrash_detains", "read_storm_surges")
+                          "read_nightfall_counts", "read_dizzy_counts", "read_thrash_detains", "read_storm_surges",
+                          "read_creatures", "read_hunters_fury")
 
 
 def _without_the_suppression_sources(monkeypatch):

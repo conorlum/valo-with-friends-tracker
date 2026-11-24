@@ -46,6 +46,223 @@ def hall_round(t_end=8.0, more=None):
     return blob(players, t_end=t_end)
 
 
+CREATURES = {
+    "prowler": ("BountyHunter", "4_WolfHound", "nearsighted"),
+    "wingman": ("Aggrobot", "SeekerNade", "concussed"),
+    "boom_bot": ("Clay", "E_Boomba", None),
+    "seekers": ("Guide", "X_Pack", "nearsighted"),
+}
+
+
+def creature_round(source="prowler", target=None, geo=None, *, hit_t=1.25):
+    code, name, status = CREATURES[source]
+    cast = toy_ability(code, name, 128, 200, 0, t=.2, t1=2.2, kind="Pawn", id=41,
+                       hits_read=True, path=[[.2, *uv(128, 200)], [2.2, *uv(160, 200)]],
+                       yaws=[[.2, 0], [1.5, 180]])
+    rows = [cast]
+    if target is not None:
+        if status is None:
+            # Damage causes use id, while src retains its generic damage category.
+            rows.append({"k": "damage", "t": hit_t, "t1": hit_t, "by": 0, "target": target,
+                         "src": "ability", "id": 41, "code": code, "name": name,
+                         "from": "causer", "n": 1, "wall": False})
+        else:
+            rows.append({"k": "status", "t": hit_t, "t1": hit_t + 1, "by": 0,
+                         "target": target, "code": code, "name": name, "status": status,
+                         "from": "force", "src": 41})
+    b = hall_round(more={6: ("B", [(0., 300, 200, 0)])})
+    b["util"] = rows
+    return ce.RoundInputs(b, geo or open_hall(), infos=[])
+
+
+@pytest.mark.parametrize("source", CREATURES)
+def test_creature_miss_uses_tick_multiples_and_adds_no_frames(source):
+    rnd = creature_round(source)
+    operations = ut.read_creatures(rnd)
+    assert [(i.t, i.slot) for i in operations] == [(t, s) for t in (.5, 1., 1.5, 2.) for s in (5, 6)]
+    assert all(i.kind == "exclude" and i.detail["needs"] == "status" for i in operations)
+    assert all(i.cast_id == 41 and i.row_key == ut._identity(rnd.blob["util"][0])["row_key"]
+               for i in operations)
+    old = copy.deepcopy(rnd.blob)
+    old["util"][0].pop("hits_read")
+    np.testing.assert_array_equal(rnd.tick_times(), ce.RoundInputs(old, rnd.geo).tick_times())
+    assert any(i.reason == source + "_miss" for i in ce.RoundInputs(rnd.blob, rnd.geo).infos)
+    # The stored yaw turns west, while the path keeps moving east.
+    front = rnd.geo.node_at_px(200, 200)
+    assert operations[0].mask[front] and not operations[-1].mask[front]
+    assert not operations[0].mask[rnd.geo.node_at_px(400, 200)]  # beyond every creature's range
+
+
+@pytest.mark.parametrize("source", CREATURES)
+def test_creature_cone_stops_at_wall_and_uses_smokes_at_each_step(source, monkeypatch):
+    rnd = creature_round(source, geo=door_hall())
+    operations = ut.read_creatures(rnd)
+    assert any(i.mask.any() for i in operations)
+    assert not any((i.mask & (rnd.geo.centres[:, 0] > 216)).any() for i in operations)
+    times = []
+    original = rnd.smokes_at
+
+    def smokes_at(t):
+        times.append(t)
+        return original(t)
+
+    monkeypatch.setattr(rnd, "smokes_at", smokes_at)
+    original_cast = ce.cast
+
+    def smoky_cast(*args, **kwargs):
+        mask = original_cast(*args, **kwargs)
+        return mask if times[-1] < 1 else np.zeros_like(mask)
+
+    monkeypatch.setattr(ce, "cast", smoky_cast)
+    assert {i.t for i in ut.read_creatures(rnd)} == {.5}
+    assert times == [.5, 1., 1.5, 2.]
+
+
+@pytest.mark.parametrize("source", CREATURES)
+def test_creature_hit_locates_and_stops_misses_without_using_later_victim(source):
+    first, second = creature_round(source, 5), creature_round(source, 6)
+    operations = ut.read_creatures(first)
+    [hit] = [i for i in operations if i.kind == "locate"]
+    assert (hit.t, hit.slot, hit.cast_id) == (1.25, 5, 41)
+    assert (hit.x, hit.y) == pytest.approx(first.pos(5, 1.25)[:2])
+    assert hit.row_key == ut._identity(first.blob["util"][0])["row_key"]
+    misses = [i for i in operations if i.kind == "exclude"]
+    other = [i for i in ut.read_creatures(second) if i.kind == "exclude"]
+    assert [(i.t, i.slot) for i in misses] == [(.5, 5), (.5, 6), (1., 5), (1., 6)]
+    assert [(i.t, i.slot) for i in misses] == [(i.t, i.slot) for i in other]
+    for a, b in zip(misses, other):
+        np.testing.assert_array_equal(a.mask, b.mask)
+    at_step = creature_round(source, 5, hit_t=1.)
+    assert all(i.t < 1. for i in ut.read_creatures(at_step) if i.kind == "exclude")
+
+
+@pytest.mark.parametrize("source", CREATURES)
+@pytest.mark.parametrize("proof", ["old", "false", "off"])
+def test_creature_without_miss_proof_or_switch_keeps_hits_only(source, proof, monkeypatch):
+    rnd = creature_round(source, 5)
+    if proof == "old":
+        rnd.blob["util"][0].pop("hits_read")
+    elif proof == "false":
+        rnd.blob["util"][0]["hits_read"] = False
+    else:
+        monkeypatch.setitem(ut.CREATURE_MISSES, source, False)
+    [hit] = ut.read_creatures(rnd)
+    assert hit.kind == "locate" and hit.slot == 5
+    rnd.blob["util"].pop()
+    assert ut.read_creatures(rnd) == []
+
+
+@pytest.mark.parametrize("source", CREATURES)
+def test_creature_misses_use_only_enemies_live_at_step_and_preserve_evolution(source):
+    rnd = creature_round(source)
+    rnd.blob["alive"]["5"] = [[0., .75, "kill"]]
+    next(p for p in rnd.blob["players"] if p["slot"] == 6)["agent"] = "Veto"
+    rnd.blob["util"].append({"k": "buff", "t": 0., "t1": 8., "by": 6, "target": 6,
+                             "code": "Pine", "name": "X_Evolution"})
+    admitted = ce.RoundInputs(rnd.blob, rnd.geo).infos
+    assert [(i.t, i.slot) for i in admitted] == [(.5, 5)]
+    _, actual = suspension_unknown(admitted, (180, 180), immune=(6,), t=.5)
+    _, baseline = suspension_unknown([], (180, 180), immune=(6,), t=.5)
+    np.testing.assert_array_equal(actual.reached["A"][6], baseline.reached["A"][6])
+
+
+@pytest.mark.parametrize("source", ["prowler", "wingman", "seekers"])
+@pytest.mark.parametrize("matched", [False, True])
+def test_creature_unmatched_hit_blocks_nearby_same_owner_source_misses(source, matched):
+    rnd = creature_round(source, 5)
+    hit = rnd.blob["util"][-1]
+    rnd.blob["util"].append(dict(hit, src=999, target=6))
+    if not matched:
+        rnd.blob["util"].remove(hit)
+    assert all(i.kind == "locate" for i in ut.read_creatures(rnd))
+    assert ut.read_creatures(rnd)
+    # An unjoined hit belonging to another owner cannot silence this creature.
+    rnd.blob["util"][-1]["by"] = 6
+    assert any(i.kind == "exclude" for i in ut.read_creatures(rnd))
+
+
+def test_boom_bot_damage_requires_exact_source_id():
+    rnd = creature_round("boom_bot", 5)
+    rnd.blob["util"][0].pop("hits_read")  # the actual W2 parser shape
+    assert [i.kind for i in ut.read_creatures(rnd)] == ["locate"]
+    rnd.blob["util"][-1]["id"] = 999
+    assert ut.read_creatures(rnd) == []
+
+
+def test_creature_cone_is_blocked_by_smoke_only_while_it_is_up():
+    rnd = creature_round()
+    rnd.blob["util"].append(toy_ability("Wraith", "4_Smoke", 184, 200, 0, t=.75, t1=1.25))
+    rnd = ce.RoundInputs(rnd.blob, rnd.geo)
+    operations = ut.read_creatures(rnd)
+    ahead = rnd.geo.node_at_px(200, 200)
+    assert next(i for i in operations if i.t == .5).mask[ahead]
+    assert not next(i for i in operations if i.t == 1.).mask[ahead]
+
+
+@pytest.mark.parametrize("missing", ["path", "yaws"])
+def test_creature_without_path_or_heading_keeps_hits_only(missing):
+    rnd = creature_round(target=5)
+    rnd.blob["util"][0].pop(missing)
+    [hit] = ut.read_creatures(rnd)
+    assert hit.kind == "locate" and hit.slot == 5
+
+
+def test_creature_miss_includes_final_path_sample_inside_source_lifetime():
+    rnd = creature_round()
+    rnd.blob["util"][0]["path"][-1][0] = 2.
+    assert {i.t for i in ut.read_creatures(rnd)} == {.5, 1., 1.5, 2.}
+
+
+def fury_round(**changes):
+    row = {"k": "blast", "t": 1.25, "by": 0, "code": "Hunter", "name": "X_LaserMulti",
+           "hits": [5], "hits_read": True, "fired": True, "u": uv(128, 200)[0],
+           "v": uv(128, 200)[1], "yaw": 0, "final": False, **changes}
+    b = hall_round(more={6: ("B", [(0., 300, 200, 0)])})
+    b["util"] = [row]
+    return ce.RoundInputs(b, door_hall(), infos=[])
+
+
+def test_fury_locates_hit_and_excludes_strip_for_other_enemies_through_wall():
+    rnd = fury_round()
+    hit, miss = ut.read_hunters_fury(rnd)
+    assert (hit.kind, hit.slot, hit.t) == ("locate", 5, 1.25)
+    assert (hit.x, hit.y) == pytest.approx(rnd.pos(5, 1.25)[:2])
+    assert (miss.kind, miss.slot, miss.t) == ("exclude", 6, 1.25)
+    assert miss.detail["needs"] == "reveal"
+    assert miss.mask[rnd.geo.node_at_px(300, 200)]
+    assert not miss.mask[rnd.geo.node_at_px(300, 240)]
+    assert not miss.mask[rnd.geo.node_at_px(104, 200)]
+    assert all(i.cast_id is None and i.row_key == (0, "Hunter", "X_LaserMulti", 1.25)
+               for i in (hit, miss))
+    assert any(i.reason == "hunters_fury_miss" for i in ce.RoundInputs(rnd.blob, rnd.geo).infos)
+
+
+@pytest.mark.parametrize("field", ["fired", "hits_read", "u", "v", "yaw"])
+def test_fury_without_firing_proof_or_strip_position_keeps_hits_only(field):
+    rnd = fury_round()
+    rnd.blob["util"][0].pop(field)
+    [hit] = ut.read_hunters_fury(rnd)
+    assert hit.kind == "locate" and hit.slot == 5
+
+
+def test_fury_empty_blast_excludes_only_live_enemies_and_preserves_evolution():
+    rnd = fury_round(hits=[])
+    assert [i.slot for i in ut.read_hunters_fury(rnd)] == [5, 6]
+    next(p for p in rnd.blob["players"] if p["slot"] == 6)["agent"] = "Veto"
+    rnd.blob["alive"]["5"] = [[0., 1., "kill"]]
+    rnd.blob["util"].append({"k": "buff", "t": 0., "t1": 8., "by": 6, "target": 6,
+                             "code": "Pine", "name": "X_Evolution"})
+    assert ce.RoundInputs(rnd.blob, rnd.geo).infos == []
+
+
+def test_fury_uses_each_blast_own_hit_list():
+    rnd = fury_round()
+    rnd.blob["util"].append(dict(rnd.blob["util"][0], t=2.25, hits=[6], final=True))
+    operations = ut.read_hunters_fury(rnd)
+    assert [(i.t, i.kind, i.slot) for i in operations] == [
+        (1.25, "locate", 5), (1.25, "exclude", 6), (2.25, "locate", 6), (2.25, "exclude", 5)]
+
+
 COUNT_READERS = ("nightfall_counts", "dizzy_counts", "thrash_detains", "storm_surges")
 
 
@@ -867,6 +1084,11 @@ def test_each_reader_preserves_the_util_row_identity(reader, monkeypatch):
     elif reader.removeprefix("read_") in COUNT_READERS:
         row, *hits = count_rows(reader.removeprefix("read_"), (5,))
         b["util"] = hits
+    elif reader == "read_creatures":
+        row, *hits = creature_round(target=5).blob["util"]
+        b["util"] = hits
+    elif reader == "read_hunters_fury":
+        [row] = fury_round().blob["util"]
     b["util"].append(row)
     rnd = ce.RoundInputs(b, open_hall())
     monkeypatch.setattr(ut, "heard", lambda *a: reader in ("read_waylay_recalls", "read_storm_surges"))

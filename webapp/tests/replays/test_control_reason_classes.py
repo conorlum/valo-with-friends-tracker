@@ -13,10 +13,12 @@ from app.replays.control_reasons import CLASSES, SIGHT_SOUND, TWO_KIND, classify
 APP = Path(__file__).resolve().parents[2] / "app"
 TABLE = {
     "found": "seen kill plant damage gunfire footsteps tap orb revived neural_theft trip reveal "
-             "drone_dart camera_dart tejo_drone waylay_recall trip_destroyed camera_destroyed hush_suspension",
+             "drone_dart camera_dart tejo_drone waylay_recall trip_destroyed camera_destroyed hush_suspension "
+             "prowler_hit wingman_hit boom_bot_hit seekers_hit hunters_fury_hit",
     "roughly_placed": "knife_hit knife_all leer_seen nightfall_count dizzy_count thrash_count storm_surge_count",
     "ruled_out": "knife_zero knife_missed skye_no_cue hypothesis_cleared omen_seen "
-                 "nightfall_zero dizzy_zero thrash_zero storm_surge_zero",
+                 "nightfall_zero dizzy_zero thrash_zero storm_surge_zero "
+                 "prowler_miss wingman_miss boom_bot_miss seekers_miss hunters_fury_miss",
     "lost_track": "omen_unheard yoru_drift_unheard yoru_beacon",
     "other": "died omen_channel",
 }
