@@ -232,6 +232,11 @@ guards = [
   "app/services/util_rebuild.py", "app/services/util_build_health.py", "app/services/util_build_remote.py", "app/routers/util_page.py", "app/templates/util/**", "app/static/js/critutil.js", "scripts/critical_util.py",
 ]
 
+[postplant]
+about = "Post-plant samples, kill evidence and physical spike lines on replay-worker toy rounds."
+tests = ["tests/postplant/*.py"]
+guards = ["app/postplant/**"]
+
 [critical-moments]
 about = "Critical Moments: fights, trades, sight and util tags on toy rounds, a golden real round, the moments.json endpoint and tab."
 tests = ["tests/moments/test_*.py", "tests/replays/test_moments_*.py", "tests/replays/test_replay_moments.py"]
