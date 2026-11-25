@@ -374,3 +374,116 @@ def test_the_win_model_and_a_stale_row_change_what_is_cached(db):
     before = postplant_page.fingerprint(db, "Ascent", None)
     _model(db)
     assert postplant_page.fingerprint(db, "Ascent", None) != before
+
+
+# --- R1.2: survival is deaths per minute held (finding 1) ------------------------
+
+
+def _survival_data(rows):
+    return {"areas": [{"name": n, "n": cnt, "deaths": d, "held_s": h, "deaths_per_n": d / cnt,
+                       "deaths_per_min": d * 60 / h, "line_share": None, "crossfire_share": None}
+                      for n, cnt, d, h in rows],
+            "distinct_n": sum(cnt for _, cnt, _, _ in rows), "site_mean": {}}
+
+
+def test_survival_compares_deaths_per_minute_held_not_per_post_plant():
+    data = _survival_data([("Slow", 20, 20, 600.0), ("Fast", 20, 20, 40.0)])   # 2/min and 30/min
+    means = plants_router._means(data)
+    slow, fast = (plants_router._deviation(r, "survival", means) for r in data["areas"])
+    assert slow > 0 > fast and slow == pytest.approx(3.75 - 2) and fast == pytest.approx(3.75 - 30)
+
+
+def test_survival_ranking_follows_exposure_even_when_per_post_plant_reverses():
+    data = _survival_data([("A", 10, 10, 600.0), ("B", 40, 20, 40.0)])   # per n: A 1.0, B 0.5; per min: 1 vs 30
+    means = plants_router._means(data)
+    a, b = (plants_router._deviation(r, "survival", means) for r in data["areas"])
+    assert a > 0 > b
+    assert means["deaths_per_min"] == pytest.approx(30 * 60 / 640)
+
+
+def test_survival_without_exposure_is_unavailable():
+    data = _survival_data([("A", 10, 10, 600.0)])
+    row = dict(data["areas"][0], deaths_per_min=None)
+    assert plants_router._deviation(row, "survival", plants_router._means(data)) is None
+    assert plants_router._means({"areas": [], "distinct_n": 0, "site_mean": {}})["deaths_per_min"] is None
+
+
+# --- R1.2: a map's table loads only that map's rows (finding 2) -------------------
+
+
+def _loaded_ids(db, fn):
+    from sqlalchemy import event
+
+    loaded = []
+    handler = lambda target, context: loaded.append(target.replay_id)      # noqa: E731
+    event.listen(ReplayRoundPostplant, "load", handler)
+    try:
+        db.expunge_all()
+        fn()
+    finally:
+        event.remove(ReplayRoundPostplant, "load", handler)
+    return loaded
+
+
+def test_another_maps_and_another_layouts_rows_are_never_loaded(db, monkeypatch):
+    _two_layouts(monkeypatch)
+    mine = seed(db, 1)
+    other_map = seed(db, 2, map_name="Haven")
+    pending = seed(db, 3, branch="release-14.00")
+    ids = (mine.id, other_map.id, pending.id)
+    for with_data in (True, False):
+        loaded = _loaded_ids(db, lambda: postplant_page._current(db, "Ascent", with_data=with_data))
+        assert loaded == [ids[0]]
+    loaded = _loaded_ids(db, lambda: postplant_page.page_data(db, "Ascent", None, site=None, side="attack",
+                                                               spot=None))
+    assert set(loaded) == {ids[0]}
+
+
+def test_current_still_applies_every_other_rule_with_the_early_filter(db):
+    first = seed(db, 1)
+    seed(db, 2, revision=replay_gaps.GAPS_REVISION - 1)
+    stale = seed(db, 3)
+    FP[(stale.id, 1)] = "changed"
+    assert [row.replay_id for row, _ in postplant_page._current(db, "Ascent", with_data=True)] == [first.id]
+
+
+# --- R1.2: band-only painted areas get a marker (finding 6) ----------------------
+
+
+def test_a_band_only_painted_area_has_a_point_and_a_marker(db, monkeypatch):
+    grid = areas.GRID
+    cell = 6 * grid + 5
+    painted = SimpleNamespace(
+        names={1: {"name": "Lower"}, 2: {"name": "Upper"}}, cells=tuple([1] * (grid * grid)),
+        bands={cell: ((-1000, 10, 1), (11, 100, 2)), cell + 1: ((-1000, 10, 1), (11, 100, 2))},
+        raw=b"paint")
+    monkeypatch.setattr(areas, "load_painted", lambda key, *a, **k: painted)
+    monkeypatch.setitem(NAMES, 300, "Upper")
+    points = postplant_page._painted_points("Ascent")
+    assert points["Upper"] == pytest.approx([(5.5 + 0.5) / grid * areas.UV_SCALE,
+                                             (6.0 + 0.5) / grid * areas.UV_SCALE])
+    assert points["Lower"] is not None
+    seed(db, 1, samples=[[10, 0, 300, 100, 20, 1]])
+    assert 'data-marker="Upper"' in _page(db)
+
+
+# --- R1.2: event-only areas do not claim the model is missing (finding 7) --------
+
+
+def _event_only_page(db):
+    seed(db, 1, kills=[event(ku=200)])           # Rafters has a kill but nobody sampled there
+    return _page(db)
+
+
+def test_an_event_only_area_with_a_model_shows_n_0_not_no_model(db):
+    _model(db)
+    row = _row(_event_only_page(db), "Rafters")
+    assert "no win model" not in row and "needs 2 matches" not in row
+    for fig in ("gained", "net", "kills"):
+        assert re.search(rf'data-fig="{fig}"[^>]*>\s*- \(n=0\)', row), (fig, row)
+
+
+def test_an_event_only_area_without_a_model_still_says_so(db):
+    row = _row(_event_only_page(db), "Rafters")
+    assert re.search(r'data-fig="net"[^>]*>\s*no win model \(n=0\)', row)
+    assert "needs 2 matches" not in row

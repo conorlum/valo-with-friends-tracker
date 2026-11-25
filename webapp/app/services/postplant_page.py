@@ -37,33 +37,36 @@ SIDES = ("attack", "defense")
 def _current(db, asset_key, *, with_data, replay_ids=None):
     """[(ReplayRoundPostplant row, Replay)] of every ok row current on this layout, in a fixed order.
     `replay_ids`, when given, limits the query to those replays (every other rule is unchanged)."""
-    query = select(ReplayRoundPostplant).where(
-        ReplayRoundPostplant.status == "ok", ReplayRoundPostplant.gaps_revision == replay_gaps.GAPS_REVISION)
+    if replay_ids is not None and not replay_ids:
+        return []
+    # The replays on this map and layout come from `Replay` first, so no other map's rows are loaded.
+    replay_query = select(Replay).where(Replay.map_name == layouts.map_of(asset_key))
     if replay_ids is not None:
-        if not replay_ids:
-            return []
-        query = query.where(ReplayRoundPostplant.replay_id.in_(list(replay_ids)))
+        replay_query = replay_query.where(Replay.id.in_(list(replay_ids)))
+    chosen = {}
+    replays = {}
+    for replay in db.scalars(replay_query):
+        key = (replay.map_name, replay.game_branch)
+        if key not in chosen:
+            selection = layouts.layout_for(replay.map_name, replay.game_branch)
+            chosen[key] = selection.layout.asset_key if selection.state == "ok" else None
+        if chosen[key] == asset_key:
+            replays[replay.id] = replay
+    if not replays:
+        return []
+    query = select(ReplayRoundPostplant).where(
+        ReplayRoundPostplant.status == "ok", ReplayRoundPostplant.gaps_revision == replay_gaps.GAPS_REVISION,
+        ReplayRoundPostplant.replay_id.in_(sorted(replays)))
     if not with_data:
         query = query.options(load_only(
             ReplayRoundPostplant.replay_id, ReplayRoundPostplant.round_number,
             ReplayRoundPostplant.fingerprint, ReplayRoundPostplant.computed_at))
     rows = db.scalars(query.order_by(ReplayRoundPostplant.replay_id, ReplayRoundPostplant.round_number)).all()
-    ids = {row.replay_id for row in rows}
-    if not ids:
-        return []
-    map_name = layouts.map_of(asset_key)
-    replays = {r.id: r for r in db.scalars(select(Replay).where(Replay.id.in_(ids), Replay.map_name == map_name))}
-    chosen = {}
-    for replay in replays.values():
-        key = (replay.map_name, replay.game_branch)
-        if key not in chosen:
-            selection = layouts.layout_for(replay.map_name, replay.game_branch)
-            chosen[key] = selection.layout.asset_key if selection.state == "ok" else None
+    used = {row.replay_id: replays[row.replay_id] for row in rows}
     fresh = replay_gaps.Freshness(db)
-    fresh.preload(replays)
-    return [(row, replays[row.replay_id]) for row in rows
-            if row.replay_id in replays and chosen[replays[row.replay_id].map_name, replays[row.replay_id].game_branch] == asset_key
-            and fresh.current(replays[row.replay_id], row.round_number, replay_gaps.GAPS_REVISION, row.fingerprint)]
+    fresh.preload(used)
+    return [(row, used[row.replay_id]) for row in rows
+            if fresh.current(used[row.replay_id], row.round_number, replay_gaps.GAPS_REVISION, row.fingerprint)]
 
 
 def _slot_players(db, replay_ids):
@@ -142,11 +145,14 @@ def _painted_points(asset_key) -> dict:
         return {}
     sums = {}
     for index, name_id in enumerate(painted.cells):
-        if name_id:
-            total = sums.setdefault(name_id, [0.0, 0.0, 0])
-            total[0] += index % areas.GRID
-            total[1] += index // areas.GRID
-            total[2] += 1
+        # An area counts once per spatial cell, whether it is the cell's base name or one of its height bands.
+        ids = {name_id} | {band[2] for band in painted.bands.get(index, ())}
+        for member in ids:
+            if member:
+                total = sums.setdefault(member, [0.0, 0.0, 0])
+                total[0] += index % areas.GRID
+                total[1] += index // areas.GRID
+                total[2] += 1
     return {painted.names[i]["name"]: [(x / n + 0.5) / areas.GRID * areas.UV_SCALE,
                                        (y / n + 0.5) / areas.GRID * areas.UV_SCALE]
             for i, (x, y, n) in sums.items() if i in painted.names}
@@ -201,12 +207,14 @@ def _store_cache(db, key, current, data):
         logger.warning("post-plant stats cache row not stored", exc_info=True)
 
 
-def page_data(db, asset_key, viewer_id, *, site, side, spot) -> dict:
+def page_data(db, asset_key, viewer_id, *, site, side, spot, current=None) -> dict:
     """One layout's per-area figures. Everyone when `viewer_id` is None, else that viewer's circle.
-    `side` is the engine's: "attack" (Hold) or "defense" (Retake). `site` and `spot` are None for all."""
+    `side` is the engine's: "attack" (Hold) or "defense" (Retake). `site` and `spot` are None for all.
+    `current` is the layout/population's `fingerprint`, when the caller already has it."""
     ids = circle.circle_ids(db, viewer_id) if viewer_id is not None else None
     key = f"{asset_key}|{_population_label(ids)}|{site or 'all'}|{side}|{spot or 'all'}"
-    current = fingerprint(db, asset_key, ids)
+    if current is None:
+        current = fingerprint(db, asset_key, ids)
     data = _read_cache(db, key, current)
     if data is None:
         data = _compute(db, asset_key, ids, site, side, spot, util_model.load(db))

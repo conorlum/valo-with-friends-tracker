@@ -95,10 +95,10 @@ def _ci(interval, fmt):
 
 def _deviation(row, measure, means):
     """How much better (positive) or worse an area is than the site-wide mean, in the measure's own units."""
-    if measure == "survival":    # fewer deaths per post-plant than the site mean is better
-        if row["deaths_per_n"] is None or means["deaths"] is None:
+    if measure == "survival":    # fewer deaths per minute held than the site mean is better (D12)
+        if row["deaths_per_min"] is None or means["deaths_per_min"] is None:
             return None
-        return means["deaths"] - row["deaths_per_n"]
+        return means["deaths_per_min"] - row["deaths_per_min"]
     value, mean = {
         "kills": (row["shrunk_kills_per_n"], means["kills"]),
         "gained": (row["shrunk_win_gained_per_n"], means["win_gained"]),
@@ -110,20 +110,24 @@ def _deviation(row, measure, means):
 
 
 def _means(data):
-    rows, n = data["areas"], data["distinct_n"]
+    rows = data["areas"]
     held = sum(r["held_s"] for r in rows)
     weighted = lambda key: (sum((r[key] or 0) * r["held_s"] for r in rows) / held) if held else None  # noqa: E731
     return {**{k: v for k, v in data["site_mean"].items()},
-            "deaths": sum(r["deaths"] for r in rows) / n if n else None,
+            "deaths_per_min": sum(r["deaths"] for r in rows) * 60 / held if held else None,
             "line": weighted("line_share"), "crossfire": weighted("crossfire_share")}
 
 
 def _row_view(row, has_model):
     n = f"n={row['n']}"
 
+    empty = row["n"] == 0          # an area with events but no samples: no denominator
+
     def win(value, ci):
-        if not has_model or value is None:
+        if not has_model:
             return f"no win model ({n})", None
+        if empty or value is None:
+            return f"- ({n})", None
         return f"{_pts(value)} ({n})", _ci(ci, _pts) or NEEDS_TWO
 
     def two(x):
@@ -134,7 +138,7 @@ def _row_view(row, has_model):
     return {
         "name": row["name"], "n": row["n"],
         "kills": f"{two(row['kills_per_n'])} ({n})" if row["kills_per_n"] is not None else f"- ({n})",
-        "kills_ci": _ci(row["kills_ci"], two) or NEEDS_TWO,
+        "kills_ci": None if empty else (_ci(row["kills_ci"], two) or NEEDS_TWO),
         "deaths": f"{two(row['deaths_per_n'])} ({n})" if row["deaths_per_n"] is not None else f"- ({n})",
         "kd": f"{row['kd']:.2f} ({n})" if row["kd"] is not None else f"- ({n})",
         "gained": gained, "gained_ci": gained_ci, "net": net, "net_ci": net_ci,

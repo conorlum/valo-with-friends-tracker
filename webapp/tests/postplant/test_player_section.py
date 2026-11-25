@@ -81,7 +81,7 @@ def _rows(slot_samples):
     return [[10, slot, u, 100, 20, 1] for slot, us in slot_samples.items() for u in us]
 
 
-def seed(db, players, *, agents=None, samples=None, kills=(), side_of=None):
+def seed(db, players, *, agents=None, samples=None, kills=(), side_of=None, plant=(3500, 1400)):
     """One replay, one round, a plant on A. `players` maps slot -> Player; `agents` slot -> agent (Jett
     default); `samples` slot -> [u, ...] (default: every linked slot in Heaven)."""
     COUNTER[0] += 1
@@ -108,7 +108,7 @@ def seed(db, players, *, agents=None, samples=None, kills=(), side_of=None):
         db.add(ReplayPlayer(replay_id=replay.id, slot=slot, agent="Jett", match_player_id=mp_id))
     FP[(replay.id, 1)] = f"fp-{replay.id}"
     samples = samples if samples is not None else {slot: [100] for slot in players}
-    data = {"v": 1, "plant": {"t": 10, "u": 3500, "v": 1400, "by": 0}, "end": 12, "step": 0.5,
+    data = {"v": 1, "plant": {"t": 10, "u": plant[0], "v": plant[1], "by": 0}, "end": 12, "step": 0.5,
             "sides": {str(s): "attack" if s < 5 else "defense" for s in range(10)}, "sides_known": True,
             "samples": _rows(samples), "kills": list(kills)}
     db.add(ReplayRoundPostplant(replay_id=replay.id, round_number=1, status="ok",
@@ -176,6 +176,45 @@ def test_a_block_under_eight_is_not_listed_but_counts_to_eligibility(db):
     for _ in range(7):
         seed(db, {0: me}, samples={0: [100]})
     assert _fragment(db, "Zorblax#1").strip() == ""
+
+
+def test_eligible_side_with_no_block_of_eight_still_shows_its_total(db, monkeypatch):
+    monkeypatch.setattr(postplant_stats, "PLAYER_ROW_MIN_N", 11)     # blocks of 10 + 10 stay under it
+    me = _player(db, "Zorblax#1")
+    for _ in range(10):
+        seed(db, {0: me})
+    for _ in range(10):
+        seed(db, {0: me}, plant=(2800, 7400))
+    page = _fragment(db, "Zorblax#1")
+    assert re.search(r"<h3[^>]*>Hold <span[^>]*>\(n=20\)", page)
+    assert "11 post-plants" in page and "<table" not in page and "Retake" not in page
+
+
+def test_a_side_under_twenty_with_small_blocks_shows_nothing(db, monkeypatch):
+    monkeypatch.setattr(postplant_stats, "PLAYER_ROW_MIN_N", 11)
+    me = _player(db, "Zorblax#1")
+    for _ in range(9):
+        seed(db, {0: me})
+    for _ in range(10):
+        seed(db, {0: me}, plant=(2800, 7400))
+    assert _fragment(db, "Zorblax#1").strip() == ""
+
+
+def test_every_distinct_key_is_computed_once_per_request(db, monkeypatch):
+    me = _player(db, "Zorblax#1")
+    for _ in range(20):
+        seed(db, {0: me})
+    for _ in range(20):
+        seed(db, {5: me})
+    pages, prints = [], []
+    real_page, real_print = postplant_page.page_data, postplant_page.fingerprint
+    monkeypatch.setattr(postplant_page, "page_data",
+                        lambda *a, **k: pages.append((a[1], k["site"], k["side"])) or real_page(*a, **k))
+    monkeypatch.setattr(postplant_page, "fingerprint", lambda *a, **k: prints.append(a[1]) or real_print(*a, **k))
+    page = _fragment(db, "Zorblax#1")
+    assert "Hold" in page and "Retake" in page
+    assert len(pages) == len(set(pages)) == 2
+    assert prints == ["Ascent"]
 
 
 def test_unknown_player_is_404(db):

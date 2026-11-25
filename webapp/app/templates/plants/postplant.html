@@ -73,7 +73,7 @@
       <tr data-area="{{ r.name }}" data-n="{{ r.n }}">
         <td>{{ r.name }}</td>
         <td data-fig="n">n={{ r.n }}</td>
-        <td data-fig="kills">{{ r.kills }}<span class="pp-ci" data-ci="{{ 'kills' if r.kills_ci != 'needs 2 matches' else 'none' }}">{{ r.kills_ci }}</span></td>
+        <td data-fig="kills">{{ r.kills }}{% if r.kills_ci %}<span class="pp-ci" data-ci="{{ 'kills' if r.kills_ci != 'needs 2 matches' else 'none' }}">{{ r.kills_ci }}</span>{% endif %}</td>
         <td data-fig="deaths">{{ r.deaths }}</td>
         <td data-fig="kd">{{ r.kd }}</td>
         <td data-fig="gained">{{ r.gained }}{% if r.gained_ci %}<span class="pp-ci" data-ci="{{ 'gained' if r.gained_ci != 'needs 2 matches' else 'none' }}">{{ r.gained_ci }}</span>{% endif %}</td>

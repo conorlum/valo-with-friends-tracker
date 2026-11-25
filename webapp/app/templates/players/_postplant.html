@@ -6,6 +6,7 @@
   <p class="page-meta">{{ postplant_note }}</p>
   {% for side in postplant_sections %}
   <h3 data-side="{{ side.side }}">{{ side.side }} <span class="page-meta">(n={{ side.total_n }})</span></h3>
+  {% if side.no_blocks_note %}<p class="page-meta" data-no-blocks>{{ side.no_blocks_note }}</p>{% endif %}
   {% for block in side.blocks %}
   <h4>{{ block.map_name }}, site {{ block.site }} <span class="page-meta">(n={{ block.n }})</span></h4>
   {% if block.sentence %}<p data-sentence>{{ block.sentence }}</p>{% endif %}

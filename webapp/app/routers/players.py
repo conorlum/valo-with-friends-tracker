@@ -422,6 +422,9 @@ POSTPLANT_NOTE = (
     "Where this player stands after the spike goes down, from replays. Signed figures are points of round-win "
     "chance per post-plant; n is the number of post-plants behind each figure."
 )
+POSTPLANT_NO_BLOCKS_NOTE = (
+    "No map and site has {n} post-plants yet, so none is listed; each one needs {n} to show."
+)
 
 
 def _postplant_player_slots(db: Session, player: Player, player_ids, agents) -> dict:
@@ -460,13 +463,25 @@ def _postplant_sections(db: Session, player: Player, player_ids, agents) -> list
                 rounds.append(r)
                 slots[r.replay_uuid, r.round_number] = slot
     sections = []
+    tables: dict[tuple, dict] = {}         # one Everyone table per (asset key, site, side) per request
+    prints: dict[str, str] = {}            # one fingerprint per asset key per request
+
+    def everyone_table(block):
+        key = (block["asset_key"], block["site"], block["side"])
+        if key not in tables:
+            if block["asset_key"] not in prints:
+                prints[block["asset_key"]] = postplant_page.fingerprint(db, block["asset_key"], None)
+            tables[key] = postplant_page.page_data(db, block["asset_key"], None, site=block["site"],
+                                                   side=block["side"], spot=None,
+                                                   current=prints[block["asset_key"]])
+        return tables[key]
+
     for summary in postplant_stats.player_blocks(rounds, slots, util_model.load(db)):
-        if not summary["eligible"] or not summary["blocks"]:
+        if not summary["eligible"]:
             continue
         blocks = []
         for block in summary["blocks"]:
-            everyone = postplant_page.page_data(db, block["asset_key"], None, site=block["site"],
-                                                side=block["side"], spot=None)
+            everyone = everyone_table(block)
             every_rows = {row["name"]: row for row in everyone["areas"]}
             every_held = sum(row["held_s"] for row in everyone["areas"]) or None
             rows = []
@@ -487,7 +502,9 @@ def _postplant_sections(db: Session, player: Player, player_ids, agents) -> list
                 "sentence": postplant_stats.sentence(block, everyone["areas"]),
             })
         sections.append({"side": POSTPLANT_SIDE_NAMES[summary["side"]], "total_n": summary["total_n"],
-                         "blocks": blocks})
+                         "blocks": blocks,
+                         "no_blocks_note": None if blocks else POSTPLANT_NO_BLOCKS_NOTE.format(
+                             n=postplant_stats.PLAYER_ROW_MIN_N)})
     return sections
 
 
