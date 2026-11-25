@@ -960,14 +960,15 @@ def gap_runs(db, replay):
 
 
 @pytest.mark.parametrize("health, capable", [
-    ({"control": {"enabled": True, "gaps_protocol": 3}}, True),
+    ({"control": {"enabled": True, "gaps_protocol": 4}}, True),
     ({"control": {"enabled": True}}, False),                          # an image from before timing gaps
     ({"control": {"enabled": True, "gaps_protocol": 1}}, False),      # protocol 1: the worker image before moments
     ({"control": {"enabled": True, "gaps_protocol": 2}}, False),      # protocol 2: the worker image before Critical Util
+    ({"control": {"enabled": True, "gaps_protocol": 3}}, False),      # protocol 3: the worker image before post-plant
     ({"control": {"enabled": True, "gaps_protocol": "1"}}, False),
     ({"control": {"enabled": True, "gaps_protocol": True}}, False),
-    ({"control": {"enabled": False, "gaps_protocol": 3}}, False),     # control switched off on the worker
-    ({"control": {"gaps_protocol": 3}}, False),
+    ({"control": {"enabled": False, "gaps_protocol": 4}}, False),     # control switched off on the worker
+    ({"control": {"gaps_protocol": 4}}, False),
     ({"control": None}, False), ({}, False), (None, False), ([], False),
 ])
 def test_only_a_worker_with_control_on_and_protocol_one_supports_gaps(health, capable):
@@ -1183,7 +1184,7 @@ def test_the_client_reads_health_through_the_same_error_mapping():
     client = remote.ControlClient("worker:8080")
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(remote.urllib.request, "urlopen",
-                   lambda request, timeout: io.BytesIO(b'{"control": {"enabled": true, "gaps_protocol": 3}}'))
+                   lambda request, timeout: io.BytesIO(b'{"control": {"enabled": true, "gaps_protocol": 4}}'))
         assert remote.supports_gaps(client.health())
 
     def fail(request, timeout):

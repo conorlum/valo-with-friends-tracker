@@ -21,7 +21,7 @@ The worker has no database, so the web app drives it: a daemon thread runs `cycl
    reached or is full ends the pass.
 
 **Timing gaps** (docs/superpowers/plans/2026-10-07-worker-gaps-and-kill-one-impl.md). Each planning pass reads
-the worker's `/health` once. Only a worker whose control is on and that names `control.gaps_protocol` 3 is
+the worker's `/health` once. Only a worker whose control is on and that names `control.gaps_protocol` 4 is
 sent a `gaps` block (with the gap fingerprint and the tick cache key, which the worker cannot compute: its
 interpreter has no SQLAlchemy); an older image, an unknown protocol or a failed read gets the plain task it
 always got, because a gaps block fails the whole task there. A capable task has its own key, so the worker's
@@ -111,7 +111,7 @@ BACKOFF_S = 300
 PLAN_IDLE_S = 120               # after a plan that found nothing to send, wait this long before planning again
 LOCK_ID = 7_346_120_117          # pg_try_advisory_xact_lock's key for the dispatcher
 TIMEOUT_S = 30
-GAPS_PROTOCOL = 3               # the worker's control.gaps_protocol this deploy can talk to (its /health)
+GAPS_PROTOCOL = 4               # the worker's control.gaps_protocol this deploy can talk to (its /health)
 
 
 def _job_stale_s(remote_control: bool) -> float:

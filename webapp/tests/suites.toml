@@ -327,7 +327,7 @@ tests = [
 guards = [
   "app/control/__init__.py", "app/control/engine.py", "app/control/utility.py", "app/control/utility.json",
   "app/control/hearing.json", "app/control/mollies.py", "app/control/encode.py", "app/control/task.py",
-  "app/control/fight_swing.py", "app/control/geometry.py", "app/replays/control_format.py", "app/replays/control_reasons.py",
+  "app/postplant/**", "app/control/fight_swing.py", "app/control/geometry.py", "app/replays/control_format.py", "app/replays/control_reasons.py",
   "app/replays/destroyed.py", "app/replays/control_inputs.py", "scripts/control_cases.py", "scripts/render_control_scenes.py",
   "tests/fixtures/control/**", "tests/replays/control_toys.py", "tests/replays/conftest.py",
 ]
@@ -407,7 +407,7 @@ guards = [
 about = "Timing gaps: chokes, the observer and route history, predicted gaps and back-shots, storage, views, the gaps layer and the patterns page."
 tests = ["tests/replays/test_gaps_*.py", "tests/replays/test_gap_patterns*.py"]
 guards = [
-  "app/gaps/**", "app/control/observe.py", "app/control/routes.py", "app/control/chokes.py", "app/replays/choke_assets.py",
+  "app/gaps/**", "app/postplant/**", "app/control/observe.py", "app/control/routes.py", "app/control/chokes.py", "app/replays/choke_assets.py",
   "app/services/replay_gaps*.py", "app/services/gap_patterns.py", "app/routers/gap_patterns.py",
   "app/templates/gaps/**", "app/static/js/replay_gaps.js", "app/static/js/gap_patterns.js",
   "app/static/data/**/*.chokes.json",

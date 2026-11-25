@@ -4,7 +4,7 @@
   "limits": {"timeout_s": 1800, "max_bytes": 1073741824, "queue_size": 20, "memory_cap": 4096},
   "control": {
     "enabled": true,
-    "gaps_protocol": 3,
+    "gaps_protocol": 4,
     "layouts": ["Haven"],
     "features": {"wire": 1, "compiler": 19, "manifest": 2, "normalization": 2, "consumers": {"ascent_replay_v1": 5, "quiet_rope_v1": 7, "map_pool_replay_v1": 6}},
     "queued": 3,
