@@ -168,7 +168,7 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
   Critical Moments, with its own failure status: who each cast affected, kills on affected enemies, teammates it
   hit, sight lines a smoke cut, enemies held back or waiting at an area cast, a device's trigger, defuses stopped,
   heals that kept someone alive, deaths holding util after engaging first. Stored in `replay_round_util`
-  (migration 0029) under the gap run's keys (`GAPS_REVISION` 7, gap protocol 3: the site and the worker image
+  (migration 0029) under the gap run's keys (`GAPS_REVISION` 8, gap protocol 4: the site and the worker image
   must both speak it, `replay_worker/Dockerfile` ships `app/critutil`). The gap run also steps an unknown probe
   (`app/critutil/unknown.py`): how long each trip, camera, turret or molly held the map-control unknown at its edge.
   Statuses on teammates are kept from `CONDENSE_REVISION` 22, flagged `friendly`; control and Critical Moments
@@ -305,6 +305,29 @@ spot shows a win rate only from 100 plants.
   crawler beeps (audio only, silenced by `~/.claude/sounds/.muted`) and waits up to 15 minutes for the owner to
   clear it. It never clicks or scripts the check. On a timeout the run stops, keeps what it added, runs its
   end-of-run steps and exits non-zero.
+
+### Post-plant value
+
+Where players hold and retake after a plant, from replays only. Never on the demo. The map page is
+`/plants/{map_name}/postplant` (`app/routers/plants.py`, `app/services/postplant_page.py`, `postplant_stats.py`):
+Everyone or Friends, Hold or Retake, filtered by layout, site and named plant spot.
+
+- The worker's `app/postplant/extract.py` (`round_postplant`) runs in `app/control/task.py` `_gaps`, with its own
+  failure status. It records alive players' positions every 0.5 s from plant through round decision, post-plant
+  kills and spike-line checks against walls and current smokes (no FOV or blinds). Gap protocol 4 /
+  `GAPS_REVISION` 8 requires the site and worker together; `replay_worker/Dockerfile` ships `app/postplant`.
+- Migration `0038` (`alembic/versions/0038_replay_round_postplant.py`): `replay_round_postplant` stores the worker
+  evidence under the gap fingerprint and revision; `postplant_stats_cache` stores compressed page figures.
+  Only current, successful rows count. Extractor failures show in Site health as `postplant_failed`.
+- Areas are assigned on the site by `app/coach/areas.py` `area_at`, using each replay's layout asset key.
+  Painted areas take over without a worker re-run; paint and callouts are part of the page cache fingerprint,
+  along with current rows, replay links and clock offsets, the stored win model, spots and calculation version.
+- Colour starts at n >= 20 player-post-plants (`postplant_stats.MIN_N`), with shrinkage M = 10 and 95%
+  match-clustered intervals. Win figures use only the stored Critical Util "win" model; requests never build it.
+  Without that model, win columns are unavailable and the map uses kills.
+- `/players/{display_name}/postplant` is a fragment loaded after the player page, honouring `?accounts=all`
+  and `?filter=`. A side shows only with >= 20 replay post-plants; per map/site/side rows show from 8.
+- After merge, once the gap re-run has caught up, open `/plants/Sunset/postplant` and a tracked player's page.
 
 ### Running the webapp locally
 
