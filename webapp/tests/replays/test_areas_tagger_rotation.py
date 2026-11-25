@@ -255,6 +255,59 @@ def test_pending_draft_survives_edits_and_reopen(data, choice):
         assert got["stored"] == got["newer"]
 
 
+@pytest.mark.parametrize("same_session", [False, True])
+@pytest.mark.parametrize("action", ["place", "cells", "bands", "names", "parents", "hand", "queue"])
+def test_discard_promoted_draft_stays_protected_until_model_matches(data, action, same_session):
+    seeded = copy.deepcopy(data)
+    seeded["maps"]["Ascent"]["areas"]["floors"] = {"0": [[0, 10], [20, 30]]}
+    got = run_areas("""function run(p) {
+      let page=enter(p); paint(page); const first=page.storage.getItem(key);
+      page=page.reopen(); page.TG.setMode('areas');
+      if(p.action==='place') {
+        paste(page,'Alcove'); page.click('areaTool-place'); point(page,'pointerdown',128,384);
+      } else if(p.action==='cells') paint(page);
+      else if(p.action==='bands'||p.action==='hand') {
+        if(p.action==='bands') {
+          page.el('areasTree').children[1].click();
+          page.el('areasFloor').value='1'; page.el('areasFloor').dispatch('change');
+        }
+        page.click('areaTool-brush'); point(page,'pointerdown',128,128); point(page,'pointerup',128,128);
+      } else if(p.action==='names') {
+        page.el('areasName').value='Arch'; page.click('areasRename');
+      } else if(p.action==='parents') {
+        page.el('areasTree').children[1].click();
+        page.el('areasParent').value='1'; page.el('areasParent').dispatch('change');
+      } else paste(page,'Alcove');
+      const newer=page.storage.getItem(key+':newer'), preserved=page.storage.getItem(key);
+      if(!p.same_session) {page=page.reopen(); page.TG.setMode('areas');}
+      page.click('areasDiscard');
+      const promoted=page.storage.getItem(key), removed=page.storage.getItem(key+':newer'),
+            pending=!page.el('areasRestoreRow').hidden, message=page.el('areasMessage').textContent;
+      paste(page,'Tunnel');
+      const afterEdit=page.storage.getItem(key), second=page.storage.getItem(key+':newer');
+      page=page.reopen(); page.TG.setMode('areas'); page.click('areasRestore');
+      return {first,newer,preserved,promoted,removed,pending,message,afterEdit,second,
+              restored:page.storage.getItem(key),hidden:page.el('areasRestoreRow').hidden,
+              cleared:page.storage.getItem(key+':newer')};
+    }""", seeded, action=action, same_session=same_session)
+    assert got["preserved"] == got["first"] and got["newer"]
+    assert got["promoted"] == got["newer"] and got["removed"] is None
+    assert got["pending"] is not same_session
+    assert got["hidden"] and got["cleared"] is None
+    newer = json.loads(got["newer"])
+    if action == "place":
+        placed = next(row for row in newer["names"] if row["name"] == "Alcove")
+        assert any(owner == placed["id"] for owner, _ in newer["cells"])
+    if same_session:
+        assert got["second"] is None and got["afterEdit"] != got["promoted"]
+        expected = {**newer, "queue": newer["queue"] + ["Tunnel"]}
+        assert json.loads(got["afterEdit"]) == expected == json.loads(got["restored"])
+    else:
+        assert "restore" in got["message"].lower() and "saved draft" in got["message"].lower()
+        assert got["second"] and got["afterEdit"] == got["promoted"]
+        assert json.loads(got["restored"]) == newer
+
+
 @pytest.mark.parametrize("failure", ["failWrites", "failReads", "badJSON", "incompatible"])
 def test_storage_failure_does_not_interrupt_painting(data, failure):
     got = run_areas("""function run(p) {
@@ -358,6 +411,41 @@ def test_empty_draft_is_not_pending_and_autosave_is_per_map(data):
     assert got["first"] == got["kept"] and got["second"] is None
     assert json.loads(got["first"])["queue"] == ["Alcove"]
     assert json.loads(got["other"])["queue"] == ["Tunnel"]
+
+
+@pytest.mark.parametrize("modifier", ["ctrlKey", "metaKey"])
+@pytest.mark.parametrize("tool", ["brush", "erase", "shrink"])
+@pytest.mark.parametrize("ending", ["pointerup", "pointercancel"])
+def test_keyboard_undo_cancels_active_stroke_and_next_stroke_has_checkpoint(data, modifier, tool, ending):
+    template = (Path(__file__).resolve().parents[2] / "scripts/control_tagger.template.html").read_text(encoding="utf-8")
+    match = re.search(r'  document.addEventListener\("keydown", function \(e\) \{(.*?)^  \}\);', template, re.M | re.S)
+    assert match
+    got = run_areas("""function run(p) {
+      const page=enter(p), canvas=page.el('areasCanvas'), original=exported(page);
+      if(p.tool==='brush') page.el('areasTree').children[1].click();
+      page.click('areaTool-'+p.tool); point(page,'pointerdown',128,128);
+      const active=canvas.hasPointerCapture(1), painted=exported(page);
+      const handler=new Function('e','window','state','DATA','setMode',p.branch);
+      const e={key:'z',ctrlKey:false,metaKey:false,preventDefault(){}}; e[p.modifier]=true;
+      handler(e,page.window,page.TG.state,p.data,m=>page.TG.setMode(m));
+      const undone=exported(page), captured=canvas.hasPointerCapture(1), released=canvas.releasedPointers.slice();
+      point(page,'pointermove',128,384); point(page,p.ending,128,640);
+      point(page,'pointermove',128,640);
+      const afterMoves=exported(page), saved=page.storage.getItem(key);
+      page.click('areasUndo'); const emptyUndo=exported(page);
+      point(page,'pointerdown',128,128); point(page,'pointermove',128,384);
+      point(page,'pointerup',128,384);
+      const fresh=exported(page); page.click('areasUndo');
+      return {original,active,painted,undone,captured,released,afterMoves,saved,emptyUndo,fresh,
+              freshUndone:exported(page),freshSaved:page.storage.getItem(key)};
+    }""", data, modifier=modifier, tool=tool, ending=ending, branch=match.group(1))
+    assert got["active"] and got["painted"] != got["original"]
+    assert got["undone"] == got["original"]
+    assert not got["captured"] and got["released"] == [1]
+    assert got["afterMoves"] == got["emptyUndo"] == got["original"]
+    assert json.loads(got["saved"])["cells"] == json.loads(got["original"])["cells"]
+    assert got["fresh"] != got["original"] == got["freshUndone"]
+    assert json.loads(got["freshSaved"])["cells"] == json.loads(got["original"])["cells"]
 
 
 @pytest.mark.parametrize("modifier", ["ctrlKey", "metaKey"])

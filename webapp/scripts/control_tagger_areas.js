@@ -83,15 +83,17 @@
       else window.localStorage.removeItem(key);
       // Never remove the second slot until promotion (or removal of the first) succeeds.
       window.localStorage.removeItem(key + ":newer");
-      state.draftPending = false;
+      // A promoted draft must match the visible model before first-slot writes can resume.
+      state.draftPending = newer !== null && newer !== JSON.stringify(state.model.draftState());
     } catch (e) {
       state.draftPending = true;
       storageFailure(state);
       message("Could not discard the saved draft; the newer draft has been kept.");
       return;
     }
-    $("areasRestoreRow").hidden = true;
-    message(newer !== null ? "Newer edits saved as the draft." : "Saved draft discarded.");
+    $("areasRestoreRow").hidden = !state.draftPending;
+    message(state.draftPending ? "Earlier newer edits are now the saved draft and can be restored."
+      : newer !== null ? "Newer edits saved as the draft." : "Saved draft discarded.");
   }
 
   function rowById(state, id) {
@@ -553,6 +555,11 @@
   }
 
   function undo() {
+    if (ui.stroke) {
+      var pointer = ui.stroke.pointer;
+      ui.stroke = null;
+      canvas.releasePointerCapture(pointer);
+    }
     if (!current().model.undo()) { message("Nothing to undo."); return; }
     changed("Last action undone.", true);
   }

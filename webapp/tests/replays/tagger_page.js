@@ -106,7 +106,11 @@ function element(doc, id, tag) {
     closest() { return null; },
     getContext() { return this._ctx || (this._ctx = context2d()); },
     getBoundingClientRect() { return { left: 0, top: 0, right: 800, bottom: 800, width: 800, height: 800 }; },
-    setPointerCapture() {}, releasePointerCapture() {}, focus() { doc.activeElement = this; }, blur() {}, select() {}, scrollIntoView() { this.scrolled = true; },
+    capturedPointers: new Set(), releasedPointers: [],
+    setPointerCapture(id) { this.capturedPointers.add(id); },
+    releasePointerCapture(id) { this.capturedPointers.delete(id); this.releasedPointers.push(id); },
+    hasPointerCapture(id) { return this.capturedPointers.has(id); },
+    focus() { doc.activeElement = this; }, blur() {}, select() {}, scrollIntoView() { this.scrolled = true; },
     showModal() { this.open = true; }, close() { this.open = false; },
     click() { if (!this.disabled) this.dispatch("click"); },       // a disabled button takes no click
   };
