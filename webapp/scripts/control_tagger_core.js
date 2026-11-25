@@ -2448,6 +2448,16 @@
     var owners = this._nearestRemaining(id);
     this.checkpoint();
     this.names = names;
+    // Deletion must remove wall references too; shrink still visits only walkable cells.
+    this.cells.forEach(function (name, cell) {
+      if (this.walk[cell]) return;
+      var bands = this.bands[cell];
+      if (bands && bands.some(function (row) { return row[2] === id; })) {
+        this._saveBands(cell, bands.map(function (row) {
+          return [row[0], row[1], row[2] === id ? 0 : row[2]];
+        }));
+      } else if (name === id) this.cells[cell] = 0;
+    }, this);
     this._vacate(this.cells.map(function (_, cell) { return cell; }), id, null, owners);
     this.autoSupers();
     return true;

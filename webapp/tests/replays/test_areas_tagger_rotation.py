@@ -413,6 +413,77 @@ def test_empty_draft_is_not_pending_and_autosave_is_per_map(data):
     assert json.loads(got["other"])["queue"] == ["Tunnel"]
 
 
+@pytest.mark.parametrize("transition", ["Escape", "s", "e", "p", "c", "w", "u", "b", "k", "a", "f", "m", "o", "h", "t", "map"])
+@pytest.mark.parametrize("tool", ["brush", "erase", "shrink"])
+@pytest.mark.parametrize("ending", ["pointerup", "pointercancel"])
+def test_transition_finishes_stroke_on_owning_map_and_restores(data, transition, tool, ending):
+    template = (Path(__file__).resolve().parents[2] / "scripts/control_tagger.template.html").read_text(encoding="utf-8")
+    match = re.search(r'  document.addEventListener\("keydown", function \(e\) \{(.*?)^  \}\);', template, re.M | re.S)
+    assert match
+    got = run_areas("""function run(p) {
+      const page=enter(p), canvas=page.el('areasCanvas'), original=exported(page);
+      if(p.tool==='brush') page.el('areasTree').children[1].click();
+      page.click('areaTool-'+p.tool); point(page,'pointerdown',128,128);
+      point(page,'pointermove',128,384);
+      const edited=exported(page), active=canvas.hasPointerCapture(1);
+      if(p.transition==='map') page.TG.selectMap('Bind');
+      else {
+        const handler=new Function('e','window','state','DATA','setMode',p.branch);
+        handler({key:p.transition,preventDefault(){}},page.window,page.TG.state,p.data,m=>page.TG.setMode(m));
+      }
+      const saved=page.storage.getItem(key), captured=canvas.hasPointerCapture(1),
+            released=canvas.releasedPointers.slice(), destination=exported(page);
+      point(page,'pointermove',128,640); point(page,p.ending,128,640);
+      const afterLate=exported(page), other=page.storage.getItem('control-tagger-areas-draft-v1:Bind');
+      page.TG.selectMap('Ascent'); page.TG.setMode('areas'); page.flushFrames();
+      const returned=exported(page), reopened=page.reopen(); reopened.TG.setMode('areas');
+      const pending=!reopened.el('areasRestoreRow').hidden, beforeRestore=exported(reopened);
+      reopened.click('areasRestore'); const restored=exported(reopened);
+      page.click('areasUndo'); const undone=exported(page); page.click('areasUndo');
+      return {original,edited,active,saved,captured,released,destination,afterLate,other,returned,
+              pending,beforeRestore,restored,undone,emptyUndo:exported(page)};
+    }""", data, transition=transition, tool=tool, ending=ending, branch=match.group(1))
+    assert got["active"] and got["edited"] != got["original"]
+    assert got["saved"] is not None
+    assert json.loads(got["saved"])["map"] == "Ascent"
+    assert json.loads(got["saved"])["cells"] == json.loads(got["edited"])["cells"]
+    assert not got["captured"] and got["released"] == [1]
+    assert got["destination"] == got["afterLate"] and got["other"] is None
+    assert got["returned"] == got["restored"] == got["edited"]
+    assert got["pending"] and got["beforeRestore"] == got["original"]
+    assert got["undone"] == got["emptyUndo"] == got["original"]
+
+
+@pytest.mark.parametrize("transition", ["mode", "map"])
+@pytest.mark.parametrize("storage_case", ["pending", "failWrites", "failReads"])
+def test_transition_autosave_respects_storage_failure_and_pending_draft(data, transition, storage_case):
+    got = run_areas("""function run(p) {
+      let page=enter(p); paint(page); const first=page.storage.getItem(key), storage=page.storage;
+      if(p.storage_case==='pending') {page=page.reopen(); page.TG.setMode('areas');}
+      else storage.opts[p.storage_case]=true;
+      const original=exported(page); page.el('areasTree').children[1].click(); page.click('areaTool-brush');
+      point(page,'pointerdown',128,128); const edited=exported(page);
+      if(p.transition==='map') page.TG.selectMap('Bind'); else page.TG.setMode('select');
+      point(page,'pointerup',128,128);
+      page.TG.selectMap('Ascent'); page.TG.setMode('areas');
+      const returned=exported(page), note=page.el('areasMessage').textContent;
+      storage.opts.failWrites=false; storage.opts.failReads=false;
+      const kept=storage.getItem(key), newer=storage.getItem(key+':newer');
+      page=page.reopen(); page.TG.setMode('areas'); page.click('areasRestore');
+      return {first,original,edited,returned,note,kept,newer,restored:exported(page)};
+    }""", data, transition=transition, storage_case=storage_case)
+    assert got["returned"] == got["edited"] != got["original"]
+    if storage_case == "pending":
+        assert got["kept"] == got["first"] and got["newer"] is not None
+        assert json.loads(got["newer"])["cells"] == json.loads(got["edited"])["cells"]
+        assert json.loads(got["restored"])["cells"] == json.loads(got["first"])["cells"]
+    elif storage_case == "failWrites":
+        assert "storage" in got["note"].lower() and got["kept"] == got["first"]
+    else:
+        assert json.loads(got["kept"])["cells"] == json.loads(got["edited"])["cells"]
+        assert got["restored"] == got["edited"]
+
+
 @pytest.mark.parametrize("modifier", ["ctrlKey", "metaKey"])
 @pytest.mark.parametrize("tool", ["brush", "erase", "shrink"])
 @pytest.mark.parametrize("ending", ["pointerup", "pointercancel"])

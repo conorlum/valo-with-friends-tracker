@@ -527,6 +527,48 @@ def test_delete_promotes_children_reassigns_bands_and_exports_valid_file():
     assert 0 in got["hand"]
 
 
+@pytest.mark.parametrize("action", ["delete", "shrink"])
+@pytest.mark.parametrize("ground,bands", [
+    (1, None),  # The finding's accepted file: name 1 on non-walkable cell 0.
+    (1, [[0, 10, 1], [20, 30, 3]]),
+    (3, [[0, 10, 3], [20, 30, 1]]),  # Upper-band-only reference.
+    (1, [[0, 10, 1], [20, 30, 0]]),  # Clearing collapses to plain unnamed ground.
+    (0, [[0, 10, 0], [20, 30, 1], [40, 50, 1]]),
+    (1, [[0, 10, 1], [5, 15, 1], [20, 30, 3]]),
+    (3, [[0, 10, 3], [20, 30, 2]]),  # Unrelated bands stay intact.
+    (0, None),
+])
+def test_delete_clears_all_wall_references_but_shrink_preserves_them(action, ground, bands):
+    wall_cells = (0, 128 ** 2 - 1)
+    obj = painted_object({**dict.fromkeys(wall_cells, ground), 1: 1, 2: 3},
+                         bands={str(cell): bands for cell in wall_cells} if bands else {})
+    assert areas.validate(obj) == []
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data); a.hand = new Set([1]);
+      const before = JSON.stringify(a.draftState());
+      if(p.action === 'delete') a.deleteName(1);
+      else {a.checkpoint(); a.shrink([0, 1, 16383], 1);}
+      const saved = a.draftState(), b = T.Areas.fromData(p.data);
+      const text = a.exportText(), restored = b.restoreDraft(saved);
+      const same = JSON.stringify(b.draftState()) === JSON.stringify(saved);
+      const undo = a.undo(), undone = JSON.stringify(a.draftState()) === before;
+      return {saved, text, restored, same, undo, undone, exhausted: a.undo()};
+    }''', {"data": map_data(128, {1, 2}, existing=obj, name="Sunset"), "action": action})
+    assert areas.validate(json.loads(got["text"])) == []
+    assert all(got[key] for key in ("restored", "same", "undo", "undone"))
+    assert not got["exhausted"] and got["saved"]["hand"] == [1]
+    cells = [name for name, count in got["saved"]["cells"] for _ in range(count)]
+    assert cells[1:3] == [3, 3]  # Walkable deletion/shrink still uses the nearest remaining area.
+    expected_ground = 0 if action == "delete" and ground == 1 else ground
+    expected_bands = [[lo, hi, 0 if action == "delete" and name == 1 else name]
+                      for lo, hi, name in bands] if bands else None
+    if action == "delete" and expected_bands and len({row[2] for row in expected_bands}) == 1:
+        expected_bands = None
+    for cell in wall_cells:
+        assert cells[cell] == expected_ground
+        assert got["saved"]["bands"].get(str(cell)) == expected_bands
+
+
 def test_delete_removes_secondary_parent_without_changing_primary_or_cells():
     got = run_node('''function run(p) {
       const a = T.Areas.fromData(p);

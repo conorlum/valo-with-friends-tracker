@@ -211,8 +211,8 @@
     $("areasMessage").textContent = [text, note].filter(Boolean).join(" ");
   }
 
-  function changed(text, revealSelection) {
-    var state = current();
+  function changed(text, revealSelection, state) {
+    state = state || current();
     state.model.autoSupers();
     if (!rowById(state, state.selected)) state.selected = state.model.names.length ? state.model.names[0].id : null;
     autosave(state);
@@ -390,7 +390,7 @@
       return;
     }
     model.checkpoint();
-    ui.stroke = {pointer: e.pointerId, last: point, count: dab(point, state)};
+    ui.stroke = {pointer: e.pointerId, state: state, last: point, count: dab(point, state)};
     canvas.setPointerCapture(e.pointerId);
     drawSoon();
   });
@@ -410,10 +410,11 @@
   });
 
   function finishStroke(e) {
-    if (!ui.stroke || ui.stroke.pointer !== e.pointerId) return;
-    var count = ui.stroke.count;
+    if (!ui.stroke || (e && ui.stroke.pointer !== e.pointerId)) return;
+    var stroke = ui.stroke, count = stroke.count;
     ui.stroke = null;
-    changed(count ? cellCount(count) + (ui.tool === "erase" ? " erased." : ui.tool === "shrink" ? " shrunk." : " painted.") : "No cells changed.");
+    if (canvas.hasPointerCapture(stroke.pointer)) canvas.releasePointerCapture(stroke.pointer);
+    changed(count ? cellCount(count) + (ui.tool === "erase" ? " erased." : ui.tool === "shrink" ? " shrunk." : " painted.") : "No cells changed.", false, stroke.state);
   }
   canvas.addEventListener("pointerup", finishStroke);
   canvas.addEventListener("pointercancel", finishStroke);
@@ -688,7 +689,9 @@
   });
 
   function onMap() {
-    ui.alignment = ui.stroke = ui.hover = null;
+    // The tagger has already switched maps; finish against the stroke's owning state.
+    finishStroke();
+    ui.alignment = ui.hover = null;
     if (!active()) return;
     var state = current();
     $("areasSource").textContent = state.saved ? "Saved areas" : "Walking-distance draft";
