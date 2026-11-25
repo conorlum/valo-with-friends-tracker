@@ -21,6 +21,7 @@ from test_control_pinned_inputs import tagged
 from test_replay_store import condensed, pg  # noqa: E402,F401  (fixtures)
 
 from app.config import settings  # noqa: E402
+from app.models.replay_postplant import ReplayRoundPostplant
 from app.models.match import Match  # noqa: E402
 from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun  # noqa: E402
 from app.models.site_events import SiteEvent  # noqa: E402
@@ -109,7 +110,7 @@ class FakeWorker:
         util = {"status": "ok", "data": {"v": 1, "casts": []}, "error": None} if status == "ok" else \
             {"status": "failed", "data": None, "error": "ValueError: boom"}
         return {"run": run, "rows": [GAP_ROW, {**GAP_ROW, "seq": 1}] if status == "ok" else [], "moments": moments,
-                "util": util}
+                "util": util, "postplant": {"status": "ok", "data": {"v": 1}, "error": None}}
 
     def submit(self, task):
         if task.get("height") and (task["map"], task["height"]) not in self.heights:
@@ -585,6 +586,9 @@ def test_gaps_source_failure_preserves_control_and_stops_retrying(factory, db, l
     runs = gap_runs(db, linked)
     assert len(runs) == linked.round_count
     assert all(r.status == 'failed' and r.notes.get('features_source_unavailable') == 1 for r in runs.values())
+    evidence = db.query(ReplayRoundPostplant).filter_by(replay_id=linked.id).all()
+    assert len(evidence) == linked.round_count
+    assert all(r.status == 'failed' and r.error == 'reset unobserved' and r.data is None for r in evidence)
 
 
 def test_a_forgotten_job_is_asked_again_and_a_busy_worker_stops_the_cycle(factory, db, linked):
@@ -1013,6 +1017,9 @@ def test_a_capable_worker_gets_the_sites_gap_keys_and_both_results_are_stored(fa
     assert runs[1].status == "ok" and runs[1].fingerprint == gap_print and runs[1].gap_count == 2
     assert db.query(ReplayGap).filter_by(replay_id=linked.id, round_number=1).count() == 2, "rows through JSON"
     assert rows(db, linked)[1].status == "ok"
+    postplant = db.get(ReplayRoundPostplant, (linked.id, 1))
+    assert postplant.status == "ok" and postplant.data == {"v": 1}
+    assert (postplant.fingerprint, postplant.gaps_revision) == (gap_print, replay_gaps.GAPS_REVISION)
 
 
 def test_a_rounds_own_gap_failure_is_stored_and_control_stays_ok(factory, db, linked):
@@ -1041,6 +1048,8 @@ def test_a_rounds_own_gap_failure_is_stored_and_control_stays_ok(factory, db, li
     lambda g: g.update(moments=None),
     lambda g: g["moments"].update(status="other"),
     lambda g: g["moments"].update(status="ok", fights=None),             # ok without a list
+    lambda g: g.pop("postplant"),
+    lambda g: g["postplant"].update(status="ok", data=None),
     lambda g: g.pop("util"),                                             # a result from before Critical Util
     lambda g: g["util"].update(status="ok", data=None),                  # util ok without its data
 ])
@@ -1560,3 +1569,22 @@ def test_blocked_util_step_does_not_hold_control_dispatch(monkeypatch):
         if control_thread.ident is not None:
             control_thread.join(5)
     assert not util_thread.is_alive() and not control_thread.is_alive()
+
+
+@pytest.mark.parametrize("section, trusted", [
+    (None, False), ([], False), ({"status": "other"}, False),
+    ({"status": "ok"}, False), ({"status": "ok", "data": []}, False),
+    ({"status": "ok", "data": {}}, True),
+    ({"status": "failed", "data": None, "error": "synthetic"}, True),
+])
+def test_trusted_gaps_requires_postplant(section, trusted):
+    from types import SimpleNamespace
+    flight = SimpleNamespace(fingerprint="f" * 16, map_name="Ascent", asset_key=None)
+    task = {"map": "Ascent", "gaps": {
+        "gap_fingerprint": replay_gaps.gap_fingerprint(flight.fingerprint, "Ascent")}}
+    gaps = FakeWorker.gap_result(task)
+    gaps.pop("postplant", None)
+    if section is not None:
+        gaps["postplant"] = section
+    result = remote._trusted_gaps({"gaps": gaps}, flight)
+    assert (result is gaps) if trusted else (result is None)

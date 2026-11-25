@@ -502,6 +502,10 @@ def _trusted_gaps(result: dict, f: InFlight) -> dict | None:
     if not isinstance(util, dict) or util.get("status") not in ("ok", "failed") \
             or (util["status"] == "ok" and not isinstance(util.get("data"), dict)):
         return None
+    postplant = gaps.get("postplant")
+    if not isinstance(postplant, dict) or postplant.get("status") not in ("ok", "failed") \
+            or (postplant["status"] == "ok" and not isinstance(postplant.get("data"), dict)):
+        return None
     asset_key = f.asset_key or f.map_name
     if run.get("fingerprint") != replay_gaps.gap_fingerprint(f.fingerprint, asset_key) \
             or run.get("gaps_revision") != replay_gaps.GAPS_REVISION \
@@ -520,7 +524,7 @@ def _keep_gaps(session_factory, f: InFlight, result: dict, counts: dict):
         return None
     try:
         outcome = gaps_store.store_gaps(session_factory, f.replay_id, f.round_number, gaps["run"], gaps["rows"],
-                                        moments=gaps["moments"], util=gaps["util"],
+                                        moments=gaps["moments"], util=gaps["util"], postplant=gaps["postplant"],
                                         expected_control_fingerprint=f.fingerprint)
     except Exception:  # noqa: BLE001 - rows the model refuses: the gaps are dropped, control stays stored
         log.exception("timing gaps of replay %s round %s could not be stored", f.replay_id, f.round_number)
@@ -622,7 +626,9 @@ def _collect(session_factory, session, client, state: State, now: float, counts:
                 'moments': {'status': 'failed', 'fights': [],
                             'error': job.get('error') or 'round source unavailable'},
                 'util': {'status': 'failed', 'data': None,
-                         'error': job.get('error') or 'round source unavailable'}}}
+                         'error': job.get('error') or 'round source unavailable'},
+                'postplant': {'status': 'failed', 'data': None,
+                              'error': job.get('error') or 'round source unavailable'}}}
             _keep_gaps(session_factory, f, failure, counts)
             continue
         elif status == "failed" and job.get("error_kind") in ('engine', 'inputs') and not f.gaps_only:

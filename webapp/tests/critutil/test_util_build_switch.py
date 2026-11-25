@@ -16,6 +16,7 @@ from app.config import Settings, settings
 from app.critutil import build_digest
 from app.db import Base, get_db
 from app.models.friendship import Friendship
+from app.models.replay_postplant import ReplayRoundPostplant
 from app.models.replay import Replay, ReplayRoundUtil, UtilModel
 from app.routers import replay_admin
 from app.services import replay_util, util_build_remote, util_model, util_rebuild, util_values
@@ -157,7 +158,7 @@ def test_local_tab_still_initializes_missing_estimator(db, linked, monkeypatch):
 def admin_site(monkeypatch):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine, tables=[m.__table__ for m in
-        (Friendship, Replay, ReplayRoundUtil, UtilModel)])
+        (Friendship, Replay, ReplayRoundUtil, ReplayRoundPostplant, UtilModel)])
     monkeypatch.setattr(settings, "demo_mode", False)
     monkeypatch.setattr(settings, "util_build_remote", True)
     monkeypatch.setattr(settings, "replay_admin_token", "synthetic-admin-token")

@@ -20,6 +20,7 @@ from app.models.friendship import Friendship
 from app.models.kill_event import KillEvent
 from app.models.match import Match, MatchPlayer, MatchSource
 from app.models.player import Player
+from app.models.replay_postplant import ReplayRoundPostplant
 from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel
 from app.models.round import Round, RoundPlayerStat
 from app.services import replay_control_remote, replay_gaps, replay_util, util_model, util_store, util_values
@@ -69,7 +70,7 @@ class Client:
 def env(monkeypatch):
     engine = create_engine("sqlite://")
     tables = (Player, Match, MatchPlayer, Round, RoundPlayerStat, KillEvent, Friendship,
-              Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel)
+              Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, ReplayRoundPostplant, UtilModel)
     Base.metadata.create_all(engine, tables=[m.__table__ for m in tables])
     monkeypatch.setattr(remote, "settings", SimpleNamespace(util_build_remote=True, demo_mode=False))
     monkeypatch.setattr(replay_control_remote.settings, "replay_control_remote", True)
