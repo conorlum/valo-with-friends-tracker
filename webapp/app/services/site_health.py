@@ -65,6 +65,7 @@ PAGE_ROUTES = {
     "/matches/{external_id}/rounds/{round_number}": "not_page",
     "/plants": "page",
     "/plants/{map_name}": "page",
+    "/plants/{map_name}/postplant": "page",
     "/players": "page",
     "/players/{display_name}": "page",
     "/players/{display_name}/career": "not_page",

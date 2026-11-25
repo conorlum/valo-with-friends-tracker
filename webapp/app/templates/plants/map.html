@@ -18,6 +18,7 @@
 <h1>Plants on {{ map_name }}</h1>
 <div class="tab-row" role="tablist">
   <a class="tab-btn active" href="/plants" role="tab" aria-selected="true">Plant spots</a>
+  <a class="tab-btn" href="/plants/{{ map_name }}/postplant" role="tab" aria-selected="false">Post-plant</a>
 </div>
 <p class="page-meta">{{ thin_note }}</p>
 {% if login_note %}<p class="page-meta" data-login-note>{{ login_note }}</p>{% endif %}
