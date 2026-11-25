@@ -189,6 +189,15 @@ def test_the_route_is_listed_in_site_health():
 # --- what counts (R8, D17) -------------------------------------------------------
 
 
+def test_read_rounds_can_be_limited_to_some_replays(db):
+    first, second = seed(db, 1), seed(db, 2)
+    both = postplant_page.read_rounds(db, "Ascent")
+    assert {r.replay_uuid for r in both} == {first.match_uuid, second.match_uuid}
+    only = postplant_page.read_rounds(db, "Ascent", replay_ids={first.id})
+    assert [r.replay_uuid for r in only] == [first.match_uuid]
+    assert postplant_page.read_rounds(db, "Ascent", replay_ids=set()) == []
+
+
 def test_a_current_row_shows_its_area_with_n(db):
     seed(db, 1)
     page = _page(db)

@@ -69,6 +69,7 @@ PAGE_ROUTES = {
     "/players": "page",
     "/players/{display_name}": "page",
     "/players/{display_name}/career": "not_page",
+    "/players/{display_name}/postplant": "not_page",
     "/players/{display_name}/recent-matches": "not_page",
     "/replays": "page",
     "/replays/areas/{map_name}.json": "not_page",

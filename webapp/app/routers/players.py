@@ -5,13 +5,15 @@ from dataclasses import dataclass
 from typing import TypeVar
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import SessionLocal, get_db
-from app.models import AccountGroupMember, Player
-from app.services import site_health
+from app.models import AccountGroupMember, MatchPlayer, Player
+from app.models.replay import Replay
+from app.replays import layouts
+from app.services import postplant_page, postplant_stats, site_health, util_model
 from app.services.account_groups import (
     get_cached_group_views,
     group_fingerprint,
@@ -30,7 +32,7 @@ from app.services.friends import get_current_player_and_friendship
 from app.services.map_streaks import compute_map_streaks
 from app.services.match_streaks import compute_form, form_entry
 from app.services.agent_roles import ROLES, filter_agents, filter_label, parse_filter, rank_agents
-from app.services.player_data import RECENT_MATCH_LIMIT, played_agent_counts
+from app.services.player_data import RECENT_MATCH_LIMIT, one_row_per_match, played_agent_counts
 from app.services.player_graphs import build_state_diagrams_from_aggregates, top_kill_order_state_deltas
 from app.services.player_view_cache import (
     CachedPlayerViews,
@@ -413,6 +415,103 @@ def player_recent_matches_fragment(
     entries = recent_form_entries(db, player.id, player_ids=player_ids, agents=agents)
     rows = build_recent_match_rows(db, player.id, entries, player_ids=player_ids, agents=agents)
     return templates.TemplateResponse(request, "_recent_match_rows.html", {"recent_rows": rows})
+
+
+POSTPLANT_SIDE_NAMES = {"attack": "Hold", "defense": "Retake"}
+POSTPLANT_NOTE = (
+    "Where this player stands after the spike goes down, from replays. Signed figures are points of round-win "
+    "chance per post-plant; n is the number of post-plants behind each figure."
+)
+
+
+def _postplant_player_slots(db: Session, player: Player, player_ids, agents) -> dict:
+    """{match id: player id} for the matches the section covers: one row per match for a combined view (the
+    lowest player id's, chosen before the agent filter, as player_data does), then the agent filter."""
+    if agents is not None and not agents:
+        return {}
+    query = db.query(MatchPlayer.match_id, MatchPlayer.player_id)
+    if player_ids:
+        query = query.filter(MatchPlayer.player_id.in_(player_ids), one_row_per_match(player_ids))
+    else:
+        query = query.filter(MatchPlayer.player_id == player.id)
+    if agents is not None:
+        query = query.filter(MatchPlayer.agent.in_(agents))
+    return {match_id: player_id for match_id, player_id in query.all()}
+
+
+def _postplant_sections(db: Session, player: Player, player_ids, agents) -> list[dict]:
+    """The sides the player is eligible on (D6), each with its blocks beside the Everyone rows of the same
+    layout, site and side (from the cached map tables), and the sentence."""
+    chosen = _postplant_player_slots(db, player, player_ids, agents)
+    if not chosen:
+        return []
+    replay_ids_by_key: dict[str, set[int]] = {}
+    for replay_id, map_name, branch in (db.query(Replay.id, Replay.map_name, Replay.game_branch)
+                                        .filter(Replay.match_id.in_(list(chosen))).all()):
+        selection = layouts.layout_for(map_name, branch)
+        if selection.state == "ok":
+            replay_ids_by_key.setdefault(selection.layout.asset_key, set()).add(replay_id)
+    rounds, slots = [], {}
+    for asset_key, replay_ids in sorted(replay_ids_by_key.items()):
+        for r in postplant_page.read_rounds(db, asset_key, replay_ids=replay_ids):
+            slot = next((s for s, pid in r.slot_players.items() if pid is not None and chosen.get(r.match_id) == pid),
+                        None)
+            if slot is not None:
+                rounds.append(r)
+                slots[r.replay_uuid, r.round_number] = slot
+    sections = []
+    for summary in postplant_stats.player_blocks(rounds, slots, util_model.load(db)):
+        if not summary["eligible"] or not summary["blocks"]:
+            continue
+        blocks = []
+        for block in summary["blocks"]:
+            everyone = postplant_page.page_data(db, block["asset_key"], None, site=block["site"],
+                                                side=block["side"], spot=None)
+            every_rows = {row["name"]: row for row in everyone["areas"]}
+            every_held = sum(row["held_s"] for row in everyone["areas"]) or None
+            rows = []
+            for row in sorted((r for r in block["areas"] if r.get("held_s", 0) > 0),
+                              key=lambda r: (-r["held_s"], r["name"])):
+                other = every_rows.get(row["name"])
+                net = row["net_win_per_n"]
+                other_net = other["net_win_per_n"] if other else None
+                rows.append({
+                    "name": row["name"], "share": row["held_share"], "n": row["n"],
+                    "net": postplant_stats.pts(net) if net is not None else None,
+                    "everyone_n": other["n"] if other else 0,
+                    "everyone_share": other["held_s"] / every_held if other and every_held else None,
+                    "everyone_net": postplant_stats.pts(other_net) if other_net is not None else None,
+                })
+            blocks.append({
+                "map_name": block["map_name"], "site": block["site"], "n": block["n"], "rows": rows,
+                "sentence": postplant_stats.sentence(block, everyone["areas"]),
+            })
+        sections.append({"side": POSTPLANT_SIDE_NAMES[summary["side"]], "total_n": summary["total_n"],
+                         "blocks": blocks})
+    return sections
+
+
+@router.get("/{display_name}/postplant")
+def player_postplant_fragment(
+    request: Request, display_name: str, accounts: str | None = None, filter: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """The post-plant section, loaded after the page (htmx). It covers all the player's replays, not the
+    Recent/Career toggle, and honours `accounts=all` and `filter` like the other fragments. It names only
+    this player (R11). Empty when the player is not eligible on either side."""
+    if settings.demo_mode:
+        raise HTTPException(status_code=404)
+    player = get_player_or_404(db, display_name)
+    player_ids = _account_view(db, player, accounts).player_ids if accounts == "all" else None
+    agents = None
+    if filter:
+        agents_played = [agent for agent, _, _ in played_agent_counts(db, player.id, player_ids)]
+        key = parse_filter(filter, agents_played)
+        agents = filter_agents(key, agents_played) if key else None
+    sections = _postplant_sections(db, player, player_ids, agents)
+    return templates.TemplateResponse(request, "players/_postplant.html", {
+        "postplant_sections": sections, "postplant_note": POSTPLANT_NOTE,
+    })
 
 
 @router.get("/{display_name}/career")

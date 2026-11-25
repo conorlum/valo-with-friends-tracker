@@ -34,10 +34,15 @@ logger = logging.getLogger(__name__)
 SIDES = ("attack", "defense")
 
 
-def _current(db, asset_key, *, with_data):
-    """[(ReplayRoundPostplant row, Replay)] of every ok row current on this layout, in a fixed order."""
+def _current(db, asset_key, *, with_data, replay_ids=None):
+    """[(ReplayRoundPostplant row, Replay)] of every ok row current on this layout, in a fixed order.
+    `replay_ids`, when given, limits the query to those replays (every other rule is unchanged)."""
     query = select(ReplayRoundPostplant).where(
         ReplayRoundPostplant.status == "ok", ReplayRoundPostplant.gaps_revision == replay_gaps.GAPS_REVISION)
+    if replay_ids is not None:
+        if not replay_ids:
+            return []
+        query = query.where(ReplayRoundPostplant.replay_id.in_(list(replay_ids)))
     if not with_data:
         query = query.options(load_only(
             ReplayRoundPostplant.replay_id, ReplayRoundPostplant.round_number,
@@ -75,9 +80,10 @@ def _slot_players(db, replay_ids):
     return players, links
 
 
-def read_rounds(db, asset_key) -> list[postplant_stats.RoundInput]:
-    """Current, side-known rounds with a plant on a known site, on this layout."""
-    current = _current(db, asset_key, with_data=True)
+def read_rounds(db, asset_key, replay_ids=None) -> list[postplant_stats.RoundInput]:
+    """Current, side-known rounds with a plant on a known site, on this layout. `replay_ids` limits
+    the read to those replays (the player page's own rows); None reads every replay."""
+    current = _current(db, asset_key, with_data=True, replay_ids=replay_ids)
     players, _ = _slot_players(db, sorted({replay.id for _, replay in current}))
     flat = plant_page._flat_spots(asset_key)
     picked = []
