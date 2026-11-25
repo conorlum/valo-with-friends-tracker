@@ -15,14 +15,14 @@ MODEL = {"synthetic": True}
 
 def event(t=10.2, killer=0, victim=5, ku=100, vu=200):
     return {"t": t, "killer": killer, "victim": victim,
-            "k_side": "attack" if killer < 5 else "defense",
+            "k_side": None if killer is None else "attack" if killer < 5 else "defense",
             "v_side": "attack" if victim < 5 else "defense", "before": [5, 5],
             "ku": ku, "kv": 100, "kz": 20, "vu": vu, "vv": 100, "vz": 30,
             "k_line": 1}
 
 
 def rnd(i=0, *, samples=None, kills=None, asset_key="Toy", site="A", match_id=None):
-    data = {"v": 1, "plant": {"t": 10, "u": 0, "v": 0, "by": 0},
+    data = {"v": 2, "plant": {"t": 10, "u": 0, "v": 0, "by": 0},
             "end": 12, "step": 0.5,
             "sides": {"0": "attack", "1": "attack", "5": "defense"},
             "sides_known": True,
@@ -48,6 +48,102 @@ def figures(monkeypatch):
 
 def by_name(table):
     return {row["name"]: row for row in table["areas"]}
+
+
+@pytest.fixture
+def real_figures(monkeypatch):
+    """Synthetic map attribution, with the production swings and win estimator."""
+    monkeypatch.setattr(areas, "load_painted", lambda key: None)
+    monkeypatch.setattr(areas, "area_at", lambda key, u, v, z, *, painted_table:
+                        {"name": {100: "A", 200: "B", 300: "C"}[u]})
+    return {"cells": {"5v4": [8, 10], "4v5": [2, 10]}}
+
+
+@pytest.mark.parametrize("killer,victim,k_side,v_side,enemy", [
+    (0, 1, "attack", "attack", False),
+    (0, 0, "attack", "attack", False),
+    (5, 5, "defense", "defense", False),
+    (None, 0, None, "attack", False),
+    (None, 5, None, "defense", False),
+    (0, 5, None, "defense", False),
+    (0, 5, "A", "defense", False),
+    (0, 5, "attack", None, False),
+    (0, 5, "attack", "B", False),
+    (0, 5, "attack", "defense", True),
+    (5, 0, "defense", "attack", True),
+], ids=["team", "self", "defender-self", "environment", "defender-environment",
+        "unknown-killer-side", "unlinked-killer-side", "unknown-victim-side", "unlinked-victim-side",
+        "enemy", "defender-enemy"])
+@pytest.mark.parametrize("with_model", [True, False], ids=["win-model", "no-model"])
+def test_only_enemy_kills_earn_credit(real_figures, killer, victim, k_side, v_side, enemy, with_model):
+    positions = {0: 100, 1: 200, 5: 300}
+    k = event(killer=killer, victim=victim, ku=positions.get(killer), vu=positions[victim])
+    k.update(k_side=k_side, v_side=v_side)
+    samples = [[10, slot, u, 100, 20, 1] for slot, u in positions.items()]
+    rounds = [rnd(i, samples=samples, kills=[k]) for i in range(2)]
+    model = real_figures if with_model else None
+    swings = stats.kill_swings(rounds[0], model)
+    swing = swings.get((k["t"], killer, victim), 0.0)
+    if with_model:
+        assert bool(swings) is enemy
+        assert swing > 0 if enemy else swing == 0
+    for side, slots in [("attack", (0, 1)), ("defense", (5,))]:
+        table = stats.area_table(rounds, model, side=side)
+        totals = stats.site_totals(rounds, model, side)
+        expected_kills = 2 * int(enemy and killer in slots)
+        expected_deaths = 2 * int(victim in slots)
+        assert totals["kills"] == expected_kills
+        assert totals["deaths"] == expected_deaths
+        assert totals["distinct_n"] == table["distinct_n"] == 2 * len(slots)
+        for row, slot in zip(table["areas"], slots):
+            credit = int(enemy and killer == slot)
+            death = int(victim == slot)
+            assert row["kills"] == 2 * credit
+            assert row["deaths"] == 2 * death
+            assert row["kills_per_n"] == credit
+            assert row["kd"] == (credit / death if death else None)
+            assert row["kills_ci"] == (credit, credit)
+            assert len(row["examples"]) == (2 if credit and with_model else 0)
+            if with_model:
+                assert row["win_gained"] == pytest.approx(2 * credit * swing)
+                assert row["net_win"] == pytest.approx(2 * (credit - death) * swing)
+                assert row["gained_ci"] == pytest.approx((credit * swing,) * 2)
+                assert row["net_ci"] == pytest.approx(((credit - death) * swing,) * 2)
+        for field in ("kills", "deaths", "win_gained", "net_win"):
+            if not with_model and field in ("win_gained", "net_win"):
+                assert totals[field] is None
+            else:
+                assert sum(row[field] for row in table["areas"]) == pytest.approx(totals[field])
+
+
+@pytest.mark.parametrize("killer_located,victim_located", [(False, False), (False, True), (True, False)])
+def test_arena_null_positions_add_no_area_events_or_holdings(real_figures, killer_located, victim_located):
+    k = event()
+    for prefix, located in [("k", killer_located), ("v", victim_located)]:
+        if not located:
+            k.update({prefix + axis: None for axis in ("u", "v", "z")})
+    if not killer_located:
+        k["k_line"] = None
+    r = rnd(samples=[], kills=[k])
+    swing = stats.kill_swings(r, real_figures)[(k["t"], 0, 5)]
+    for side, located in [("attack", killer_located), ("defense", victim_located)]:
+        table = stats.area_table([r], real_figures, side=side)
+        totals = stats.site_totals([r], real_figures, side)
+        assert totals["kills"] == int(side == "attack" and located)
+        assert totals["deaths"] == int(side == "defense" and located)
+        assert totals["win_gained"] == pytest.approx(swing if side == "attack" and located else 0)
+        assert totals["net_win"] == pytest.approx((swing if side == "attack" else -swing) if located else 0)
+        assert totals["distinct_n"] == table["distinct_n"] == 0
+        assert len(table["areas"]) == int(located)
+        for row in table["areas"]:
+            assert row["held_s"] == row["n"] == 0
+            assert row["line_share"] is row["crossfire_share"] is None
+        for field in ("kills", "deaths", "win_gained", "net_win"):
+            assert sum(row[field] for row in table["areas"]) == pytest.approx(totals[field])
+
+
+def test_calculation_version_invalidates_cached_team_kill_figures():
+    assert stats.CALCULATION_VERSION == 2
 
 
 def paint(key, name="Paint", cell_id=1, bands=None):

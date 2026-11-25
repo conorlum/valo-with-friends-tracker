@@ -19,7 +19,7 @@ from app.coach import areas
 from app.services import util_values
 from app.services.stats_math import cluster_bootstrap_ci
 
-CALCULATION_VERSION = 1
+CALCULATION_VERSION = 2
 M = 10
 MIN_N = 20
 CROSSFIRE_DEG = 60.0
@@ -102,6 +102,11 @@ def _included(r, slot, side, include_slot):
     return slot is not None and _same_side(r, slot, side) and include_slot(r, slot)
 
 
+def _enemy_kill(k):
+    ks, vs = k.get("k_side"), k.get("v_side")
+    return ks in ("attack", "defense") and vs in ("attack", "defense") and ks != vs
+
+
 def _counts():
     return {"players": set(), "kills": 0, "deaths": 0, "win_gained": 0.0, "net_win": 0.0}
 
@@ -157,6 +162,8 @@ def _area_table(rounds, model, *, side, include_slot, tables):
         for k in data.get("kills", ()):
             swing = swings.get((round(float(k["t"]), 2), k["killer"], k["victim"]), 0.0)
             for role, prefix, count in (("killer", "k", "kills"), ("victim", "v", "deaths")):
+                if role == "killer" and not _enemy_kill(k):
+                    continue
                 slot = k[role]
                 u, v, z = (k.get(prefix + axis) for axis in ("u", "v", "z"))
                 if not _included(r, slot, side, include_slot) or u is None or v is None:
@@ -217,7 +224,7 @@ def area_table(rounds, model, *, side, include_slot=lambda r, slot: True) -> dic
 
 
 def site_totals(rounds, model, side) -> dict:
-    """Unshrunk, located event totals, independently of area attribution (R14)."""
+    """Unshrunk, located enemy kills and all deaths, independently of areas (R14)."""
     totals = {"kills": 0, "deaths": 0, "win_gained": 0.0, "net_win": 0.0}
     distinct = set()
     for r in rounds:
@@ -227,7 +234,8 @@ def site_totals(rounds, model, side) -> dict:
         swings = kill_swings(r, model)
         for k in r.data.get("kills", ()):
             swing = swings.get((round(float(k["t"]), 2), k["killer"], k["victim"]), 0.0)
-            if _same_side(r, k["killer"], side) and k.get("ku") is not None and k.get("kv") is not None:
+            if (_enemy_kill(k) and _same_side(r, k["killer"], side)
+                    and k.get("ku") is not None and k.get("kv") is not None):
                 totals["kills"] += 1
                 totals["win_gained"] += swing
                 totals["net_win"] += swing

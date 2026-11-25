@@ -12,14 +12,27 @@ import numpy as np
 
 from app.control import engine, stance
 from app.critutil.extract import _EPS, _alive_counts, _sides
+from app.replays.format import ARENA_Z_M
 
 STEP_S = 0.5
-VERSION = 1
+VERSION = 2
+
+
+def _in_arena(rnd, slot, t) -> bool:
+    """Use raw world metres at the nearest track sample, as the control engine does."""
+    zs = rnd.track_z.get(slot)
+    i = rnd._sample(slot, t) if zs is not None else None
+    # Unknown z (NaN) compares false, matching the engine's nan=0 arena test.
+    return i is not None and bool(zs[i] < ARENA_Z_M)
+
+
+def _map_pos(rnd, slot, t):
+    return None if _in_arena(rnd, slot, t) else rnd.pos(slot, t)
 
 
 def spike_line(rnd, slot, t, x_px, y_px) -> bool:
     """A physical line to the spike through walls and current smokes, without FOV or blinds."""
-    pos = rnd.pos(slot, t)
+    pos = _map_pos(rnd, slot, t)
     if pos is None:
         return False
     boxed = stance.boxed_stance(rnd, slot, t)
@@ -74,7 +87,7 @@ def round_postplant(rnd: engine.RoundInputs, blob: dict) -> dict:
         for slot in sorted(sides):
             if not rnd.alive(slot, t):
                 continue
-            pos = rnd.pos(slot, t)
+            pos = _map_pos(rnd, slot, t)
             if pos is None:
                 continue
             u, v = _uv(pos)
@@ -87,15 +100,18 @@ def round_postplant(rnd: engine.RoundInputs, blob: dict) -> dict:
         if not plant_t <= t <= end:
             continue
         killer, victim = event.get("killer"), event.get("victim")
-        pos = rnd.pos(killer, t)
+        pos = _map_pos(rnd, killer, t)
+        victim_arena = _in_arena(rnd, victim, t)
         ku, kv = _uv(pos)
         before = _alive_counts(rnd, sides, t - _EPS)
         out["kills"].append({
             "t": t, "killer": killer, "victim": victim,
             "k_side": sides.get(killer), "v_side": sides.get(victim),
             "before": [before["attack"], before["defense"]],
-            "ku": ku, "kv": kv, "kz": _world_z_dm(rnd, killer, t),
-            "vu": event.get("u"), "vv": event.get("v"), "vz": _world_z_dm(rnd, victim, t),
+            "ku": ku, "kv": kv, "kz": None if pos is None else _world_z_dm(rnd, killer, t),
+            "vu": None if victim_arena else event.get("u"),
+            "vv": None if victim_arena else event.get("v"),
+            "vz": None if victim_arena else _world_z_dm(rnd, victim, t),
             "k_line": None if pos is None else int(spike_line(rnd, killer, t, sx, sy)),
         })
     return out

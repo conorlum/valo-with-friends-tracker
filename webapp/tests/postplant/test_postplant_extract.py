@@ -8,6 +8,7 @@ import pytest
 
 from app.control import engine, stance
 from app.postplant import extract
+from app.replays.format import ARENA_Z_M
 from tests.replays.control_toys import (
     BOX_TOY_RISE_M, TOY_Z0, blob, box_hall_tops, door_hall, height_blob,
     open_hall, three_boxes_tops, tops_hall, toy_ability, track, uv, z_track,
@@ -47,7 +48,7 @@ def test_no_bomb_returns_empty_evidence_with_metadata():
     data["plant"] = 10  # A legacy field is not the completed-plant evidence.
     data["kills"] = [kill(11)]
     assert result(data) == {
-        "v": 1, "plant": None, "end": 12, "step": 0.5,
+        "v": 2, "plant": None, "end": 12, "step": 0.5,
         "sides": {"0": "attack", "5": "defense"}, "sides_known": True,
         "samples": [], "kills": [],
     }
@@ -56,7 +57,7 @@ def test_no_bomb_returns_empty_evidence_with_metadata():
 def test_samples_include_both_ends_and_use_minimap_integers():
     data = data_of()
     out = result(data)
-    assert extract.VERSION == out["v"] == 1
+    assert extract.VERSION == out["v"] == 2
     assert extract.STEP_S == out["step"] == 0.5
     assert out["plant"] == {"t": 10, "u": uv(212, 196)[0], "v": uv(212, 196)[1], "by": 0}
     assert len(out["samples"]) == 10
@@ -80,6 +81,57 @@ def test_unknown_positions_are_not_sampled():
     data = data_of()
     data["tracks"]["5"] = track([(11, 320, 196, 0)], t0=11, t1=14)
     assert [r[0] for r in result(data)["samples"] if r[1] == 5] == TIMES[2:]
+
+
+@pytest.mark.parametrize("spans,expected", [
+    ([(0, 10.4375, 0), (10.5, 14, -499)], [10]),
+    ([(0, 14, -499)], []),
+    ([(0, 10.4375, 0), (10.5, 11.4375, -499), (11.5, 14, 0)], [10, 11.5, 12]),
+], ids=["entry", "inside", "return"])
+def test_arena_occupancy_removes_only_the_current_map_samples(spans, expected):
+    data = data_of()
+    data["tracks"]["0"] = [segment for start, end, world_z in spans
+                           for segment in z_track([(start, 140, 196, 180, world_z - TOY_Z0 / 10)],
+                                                  t0=start, t1=end)]
+    out = result(data)
+    assert [r[0] for r in out["samples"] if r[1] == 0] == expected
+    assert [r[0] for r in out["samples"] if r[1] == 5] == TIMES
+
+
+@pytest.mark.parametrize("world_z,located", [
+    (ARENA_Z_M - 0.1, False), (ARENA_Z_M, True), (ARENA_Z_M + 0.1, True),
+    (0, True), (None, True),
+])
+def test_arena_threshold_uses_raw_world_metres_and_keeps_unknown_height(world_z, located):
+    data = data_of()
+    if world_z is not None:
+        data["tracks"]["0"] = z_track([(0, 140, 196, 180, world_z - TOY_Z0 / 10)], t1=14)
+    rnd = round_of(data)
+    assert rnd.geo.heights is None
+    assert extract.spike_line(rnd, 0, 10, 212, 196) is located
+    rows = [r for r in extract.round_postplant(rnd, data)["samples"] if r[1] == 0]
+    assert [r[0] for r in rows] == (TIMES if located else [])
+
+
+@pytest.mark.parametrize("arena_slots", [{0, 5}, {0}, {5}],
+                         ids=["both-inside", "arena-killer-map-victim", "map-killer-arena-victim"])
+def test_arena_kills_keep_events_but_remove_each_arena_position(arena_slots):
+    data = data_of(deaths={5: 11})
+    data["kills"] = [kill(11)]
+    for slot, x in [(0, 140), (5, 320)]:
+        world_z = -499 if slot in arena_slots else 2
+        data["tracks"][str(slot)] = z_track([(0, x, 196, 180, world_z - TOY_Z0 / 10)], t1=14)
+    if 5 in arena_slots:
+        # The condensed kill's victim u/v are arena coordinates too.
+        data["kills"][0].update(u=-12000, v=-8000)
+    [row] = result(data)["kills"]
+    assert {k: row[k] for k in ("t", "killer", "victim", "k_side", "v_side", "before")} == {
+        "t": 11, "killer": 0, "victim": 5, "k_side": "attack", "v_side": "defense", "before": [1, 1]}
+    assert [row[k] for k in ("ku", "kv", "kz", "k_line")] == (
+        [None] * 4 if 0 in arena_slots else [*uv(140, 196), 20, 1])
+    assert [row[k] for k in ("vu", "vv", "vz")] == (
+        [None] * 3 if 5 in arena_slots else [*uv(304, 204), 20])
+    json.dumps(row, allow_nan=False)
 
 
 @pytest.mark.parametrize("plant_t", [12, 13])
