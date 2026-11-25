@@ -233,9 +233,9 @@ guards = [
 ]
 
 [postplant]
-about = "Post-plant samples, kill evidence and physical spike lines on replay-worker toy rounds."
+about = "Post-plant samples, physical spike lines and pure area/player figures on synthetic rounds."
 tests = ["tests/postplant/*.py"]
-guards = ["app/postplant/**", "app/models/replay_postplant.py", "alembic/versions/0038_replay_round_postplant.py"]
+guards = ["app/postplant/**", "app/models/replay_postplant.py", "alembic/versions/0038_replay_round_postplant.py", "app/services/postplant_stats.py"]
 
 [critical-moments]
 about = "Critical Moments: fights, trades, sight and util tags on toy rounds, a golden real round, the moments.json endpoint and tab."
