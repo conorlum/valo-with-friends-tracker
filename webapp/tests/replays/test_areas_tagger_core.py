@@ -677,7 +677,7 @@ def test_draft_roundtrip_copies_full_state_and_success_can_be_undone():
     'd.bands = {"9": [[0, 10, 0]]}', 'd.bands = {"-1": [[0, 10, 0]]}',
     'd.bands = {"1e0": [[0, 10, 0]]}', "d.bands = []", "d.bands = null",
     "d.names = null", "d.names[0] = null", "d.names[1].id = 1",
-    'd.names[1].name = "MID"', 'd.names[1].name = "  "', "d.names[0].name = 1",
+    'd.names[1].name = "Mid"', 'd.names[1].name = "  "', "d.names[0].name = 1",
     "delete d.names[0].parent", "d.names[0].parent = 2", "d.names[1].parent = 99",
     "d.names[1].also_parents = [3, 3]", "d.names[1].also_parents = [2]",
     'd.names[1].super = "B"', 'd.names[0].super = ""', 'd.names[0].super_source = "other"',
@@ -710,3 +710,94 @@ def test_restore_draft_band_rules_match_python():
     }''', map_data(128, {0, 1}, existing=obj))
     assert got["restored"]
     assert areas.validate(json.loads(got["text"])) == []
+
+
+@pytest.mark.parametrize("action", ["add", "rename", "place", "paste"])
+@pytest.mark.parametrize("spelling", ["Arch", "ARCH", "  arch  "])
+def test_name_actions_reconcile_queue_and_roundtrip_in_one_checkpoint(action, spelling):
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      a.pasteNames("Arch\\nLater");
+      if (p.action === "paste") {
+        // A collision left by an older editor must also be repaired by paste.
+        a.names[2].name = "Arch";
+      }
+      const before = JSON.stringify(a.draftState()), depth = a._undoStack.length;
+      let result;
+      if (p.action === "add") result = a.addName(p.spelling);
+      if (p.action === "rename") result = a.rename(3, p.spelling);
+      if (p.action === "place") result = a.place(0, p.spelling);
+      if (p.action === "paste") result = a.pasteNames(p.spelling);
+      const saved = a.draftState(), b = T.Areas.fromData(p.data);
+      const restored = b.restoreDraft(saved), same = JSON.stringify(saved) === JSON.stringify(b.draftState());
+      const checkpoints = a._undoStack.length - depth, undo = a.undo();
+      return {result, queue: saved.queue, restored, same, checkpoints, undo,
+              undone: before === JSON.stringify(a.draftState())};
+    }''', {"data": map_data(2, {0}), "action": action, "spelling": spelling})
+    assert got["result"]
+    assert got["queue"] == ["Later"]
+    assert all(got[key] for key in ("restored", "same", "undo", "undone"))
+    assert got["checkpoints"] == 1
+
+
+@pytest.mark.parametrize("label, action", [
+    (label, action) for label in ("MID", "mid") for action in ("load", "add", "rename")
+] + [(" Mid", "load"), ("Mid ", "load")])
+def test_restore_names_uses_validator_exact_spelling_rule(label, action):
+    names = [*NAMES, {**NAMES[0], "id": 4, "name": label}]
+    obj = painted_object({0: 1, 1: 4}, names=names)
+    assert areas.validate(obj) == []
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data);
+      let edited = true;
+      if (p.action === "add") edited = !!a.addName(p.label);
+      if (p.action === "rename") edited = a.rename(3, p.label);
+      a.pasteNames("Later");
+      const saved = a.draftState(), b = T.Areas.fromData(p.data);
+      const restored = b.restoreDraft(saved);
+      return {edited, restored, same: JSON.stringify(saved) === JSON.stringify(b.draftState()), text: b.exportText()};
+    }''', {"data": map_data(128, {0, 1}, existing=obj if action == "load" else None),
+           "label": label, "action": action})
+    assert got["edited"] and got["restored"] and got["same"]
+    assert areas.validate(json.loads(got["text"])) == []
+
+
+@pytest.mark.parametrize("action", ["paint", "erase", "shrink", "delete"])
+@pytest.mark.parametrize("source", ["existing", "floors"])
+@pytest.mark.parametrize("ranges", [
+    [[0, 10], [5, 15], [20, 30]],  # The review's real band row, including its upper area.
+    [[0, 10], [10, 15], [20, 30]],  # Inclusive boundary contact is also overlap.
+    [[0, 10], [5, 5], [20, 30]],
+    [[0, 10], [2, 3], [5, 15], [20, 30]],  # Check non-neighbouring pairs too.
+    [[0, 10], [11, 15], [20, 30]],  # Adjacent non-overlapping input remains editable.
+])
+@pytest.mark.parametrize("picker", [0, 1, "range"])
+def test_band_edits_skip_unsafe_cells_and_export_valid_files(action, source, ranges, picker):
+    bands = [bounds + [2 if i == len(ranges) - 1 else 1] for i, bounds in enumerate(ranges)]
+    obj = painted_object({0: 1, 1: 1, 2: 2}, bands={"0": bands} if source == "existing" else {})
+    assert areas.validate(obj) == []
+    selected = ranges[0] if picker == "range" else picker
+    unsafe = ranges[1][0] <= ranges[0][1]
+    got = run_node('''function run(p) {
+      const a = T.Areas.fromData(p.data), beforeBands = JSON.stringify(a.bands[0]);
+      const beforeHand = a.hand.has(0);
+      let count;
+      if (p.action === "paint") count = a.paint([0, 1], 2, p.band);
+      if (p.action === "erase") count = a.erase([0, 1], p.band);
+      if (p.action === "shrink") count = a.shrink([0, 1], 1, p.band);
+      if (p.action === "delete") count = a.deleteName(1);
+      const saved = a.draftState(), b = T.Areas.fromData(p.data);
+      return {count, cell: a.cells[0], bandsUnchanged: beforeBands === JSON.stringify(a.bands[0]),
+              handUnchanged: beforeHand === a.hand.has(0), text: a.exportText(), restored: b.restoreDraft(saved)};
+    }''', {"data": map_data(128, {0, 1, 2}, existing=obj,
+                           floors={"0": ranges} if source == "floors" else {}),
+           "action": action, "band": selected})
+    assert areas.validate(json.loads(got["text"])) == []
+    assert got["restored"]
+    if action == "delete":
+        assert got["count"] is True and got["cell"] == 2
+    elif unsafe:
+        assert got["cell"] == 1 and got["bandsUnchanged"] and got["handUnchanged"]
+        assert got["count"] == (1 if picker == 0 else 0)
+    else:
+        assert got["count"] == (2 if picker == 0 else 1)

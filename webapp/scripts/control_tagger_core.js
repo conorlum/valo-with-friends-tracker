@@ -2125,12 +2125,20 @@
     this.checkpoint();
     this.names = names;
     this.queue = queue;
+    this._reconcileQueue();
     return {matched: matched, queued: queued, unlisted: names.filter(function (row) {
       return !matchedIds.has(row.id);
     }).map(function (row) { return row.name; })};
   };
 
   AreasModel.prototype.unplaced = function () { return this.queue.slice(); };
+
+  AreasModel.prototype._reconcileQueue = function () {
+    var placed = new Set(this.names.map(function (row) { return row.name.trim().toLowerCase(); }));
+    this.queue = this.queue.filter(function (name) {
+      return typeof name !== "string" || !placed.has(name.trim().toLowerCase());
+    });
+  };
 
   AreasModel.prototype.draftState = function () {
     return clone({v: 1, map: this.map, grid: this.grid, walk_hash: areaWalkHash(this.walk),
@@ -2145,14 +2153,15 @@
     if (!object(obj) || obj.v !== 1 || obj.map !== this.map || obj.grid !== this.grid ||
         obj.walk_hash !== areaWalkHash(this.walk)) return false;
     // Validation and normalization touch only copies. A refused stored draft remains available.
-    var saved = clone(obj), names = saved.names, labels = new Set(), ids = new Set([0]);
+    var saved = clone(obj), names = saved.names, labels = new Set(), nameKeys = new Set(), ids = new Set([0]);
     if (!Array.isArray(names)) return false;
     for (var row of names) {
       if (!object(row) || !Number.isSafeInteger(row.id) || row.id < 1 || ids.has(row.id) ||
-          !text(row.name) || labels.has(key(row.name)) || !text(row.super) ||
+          !text(row.name) || labels.has(row.name) || !text(row.super) ||
           (row.super_source !== "auto" && row.super_source !== "set")) return false;
       ids.add(row.id);
-      labels.add(key(row.name));
+      labels.add(row.name);
+      nameKeys.add(key(row.name));
     }
     if (!areaLinksValid(names)) return false;
     var roots = areaRoots(names);
@@ -2191,7 +2200,7 @@
     if (!Array.isArray(saved.queue)) return false;
     var queued = new Set();
     for (var name of saved.queue) {
-      if (!text(name) || labels.has(key(name)) || queued.has(key(name))) return false;
+      if (!text(name) || nameKeys.has(key(name)) || queued.has(key(name))) return false;
       queued.add(key(name));
     }
     if (!Number.isSafeInteger(saved.next_id) || saved.next_id < 1 ||
@@ -2229,10 +2238,19 @@
   };
 
   AreasModel.prototype._saveBands = function (cell, bands) {
+    // Validate a proposed cell before publishing any of it. Same-name overlaps are legal.
+    bands = bands.slice().sort(areaBandOrder);
+    for (var i = 0; i < bands.length; i++) {
+      for (var j = i + 1; j < bands.length; j++) {
+        if (bands[i][2] !== bands[j][2] &&
+            Math.max(bands[i][0], bands[j][0]) <= Math.min(bands[i][1], bands[j][1])) return false;
+      }
+    }
     var ground = bands[0][2];
     this.cells[cell] = ground;
     if (bands.some(function (band) { return band[2] !== ground; })) this.bands[cell] = bands;
     else delete this.bands[cell];
+    return true;
   };
 
   AreasModel.prototype.paint = function (cells, nameId, band) {
@@ -2242,17 +2260,19 @@
       if (!this.walk[cell]) continue;
       var ranges = this.floorBands(cell), index = band == null ? 0 : areaFloorIndex(ranges, band);
       if (index < 0) continue;
-      this.hand.add(cell);
       var ground = this.cells[cell], bands = this.bands[cell];
       if (band == null || !ranges.length) {
+        this.hand.add(cell);
         if (ground === nameId && !bands) continue;
         this.cells[cell] = nameId;
         delete this.bands[cell];
       } else {
-        bands = bands || ranges.map(function (range) { return [range[0], range[1], ground]; });
-        if (bands[index][2] === nameId) continue;
+        bands = bands ? bands.map(function (row) { return row.slice(); }) :
+          ranges.map(function (range) { return [range[0], range[1], ground]; });
+        if (bands[index][2] === nameId) { this.hand.add(cell); continue; }
         bands[index][2] = nameId;
-        this._saveBands(cell, bands);
+        if (!this._saveBands(cell, bands)) continue;
+        this.hand.add(cell);
       }
       changed++;
     }
@@ -2360,7 +2380,7 @@
     this.names = names;
     this._nextId++;
     placed.forEach(function (target) { this.cells[target] = id; delete this.bands[target]; }, this);
-    this.queue = this.queue.filter(function (queued) { return queued.toLowerCase() !== name.trim().toLowerCase(); });
+    this._reconcileQueue();
     this.autoSupers();
     return {id: id, count: placed.length};
   };
@@ -2384,18 +2404,20 @@
       var bands = this.bands[cell], replacement = owners[cell];
       if (band == null) {
         if (this.cells[cell] !== nameId && !(bands || []).some(function (row) { return row[2] === nameId; })) continue;
-        if (bands) this._saveBands(cell, bands.map(function (row) {
-          return [row[0], row[1], row[2] === nameId ? replacement : row[2]];
-        }));
-        else this.cells[cell] = replacement;
+        if (bands) {
+          if (!this._saveBands(cell, bands.map(function (row) {
+            return [row[0], row[1], row[2] === nameId ? replacement : row[2]];
+          }))) continue;
+        } else this.cells[cell] = replacement;
       } else {
         if (this.nameAt(cell, band) !== nameId) continue;
         var ranges = this.floorBands(cell), index = areaFloorIndex(ranges, band);
         if (!ranges.length) this.cells[cell] = replacement;
         else {
-          bands = bands || ranges.map(function (range) { return [range[0], range[1], this.cells[cell]]; }, this);
+          bands = bands ? bands.map(function (row) { return row.slice(); }) :
+            ranges.map(function (range) { return [range[0], range[1], this.cells[cell]]; }, this);
           bands[index][2] = replacement;
-          this._saveBands(cell, bands);
+          if (!this._saveBands(cell, bands)) continue;
         }
       }
       changed++;
@@ -2447,6 +2469,7 @@
     this.checkpoint();
     this.names = names;
     this._nextId++;
+    this._reconcileQueue();
     this.autoSupers();
     return id;
   };
@@ -2456,6 +2479,7 @@
     if (!row || !this._availableName(name, id)) return false;
     this.checkpoint();
     row.name = name.trim();
+    this._reconcileQueue();
     this.autoSupers();
     return true;
   };
