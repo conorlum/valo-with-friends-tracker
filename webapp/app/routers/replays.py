@@ -474,6 +474,10 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
                         if viewer is not None and p.get("player_id") == viewer.id), None)
     asset = context["match"]["asset"]
     gaps_layout = asset if context["match"].get("gaps") and asset != gap_patterns.default_layout(replay.map_name) else None
+    start_t = start_time(request.query_params.get("t"))
+    until_t = start_time(request.query_params.get("until"))
+    if start_t is not None and until_t is not None and until_t <= start_t:
+        until_t = None
     return {
         "viewer_slot": viewer_slot, "gaps_layout": gaps_layout,
         "replay": {"map_name": replay.map_name, "round_numbers": context["match"]["rounds"],
@@ -482,7 +486,8 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
                    "match_url": (f"/matches/{context['match']['external_id']}" if context["match"]["linked"] else None),
                    "reason": context["match"].get("reason")},
         "linked": linked, "replay_data": context, "start_round": start,
-        "start_t": start_time(request.query_params.get("t")),
+        "start_t": start_t, "until_t": until_t,
+        "open_export": request.query_params.get("export") == "1",
         "control": context["match"]["control"] if linked else None,
         "gaps": bool(linked and context["match"].get("gaps")),
         # R2-5 (2026-11-12): the match-level panels (Control tables, heatmap, Critical Moments, Critical Util)

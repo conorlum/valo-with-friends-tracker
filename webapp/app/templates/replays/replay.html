@@ -71,8 +71,10 @@
           });
         }{% endif %}
       });
-      window.viewerReady = window.viewer.showRound({{ start_round }}){% if start_t is not none %}.then(function (round) {
-        window.viewer.seek({{ start_t }});
+      {% if open_export %}window.viewerOpenExport = true;{% endif %}
+      window.viewerReady = window.viewer.showRound({{ start_round }}){% if start_t is not none or (until_t is defined and until_t is not none) %}.then(function (round) {
+        {% if start_t is not none %}window.viewer.seek({{ start_t }});{% endif %}
+        {% if until_t is defined and until_t is not none %}window.viewer.setUntil({{ until_t }});{% endif %}
         return round;
       }){% endif %};
     });

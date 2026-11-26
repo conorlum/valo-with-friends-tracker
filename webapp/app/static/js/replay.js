@@ -2035,6 +2035,7 @@
     this.cache = {};                               // round -> Promise of {blob, tracks}
     this.speed = 1;
     this.t = 0;
+    this.until = null;
     this.playing = false;
     this.current = null;
     this.icons = {};
@@ -2340,6 +2341,7 @@
     this.autoPlay = null;
     return this.fetchRound(n).then(function (round) {
       if (token !== self.loadSeq) return round;
+      if (n !== self.number) self.until = null;
       self.current = round;
       self.number = n;
       self.t = t || 0;
@@ -2403,9 +2405,15 @@
     return this.playRound(next).catch(function () { return null; });
   };
 
+  ReplayViewer.prototype.setUntil = function (t) {
+    this.until = this.current && typeof t === "number" && Number.isFinite(t) &&
+      t > this.t && t <= this.current.blob.t_end ? t : null;
+  };
+
   ReplayViewer.prototype.seek = function (t) {
     if (!this.current) return;
     this.t = Math.max(0, Math.min(this.current.blob.t_end, t));
+    if (typeof this.until === "number" && this.t >= this.until) this.until = null;
     this.updateControls();
     this.draw();
   };
@@ -2439,7 +2447,13 @@
   ReplayViewer.prototype.tick = function (now) {
     if (this.playing && this.current && this.lastFrame !== null) {
       this.t += (now - this.lastFrame) / 1000 * this.speed;
-      var ended = this.t >= this.current.blob.t_end;
+      var reachedUntil = typeof this.until === "number" && this.t >= this.until;
+      if (reachedUntil) {
+        this.t = this.until;
+        this.until = null;
+        this.playing = false;
+      }
+      var ended = !reachedUntil && this.t >= this.current.blob.t_end;
       if (ended) this.t = this.current.blob.t_end;
       this.updateControls();
       this.draw();
@@ -5690,8 +5704,13 @@
     });
   }
 
+  function momentLink(uuid, round, tIn, tOut) {
+    return "/replays/" + uuid + "?round=" + round + "&t=" + tIn.toFixed(2) +
+      (tOut == null ? "" : "&until=" + tOut.toFixed(2));
+  }
+
   var api = {
-    clipViewer: clipViewer, prepareRound: prepareRound,
+    clipViewer: clipViewer, prepareRound: prepareRound, momentLink: momentLink,
     ABILITY_STYLES: ABILITY_STYLES, PROJECTILE_STYLES: PROJECTILE_STYLES,
     UTIL_ABILITY_COLORS: UTIL_ABILITY_COLORS, CONTROL_PALETTES: CONTROL_PALETTES, UV: UV,
     rotatePoint: rotatePoint, unrotatePoint: unrotatePoint, rotateYaw: rotateYaw, viewMatrix: viewMatrix,
