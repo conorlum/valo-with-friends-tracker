@@ -376,13 +376,28 @@ def replay_potg(request: Request, match_uuid: str, db: Session = Depends(get_db)
     replay = _replay_or_404(db, match_uuid)
     if not replay_db.is_linked(replay):
         raise HTTPException(status_code=404)
-    item = highlights.payload(db, replay)['potg']
+    body = highlights.payload(db, replay)
+    item = body['potg']
     if item is None:
         return Response(content='', media_type='text/html')
     url = moment_url(str(replay.match_uuid).lower(), item)
     return templates.TemplateResponse(request, 'replays/_potg.html',
                                       {'item': item, 'viewer_url': url,
-                                       'export_url': url + '&export=1&hl=' + item['id']})
+                                       'export_url': url + '&export=1&hl=' + item['id'],
+                                       'potg_data': _potg_data(replay_service.page_context(db, replay), body, item)})
+
+
+def _potg_data(context: dict, body: dict, item: dict) -> dict:
+    """What potg.js needs to play the item: the round's site data, and the linked players under their clip names
+    (R10), so neither a display name nor a tag reaches the page."""
+    clip_names = body['clip_names']
+    match = context['match']
+    players = {slot: {'slot': p['slot'], 'name': clip_names[slot], 'agent': p['agent'], 'team': p['team'],
+                      'side': p['side']} for slot, p in context['players'].items()}
+    return {'uuid': body['uuid'], 'asset': match['asset'], 'rotation': match['rotation'],
+            'uv_per_unit': match['uv_per_unit'], 'round': item['round'],
+            'site': context['rounds'].get(str(item['round'])), 'players': players,
+            'clip_names': clip_names, 'item': item}
 
 
 @router.get("/replays/{match_uuid}/{round_number}.json")

@@ -118,6 +118,10 @@
     {% endfor %}
   </div>
 </div>
+{% if replay_url and not demo_mode %}
+<div hx-get="{{ replay_url }}/potg" hx-trigger="load" hx-swap="outerHTML"></div>
+<script src="/static/js/potg.js?v={{ static_version() }}" defer></script>
+{% endif %}
 {% if shoutouts %}
 <div class="card">
   <h2>Shoutouts</h2>

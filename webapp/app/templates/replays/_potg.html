@@ -1,7 +1,22 @@
-<article class="card potg-card">
-  <h3>Play of the game</h3>
-  <p><strong>{{ item.player }}</strong> · {{ item.agent }} · Round {{ item.round }}</p>
-  <p>{{ item.summary }}</p>
-  <a href="{{ viewer_url }}">Open in viewer</a>
-  <a href="{{ export_url }}">Export clip</a>
+{# The match page's Play of the Game card (GET /replays/<uuid>/potg, loaded by htmx; app/static/js/potg.js plays it). #}
+{% set icon = agent_icon_slug(item.agent) %}
+{% set start = item.t_start | int %}
+<article class="card potg-card replay" data-potg-card data-version="{{ static_version() }}">
+  <h3>Play of the Game</h3>
+  <div class="potg-body">
+    {% if icon %}<img class="potg-portrait" src="/static/img/agents/{{ icon }}.png" alt="{{ item.agent }}">{% endif %}
+    <div class="potg-text">
+      <p class="potg-who"><strong>{{ item.player }}</strong>{% if item.agent %} &middot; {{ item.agent }}{% endif %}</p>
+      <p class="potg-summary">{{ item.summary }}</p>
+      <p class="page-meta">Round {{ item.round }} &middot; {{ start // 60 }}:{{ '%02d' % (start % 60) }}</p>
+    </div>
+  </div>
+  <div class="potg-actions">
+    <a class="replay-button" href="{{ viewer_url }}">Open in viewer</a>
+    <a class="replay-button" href="{{ export_url }}">Export clip</a>
+    <button type="button" class="replay-button" data-potg-play>&#9654; Play here</button>
+  </div>
+  <p class="potg-note" data-potg-note role="status"></p>
+  <canvas class="potg-canvas" data-potg-canvas width="512" height="512" hidden></canvas>
+  <script type="application/json" data-potg>{{ potg_data | tojson }}</script>
 </article>
