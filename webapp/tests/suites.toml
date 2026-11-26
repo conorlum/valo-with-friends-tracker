@@ -410,6 +410,11 @@ guards = [
 
 # ---------------------------------------------------------------------------------------------------- The tests themselves
 
+[clutch-research]
+about = "Offline clutch research: situation windows, measures, statistics, private exports and the cache-only CLI."
+tests = ["tests/research/test_clutch_*.py"]
+guards = ["scripts/clutch_*.py"]
+
 [test-harness]
 about = "The test machinery: lane selection and required prerequisites, the Postgres guard, the architecture and golden checks, this catalog."
 tests = [
