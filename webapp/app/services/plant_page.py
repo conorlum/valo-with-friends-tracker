@@ -31,8 +31,8 @@ from app.services.round_plants import asset_key_for
 
 logger = logging.getLogger(__name__)
 
-CALCULATION_VERSION = 1
-MIN_N = 100
+CALCULATION_VERSION = 2   # 2: MIN_N 100 -> 50
+MIN_N = 50                # plants a spot needs before it shows a win rate (the owner's gate, 2026-11-25)
 EXAMPLES = 3
 
 

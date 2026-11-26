@@ -156,16 +156,17 @@ def test_a_rotated_rectangle_spot_renders_and_counts_its_plants(db, monkeypatch)
     assert 'data-outside="2"' in page and "n=3" in page
 
 
-def test_99_is_grey_without_a_percentage_and_100_has_a_signed_adjusted_value(db):
-    _plants(db, 99)
+def test_49_is_grey_without_a_percentage_and_50_has_a_signed_adjusted_value(db):
+    assert plant_page.MIN_N == 50          # the owner's gate (2026-11-25), was 100
+    _plants(db, 49)
     small = _spot(db)
-    assert small["n"] == 99 and small["adjusted_display"] is None
+    assert small["n"] == 49 and small["adjusted_display"] is None
     page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
-    assert "spot-grey" in page and 'data-adjusted=""' in page and "n=99" in page
+    assert "spot-grey" in page and 'data-adjusted=""' in page and "n=49" in page
 
-    _plants(db, 1, start=99)
+    _plants(db, 1, start=49)
     big = _spot(db)
-    assert big["n"] == 100
+    assert big["n"] == 50
     assert re.fullmatch(r"[+-]\d+\.\d%", big["adjusted_display"])
     page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
     assert re.search(r'data-adjusted="[+-]\d+\.\d%"', page)
