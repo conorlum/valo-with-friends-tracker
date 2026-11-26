@@ -13,6 +13,7 @@
 {% if control %}<script src="/static/js/replay_control.js?v={{ static_version() }}"></script>{% endif %}
 {% if control %}<script src="/static/js/moments.js?v={{ static_version() }}"></script>{% endif %}
 {% if control %}<script src="/static/js/critutil.js?v={{ static_version() }}"></script>{% endif %}
+{% if linked and not demo_mode %}<script src="/static/js/highlights.js?v={{ static_version() }}"></script>{% endif %}
 <script>
   (function () {
     var root = document.querySelector("[data-replay]");
@@ -41,7 +42,9 @@
         arenaRoom: loaded[2],
         heldAbilities: loaded[3],
         linked: match.linked ? { players: data.players, uvPerUnit: match.uv_per_unit } : null{% if not demo_mode %},
-        loadAreas: function () { return json("/replays/areas/" + match.asset + ".json"); }{% endif %}{% if control %},
+        loadAreas: function () { return json("/replays/areas/" + match.asset + ".json"); }{% endif %}{% if linked and not demo_mode %},
+        // Highlights: the Play of the Game and each friend's best plays, fetched when the tab first opens.
+        loadHighlights: function () { return json("/replays/" + match.uuid + "/highlights.json"); }{% endif %}{% if control %},
         // Map control (Stage 4): the round's stored bytes; 202 not ready, 422 failed, 404 no layer.
         control: match.control,
         loadControl: function (n, signal) {

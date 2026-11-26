@@ -234,8 +234,8 @@ guards = [
 
 [highlights]
 about = "Replay highlights: ladder, clutch lives, kill windows, fight/util swings, DB inputs and routes."
-tests = ["tests/test_highlights_finder.py", "tests/replays/test_highlights_routes.py"]
-guards = ["app/services/highlights.py", "app/routers/replays.py", "app/services/replay_view.py",
+tests = ["tests/test_highlights_finder.py", "tests/replays/test_highlights_routes.py", "tests/replays/test_highlights_tab.py"]
+guards = ["app/services/highlights.py", "app/static/js/highlights.js","app/routers/replays.py", "app/services/replay_view.py",
           "app/templates/replays/_potg.html", "tests/support/highlights.py"]
 
 [critical-moments]

@@ -199,6 +199,7 @@
         <button type="button" role="tab" class="replay-tab" data-replay-tab="coach-improve" aria-selected="false">To improve</button>
         {% endif %}
         <button type="button" role="tab" class="replay-tab{% if not coach_tabs %} is-active{% endif %}" data-replay-tab="feed" aria-selected="{{ 'false' if coach_tabs else 'true' }}">Kill feed</button>
+        {% if clip_export and not demo_mode %}<button type="button" role="tab" class="replay-tab" data-replay-tab="highlights" aria-selected="false">Highlights</button>{% endif %}
         <button type="button" role="tab" class="replay-tab" data-replay-tab="util" aria-selected="false">Utility</button>
         <button type="button" role="tab" class="replay-tab" data-replay-tab="analysis" aria-selected="false">Analysis</button>
         {% if panels %}<button type="button" role="tab" class="replay-tab" data-replay-tab="moments" aria-selected="false">Critical Moments</button>
@@ -214,6 +215,9 @@
         <p class="replay-side-note">Impact: the killer's gain and the victim's loss from each kill (the leverage term of the live score).</p>
         <ol class="replay-feed" data-replay-feed></ol>
       </div>
+      {% if clip_export and not demo_mode %}
+      <div data-replay-panel="highlights" role="tabpanel" hidden></div>
+      {% endif %}
       <div data-replay-panel="analysis" role="tabpanel" hidden>
         <p class="replay-side-note">The round's man-advantage states, as the site's player pages count them. Click one to jump there.</p>
         <ol class="replay-feed" data-replay-analysis></ol>

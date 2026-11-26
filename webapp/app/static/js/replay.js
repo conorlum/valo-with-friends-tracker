@@ -2369,9 +2369,9 @@
 
   // A round number in the strip: that round from its start, playing (the current one restarts). Previous and
   // next keep showing a round paused.
-  ReplayViewer.prototype.playRound = function (n) {
+  ReplayViewer.prototype.playRound = function (n, t) {
     var self = this;
-    var shown = this.showRound(n);
+    var shown = this.showRound(n, t);
     var token = this.autoPlay = this.loadSeq;      // cleared by a pause, replaced by any later load
     return shown.then(function (round) {
       if (token === self.loadSeq && self.autoPlay === token) {
@@ -2389,6 +2389,12 @@
       }
       throw error;
     });
+  };
+
+  // Round n from time t, playing: playRound's load-sequence guard (only the latest request is shown and sought; a
+  // pause pressed while it loads leaves it paused at t).
+  ReplayViewer.prototype.playFrom = function (n, t) {
+    return this.playRound(n, t);
   };
 
   // The round after the one shown, or undefined on the last.
@@ -2721,6 +2727,36 @@
     if (name === "gaps") this.refreshGaps();
     if (name === "moments") this.loadMoments();
     if (name === "critutil") this.loadCritUtil();
+    if (name === "highlights") this.loadHighlights();
+  };
+
+  // Highlights: fetched the first time the tab opens; a failed fetch is asked again next time.
+  ReplayViewer.prototype.loadHighlights = function () {
+    var self = this;
+    var panel = this.root.querySelector('[data-replay-panel="highlights"]');
+    if (!panel || !this.options.loadHighlights || !global.Highlights) return;
+    if (!this.highlightsPromise) {
+      panel.textContent = "Loading…";
+      this.highlightsPromise = Promise.resolve().then(function () { return self.options.loadHighlights(); }).then(function (payload) {
+        global.Highlights.render(panel, payload, {
+          jump: function (item) { self.playFrom(item.round, item.t_start).catch(function () { return null; }); },
+          exportClip: function (item) {
+            var scores = (self.options.replayData || {}).round_scores || {};
+            var score = scores[String(item.round)];
+            var prefill = {
+              round: item.round, t_in: item.t_start, t_out: item.t_end,
+              segments: (item.segments || []).map(function (s) { return s.slice(); }),
+              caption: (item.player ? item.player + " · " : "") + (item.summary || "")
+            };
+            if (score) prefill.score = score.slice();
+            return self.openExport(prefill);
+          }
+        });
+      }).catch(function () {
+        self.highlightsPromise = null;
+        panel.textContent = "Could not load the highlights. Open the tab again to retry.";
+      });
+    }
   };
 
   // Critical Util: fetched the first time the tab opens, like Critical Moments.
