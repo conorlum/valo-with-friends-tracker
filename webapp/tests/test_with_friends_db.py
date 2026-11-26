@@ -78,7 +78,24 @@ def test_runs_the_command_under_venv313_with_the_url_in_the_child_only(env_file,
     assert "DATABASE_URL" not in os.environ
 
 
-def test_read_only_sets_the_session_option_for_the_check_and_the_command(env_file, ran, connected):
+@pytest.fixture
+def readonly_env(tmp_path, monkeypatch):
+    path = tmp_path / ".env.readonly"
+    path.write_text("DATABASE_URL=postgresql://probe_ro:pw@host/valowithfriendsdb?sslmode=require\n")
+    monkeypatch.setattr(with_friends_db, "READONLY_ENV_FILE", path)
+    return path
+
+
+@pytest.fixture
+def can_write(monkeypatch):
+    """The read-only role's privilege check: no ways to write unless a test says so."""
+    found = []
+    monkeypatch.setattr(with_friends_db, "write_privileges", lambda url: list(found))
+    return found
+
+
+def test_read_only_sets_the_session_option_for_the_check_and_the_command(env_file, readonly_env, ran, connected,
+                                                                         can_write):
     seen = connected(FRIENDS)
     assert with_friends_db.main(["--expect-database", FRIENDS, "--read-only", "-m", "alembic", "current"]) == 0
     [(cmd, kw)] = ran
@@ -87,6 +104,55 @@ def test_read_only_sets_the_session_option_for_the_check_and_the_command(env_fil
         query = parse_qs(urlsplit(url).query)
         assert query["options"] == ["-c default_transaction_read_only=on"]
         assert query["sslmode"] == ["require"]
+
+
+def test_read_only_logs_in_as_the_read_only_role_never_the_full_access_one(env_file, readonly_env, ran, connected,
+                                                                            can_write):
+    seen = connected(FRIENDS)
+    assert with_friends_db.main(["--expect-database", FRIENDS, "--read-only", "probe.py"]) == 0
+    [(cmd, kw)] = ran
+    for url in (seen[0], kw["env"]["DATABASE_URL"]):
+        assert urlsplit(url).username == "probe_ro"
+
+
+def test_read_only_without_the_read_only_login_refuses_without_falling_back(env_file, tmp_path, ran, monkeypatch,
+                                                                             capsys):
+    monkeypatch.setattr(with_friends_db, "READONLY_ENV_FILE", tmp_path / "missing" / ".env.readonly")
+    monkeypatch.setattr(with_friends_db, "connected_database", lambda url: pytest.fail("connected"))
+    assert with_friends_db.main(["--expect-database", FRIENDS, "--read-only", "probe.py"]) == 2
+    assert ran == []
+    assert "create_readonly_role.py" in capsys.readouterr().err
+
+
+def test_read_only_refuses_a_role_that_can_still_write(env_file, readonly_env, ran, connected, can_write, capsys):
+    connected(FRIENDS)
+    can_write.append("can write to a table")
+    assert with_friends_db.main(["--expect-database", FRIENDS, "--read-only", "probe.py"]) == 3
+    assert ran == []
+    assert "not read-only" in capsys.readouterr().err
+
+
+def test_read_write_runs_never_read_the_read_only_login(env_file, tmp_path, ran, connected, monkeypatch):
+    monkeypatch.setattr(with_friends_db, "READONLY_ENV_FILE", tmp_path / "missing" / ".env.readonly")
+    monkeypatch.setattr(with_friends_db, "write_privileges", lambda url: pytest.fail("checked"))
+    seen = connected(FRIENDS)
+    assert with_friends_db.main(["--expect-database", FRIENDS, "probe.py"]) == 0
+    assert urlsplit(seen[0]).username == "u"
+
+
+def test_a_worktree_finds_the_main_checkouts_read_only_login(tmp_path):
+    main = tmp_path / "repo"
+    (main / "webapp").mkdir(parents=True)
+    (main / "webapp" / ".env.readonly").write_text("")
+    worktree_webapp = main / ".claude" / "worktrees" / "x" / "webapp"
+    worktree_webapp.mkdir(parents=True)
+    assert with_friends_db.find_readonly_env(worktree_webapp) == main / "webapp" / ".env.readonly"
+
+
+def test_the_write_checks_cover_every_way_to_change_data():
+    sql = " ".join(with_friends_db.WRITE_CHECKS.values())
+    for word in ("rolsuper", "tableowner", "CREATE", "INSERT", "UPDATE", "DELETE", "TRUNCATE"):
+        assert word in sql
 
 
 def test_read_only_keeps_an_existing_options_value():

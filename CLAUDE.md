@@ -11,6 +11,12 @@ This repo started as a fork of `conorlum/ValoMaths` (originally `ValorantIGLTuto
 - Code differences between the two sites are settings (`app/config.py`: `demo_mode`, `site_name`, `enable_riot_txt`), not branches or forks. The demo must never show scraped tracker.gg data.
 
 - **This GitHub repo is PUBLIC** (`conorlum/valo-with-friends-tracker`). Treat everything committed here as world-readable. **Never commit a credential** -- `webapp/.env.remote` held the live Render Postgres password in a public repo from 2026-08-26 until it was caught and rotated on 2026-09-03. `.env.*` is now gitignored (with `!.env.example`); that covers `.env.remote` (friends DB) and `.env.demo-remote` (demo DB).
+- **Live friends-DB probes are read-only by login, not by flag.** `scripts/with_friends_db.py --read-only` logs in
+  as `probe_ro` from `webapp/.env.readonly` (SELECT only, 60 s statement timeout, 3 connections), checks the role
+  can't write before running anything, and never falls back to `.env.remote`. The owner makes or re-keys the role
+  with `scripts/create_readonly_role.py` through the wrapper without `--read-only`. Claude sessions may run
+  `--read-only` probes themselves (the owner's auto-mode rule); never read `.env.remote` or `.env.demo-remote`, and
+  never write a probe that opens either file. Everything that writes stays the owner's `!` line.
 - **Docker Compose gotcha**: this repo's `webapp/` folder and the old ValoMaths clone's `webapp/` folder share a name, so Docker Compose's default project name (derived from the folder name) collides between the two — running plain `docker compose up -d` here can recreate/repoint the *other* checkout's Postgres container. Always bring this repo's Postgres up with an explicit project name: `docker compose -p valomaths-private up -d`. It's mapped to host port **5433** — see `.env`.
 - Repo name history: this was previously named `valomaths-private` (both on GitHub and as the local folder name). The GitHub repo is now `valo-with-friends-tracker`, and the local folder was renamed to match. Some internal paths (the Docker Compose project name, local Postgres db name) intentionally still use `valomaths`/`valomaths-private` — they're independent of the folder name and don't need to be changed.
 
