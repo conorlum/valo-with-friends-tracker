@@ -141,6 +141,23 @@ def test_backshots_count_runs_without_inventing_individual_hit_positions():
     assert measures.backshots(rnd, blob, 0, 10, 20) == 1
 
 
+@pytest.mark.parametrize("start, end, expected", [
+    (9, 11, 1), (9, 10, 1), (10, 11, 1), (12, 13, 1),
+    (8, 9, 0), (21, 22, 0), (20, 22, 1), (9, 22, 1),
+])
+def test_backshots_intersect_closed_damage_run_window(start, end, expected):
+    rnd, blob = pair(points=[(0, 180, 204, 180)],
+                     util=[damage(start, 7, 0, t1=end, n=3)])
+    assert measures.backshots(rnd, blob, 0, 10, 20) == expected
+
+
+@pytest.mark.parametrize("before, at_entry, expected", [(0, 180, 1), (180, 0, 0)])
+def test_crossing_backshot_uses_bearing_at_entry(before, at_entry, expected):
+    rnd, blob = pair(points=[(0, 180, 204, before), (10, 180, 204, at_entry)],
+                     util=[damage(9, 7, 0, t1=11)])
+    assert measures.backshots(rnd, blob, 0, 10, 20) == expected
+
+
 def view_of(blob):
     return RoundView(blob, {0: "0", 1: "1", 7: "7"}, 1, None)
 
@@ -245,6 +262,77 @@ def test_ult_cap_uses_other_round_and_requires_proof():
     assert measures.ult_caps({1: blob}, {0: "A"}).get(0) is None
     assert measures.util(rnd, blob, 0, 10, None, None)["ult_ready"] is None
     assert measures.util(rnd, blob, 0, 10, None, 8)["ult_ready"] is False
+
+
+TIMED_ULT_USES = [
+    ("Reyna", {"k": "equip", "code": "Vampire", "name": "X_Frenzy"}),
+    ("Reyna", {"k": "heal", "code": "Vampire", "name": "X_Frenzy", "amount": 10}),
+    ("Chamber", {"k": "shot", "gun": "Tour de Force"}),
+    ("Jett", {"k": "damage", "target": 7, "name": "X_Dagger_Production", "from": "equippable"}),
+    ("Neon", {"k": "shot", "gun": None}),
+    ("Veto", {"k": "buff", "code": "Pine", "name": "X_Evolution", "t1": 40}),
+    ("Veto", {"k": "heal", "code": "Pine", "name": "X_SelfBuffVers_Engineering", "amount": 10}),
+]
+
+
+@pytest.mark.parametrize("agent, evidence", TIMED_ULT_USES)
+@pytest.mark.parametrize("used_at, expected", [(26.884, False), (35.9, False), (36, True), (None, True)])
+def test_timed_ult_readiness_uses_activation_evidence(agent, evidence, used_at, expected):
+    rows = [] if used_at is None else [dict(evidence, t=used_at, by=0)]
+    rnd, blob = pair(util=rows)
+    blob["player_state"] = {"ult": {"0": [{"t": 0, "n": 7}, {"t": 39, "n": 7}]}}
+    assert measures.util(rnd, blob, 0, 35.9, None, 7, agent=agent)["ult_ready"] is expected
+
+
+@pytest.mark.parametrize("agent", ["Sage", None])
+def test_non_timed_or_unspecified_agent_keeps_points_readiness(agent):
+    rnd, blob = pair(util=[{"k": "equip", "t": 5, "by": 0, "name": "X_Frenzy"}])
+    blob["player_state"] = {"ult": {"0": [{"t": 0, "n": 7}]}}
+    assert measures.util(rnd, blob, 0, 10, None, 7, agent=agent)["ult_ready"] is True
+
+
+@pytest.mark.parametrize("cap, points, expected", [(None, 7, None), (7, None, None), (8, 7, False)])
+def test_unused_timed_ult_keeps_missing_or_insufficient_points(cap, points, expected):
+    rnd, blob = pair()
+    if points is not None:
+        blob["player_state"] = {"ult": {"0": [{"t": 0, "n": points}]}}
+    assert measures.util(rnd, blob, 0, 10, None, cap, agent="Reyna")["ult_ready"] is expected
+
+
+@pytest.mark.parametrize("cap, points", [(None, 7), (7, None), (7, 7)])
+def test_proven_timed_ult_use_overrides_missing_cap_or_points(cap, points):
+    rnd, blob = pair(util=[{"k": "equip", "t": 0, "by": 0, "name": "X_Frenzy"}])
+    if points is not None:
+        blob["player_state"] = {"ult": {"0": [{"t": 0, "n": points}]}}
+    assert measures.util(rnd, blob, 0, 10, None, cap, agent="Reyna")["ult_ready"] is False
+
+
+def test_other_slots_timed_ult_use_does_not_consume_ours():
+    rnd, blob = pair(util=[{"k": "equip", "t": 5, "by": 7, "name": "X_Frenzy"}])
+    blob["player_state"] = {"ult": {"0": [{"t": 0, "n": 7}]}}
+    assert measures.util(rnd, blob, 0, 10, None, 7, agent="Reyna")["ult_ready"] is True
+
+
+def test_review_passes_agent_for_already_active_ult(monkeypatch, tmp_path):
+    import clutch_review as review
+
+    rnd, blob = pair(util=[{"k": "equip", "t": 26.884, "by": 0, "name": "X_Frenzy"}])
+    blob["player_state"] = {"ult": {"0": [{"t": 0, "n": 7}]}}
+    ctx = {"players": {str(s): {"side": group, "agent": "Reyna" if s == 0 else "Sage"}
+                       for s, group in rnd.team.items()},
+           "match": {"side_to_team": {"A": "team-1", "B": "team-2"},
+                     "asset": "Toy", "match_id": 0},
+           "rounds": {"1": {"db": {"plant": None}}}}
+    task = {"uuid": "00000000-0000-0000-0000-000000000000", "cache": str(tmp_path),
+            "geometry_cache": str(tmp_path), "missing_control": [1], "labels": {0: "0"}}
+    monkeypatch.setitem(review._GEOMETRIES, (task["geometry_cache"], blob["map"]), rnd.geo)
+    monkeypatch.setattr(measures, "situations", lambda *a: ([window(35.9, 40)], []))
+    monkeypatch.setattr(measures, "clock", lambda *a: {})
+    monkeypatch.setattr(measures, "state", lambda *a: {})
+    monkeypatch.setattr(measures, "fakes", lambda *a: {})
+    rows, _, status, _ = review._measure_round(task, ctx, 1, blob, {0: 7})
+    assert status == "measured"
+    assert rows[0]["util"]["ult_ready"] is False
 
 
 def test_import_is_db_free_in_fresh_process():

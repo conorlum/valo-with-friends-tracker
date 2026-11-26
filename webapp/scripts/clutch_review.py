@@ -208,7 +208,7 @@ def _measure_round(task, ctx, n, blob, caps):
                    information=(measures.information(ctl, rnd.team[slot], engagements)
                                 if ctl else {"located_share": None}),
                    fakes=measures.fakes(view, rnd, blob, row, engagements),
-                   util=measures.util(rnd, blob, slot, start, death, caps.get(slot)))
+                   util=measures.util(rnd, blob, slot, start, death, caps.get(slot), agent=players[slot]["agent"]))
     return rows, cutoffs, "measured", ctl is None or not ctl.has_unknown
 
 

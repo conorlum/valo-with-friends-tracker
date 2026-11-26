@@ -136,6 +136,29 @@ def test_engagement_window_includes_endpoints_and_excludes_outside_events():
     ]
 
 
+@pytest.mark.parametrize("by, target", [(0, 5), (5, 0)])
+@pytest.mark.parametrize("start, end, expected", [
+    (4, 6, 5), (4, 5, 5), (5, 6, 5), (6, 7, 6),
+    (3, 4, None), (21, 22, None), (20, 22, 20), (4, 22, 5),
+])
+def test_damage_runs_intersect_closed_engagement_window(by, target, start, end, expected):
+    rnd, blob = encounters(sight=25, util=[damage(start, by, target, t1=end)])
+    events = measures.engagements(rnd, blob, 0, 5, 20)
+    assert events == ([] if expected is None else [
+        {"t": expected, "enemies": [5], "kind": "fight"}])
+
+
+def test_crossing_damage_run_keeps_real_entry_time_and_groups_by_run_end():
+    rnd, blob = round_of({
+        4: ("A", [(0, 160, 200, 180)]),
+        5: ("B", [(0, 160, 270, 90)]),
+        6: ("B", [(0, 352, 200, 0)]),
+    }, util=[damage(51.002, 5, 4, t1=51.851), damage(53.069, 6, 4)], t_end=60)
+    events = measures.engagements(rnd, blob, 4, 51.237, 60)
+    assert events == [{"t": 51.237, "enemies": [5, 6], "kind": "fight"}]
+    assert measures.time_left(blob, events[0]["t"]) == pytest.approx(48.763)
+
+
 def test_dead_enemy_cannot_generate_a_later_first_sight():
     rnd, blob = encounters(sight=12, kills=[kill(5, 0, 6)])
     assert measures.engagements(rnd, blob, 0, 6, 20) == []

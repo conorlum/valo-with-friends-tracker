@@ -23,7 +23,7 @@ from app.coach.fights import _gun_at, _tier  # noqa: E402
 from app.coach.roundview import RoundView, SPIKE_TIMER_S  # noqa: E402
 from app.control import engine as ce, stance as st_mod  # noqa: E402
 from app.control.utility import _sees_point  # noqa: E402
-from app.critutil.extract import _ult_at, _ult_cap, build_casts  # noqa: E402
+from app.critutil.extract import _first_use, _ult_at, _ult_cap, build_casts  # noqa: E402
 from app.moments.constants import FIGHT_GAP_S, MOVING_MPS, SIGHT_STEP_S  # noqa: E402
 from app.moments.fights import _events, _first_sight, _speed, _split  # noqa: E402
 from app.replays import player_state  # noqa: E402
@@ -124,17 +124,23 @@ def unknown(rnd, ctl: ControlRound, row: dict) -> dict:
 def backshots(rnd, blob: dict, slot: int, t0: float, t1: float) -> int:
     """Count incoming enemy damage rows outside the yaw cone, once per damage run.
 
-    Aggregated runs have no individual hit positions; classify their recorded start.
+    Aggregated runs have no individual hit positions; classify their first moment
+    inside the closed [t0, t1] window.
     Walls, smoke and blinds do not change this bearing-only measurement (R7).
     """
     count = 0
     for row in blob.get("util") or []:
-        if row.get("k") != "damage" or row.get("target") != slot or not t0 <= row["t"] <= t1:
+        if row.get("k") != "damage" or row.get("target") != slot:
+            continue
+        start = row["t"]
+        end = start if row.get("t1") is None else max(start, row["t1"])
+        if start > t1 or end < t0:
             continue
         enemy = row.get("by")
         if rnd.team.get(enemy) in (None, rnd.team.get(slot)):
             continue
-        p, q = rnd.pos(slot, row["t"]), rnd.pos(enemy, row["t"])
+        t = max(start, t0)
+        p, q = rnd.pos(slot, t), rnd.pos(enemy, t)
         if p is None or q is None:
             continue
         bearing = math.degrees(math.atan2(q[1] - p[1], q[0] - p[0]))
@@ -196,7 +202,8 @@ def ult_caps(blobs_by_round: dict, agents: dict) -> dict[int, int]:
     return caps
 
 
-def util(rnd, blob: dict, slot: int, t_s: float, t_death: float | None, cap: int | None) -> dict:
+def util(rnd, blob: dict, slot: int, t_s: float, t_death: float | None, cap: int | None,
+         agent: str | None = None) -> dict:
     """Held non-ult charges, one use per built cast, and proven ult readiness (R9)."""
     ps = blob.get("player_state") or {}
     charges = {key: line for key, line in ((ps.get("charges") or {}).get(str(slot)) or {}).items()
@@ -217,9 +224,12 @@ def util(rnd, blob: dict, slot: int, t_s: float, t_death: float | None, cap: int
 
     stop = min(t_death, rnd.t_decided) if t_death is not None else rnd.t_decided
     points = _ult_at(ps, slot, t_s)
+    # Timed ults may retain full points while active; their use evidence wins.
+    used_at = _first_use(blob.get("util") or [], slot, agent, t_s)
+    ready = False if used_at is not None else (points >= cap if cap is not None and points is not None else None)
     return {"held_start": held(t_s), "held_at_death": held(t_death) if t_death is not None else None,
             "used": sum(c.by == slot and t_s <= c.t <= stop for c in build_casts(rnd, blob)),
-            "ult_ready": points >= cap if cap is not None and points is not None else None}
+            "ult_ready": ready}
 
 
 def sides(ctx: dict, n: int) -> dict:
@@ -312,7 +322,9 @@ def engagements(rnd, blob: dict, slot: int, t0: float, t1: float) -> list[dict]:
     Callers fill clock's time_left_first_engagement using time_left at the first engagement.
     """
     t1 = min(t1, rnd.t_decided)
-    groups = _split([e for e in _events(rnd, blob, slot) if t0 <= e[0] <= t1])
+    groups = _split([(max(t, t0), kind, by, other, min(end, t1))
+                     for t, kind, by, other, end in _events(rnd, blob, slot)
+                     if t <= t1 and end >= t0])
     fights = [{"t": group[0][0], "enemies": sorted({e[3] for e in group}), "kind": "fight"}
               for group in groups]
     spans = [(fight, max(e[4] for e in group)) for fight, group in zip(fights, groups)]
