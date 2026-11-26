@@ -112,6 +112,34 @@ def test_run_measures_report_and_privacy(tmp_path):
         assert "player_id" not in text
 
 
+@pytest.mark.parametrize("death_source", ["replay", "db"])
+def test_run_examples_only_name_living_enemies(tmp_path, death_source):
+    ctx = context()
+    ctx["players"]["6"] = {**ctx["players"]["7"], "agent": "Omen"}
+    ctx["players"]["5"] = {**ctx["players"]["7"], "agent": "Cypher"}
+    ctx["rounds"]["1"]["alive_steps"] = [[10, 1, 2]]
+    if death_source == "db":
+        ctx["rounds"]["1"]["db_deaths"] = [{"slot": 5, "t_db": 7}]
+    value = toys.blob({0: ("A", [(0, 180, 204, 0)]),
+                       5: ("B", [(0, 300, 236, 180)]),
+                       6: ("B", [(0, 300, 220, 180)]),
+                       7: ("B", [(0, 300, 204, 180)])},
+                      t_end=22, t_decided=20,
+                      deaths={5: 5} if death_source == "replay" else {})
+    seed(tmp_path / "cache", ctx, {1: value})
+    assert review.main(arguments(tmp_path)) == 0
+    own = next(r for r in jsonlines(tmp_path / "out" / "rows.jsonl") if r["slot"] == 0)
+    assert own["group"] == "1v2" and own["n_enemies"] == 2
+    assert own["enemy_agents"] == {"6": "Omen", "7": "Sage"}
+    text = (tmp_path / "out" / "report.md").read_text(encoding="utf-8")
+    assert "the enemy Cypher" not in text
+
+
+def test_export_command_documents_required_database():
+    assert ("python scripts/with_friends_db.py --expect-database valowithfriendsdb "
+            "--read-only scripts/clutch_review.py export-win") in review.__doc__
+
+
 def test_two_player_situations(tmp_path):
     ctx = context()
     ctx["players"]["1"] = {**ctx["players"]["0"], "name": "C", "player_id": 102}

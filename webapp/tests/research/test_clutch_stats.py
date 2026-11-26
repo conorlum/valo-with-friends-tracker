@@ -128,6 +128,55 @@ def test_comparison_cluster_intervals_nulls_and_constants():
     assert stats.compare(rows, "one_at_a_time", "1v1")["n"] == 20
 
 
+@pytest.mark.parametrize("mode", ["single", "outcome", "half", "null_measure", "null_prediction"])
+def test_contrasts_require_two_matches_per_side(mode):
+    rows = [row(i, won=w, value=int(w), match_id=f"match-{i % 2}")
+            for i in range(20) for w in (True, False)]
+    if mode == "single":
+        for r in rows:
+            r["match_id"] = "match-0"
+    elif mode == "outcome":
+        for r in rows:
+            r["isolation"]["one_at_a_time"] = int(r["match_id"][-1])
+            if r["won"]:
+                r["match_id"] = "match-0"
+    elif mode == "half":
+        for r in rows:
+            r["isolation"]["one_at_a_time"] = int(r["match_id"][-1])
+    elif mode == "null_measure":
+        for r in rows:
+            if r["match_id"] == "match-1":
+                r["isolation"]["one_at_a_time"] = None
+    else:
+        for r in rows:
+            if r["match_id"] == "match-1":
+                r["p_stored"] = None
+    got = stats.compare(rows, "one_at_a_time", "1v1")
+    if mode in ("single", "outcome", "null_measure"):
+        assert got["status"] == "not estimable"
+        assert got["interval"] is None
+    if mode in ("single", "half", "null_measure", "null_prediction"):
+        assert got["residual"]["status"] == "not estimable"
+        assert got["residual"]["interval"] is None
+        assert stats.candidates([got], rows) == []
+
+
+@pytest.mark.parametrize("n_matches", [2, 10])
+def test_match_counts_follow_measure_and_prediction_filtering(tmp_path, n_matches):
+    rows = [row(i, won=w, value=int(w)) for i in range(n_matches) for w in (True, False)]
+    rows += [row(10, match_id="null-measure", value=None),
+             row(11, match_id="null-prediction", value=0, p_stored=None)]
+    got = stats.compare(rows, "one_at_a_time", "1v1")
+    assert (got["matches"], got["won_matches"], got["lost_matches"]) == (n_matches + 1, n_matches + 1, n_matches)
+    assert got["status"] == got["residual"]["status"] == "estimated"
+    assert (got["residual"]["matches"], got["residual"]["lower_matches"],
+            got["residual"]["upper_matches"]) == (n_matches, n_matches, n_matches)
+    text = report(tmp_path, rows, [got])
+    assert "| n | Matches | Won n | Won matches | Lost n | Lost matches |" in text
+    assert f"| {2*n_matches + 1} | {n_matches + 1} | {n_matches + 1} | {n_matches + 1} | {n_matches} | {n_matches} |" in text
+    assert "Residual n | Residual matches | Lower n | Lower matches | Upper n | Upper matches" in text
+
+
 def test_residual_uses_raw_rows_paired_match_bootstrap_and_median_ties():
     rows = [row(3*i+j, value=v, won=(i+j) % 3 != 0, p_stored=.1*(j+1))
             for i in range(10) for j, v in enumerate((0, 1, 2))]

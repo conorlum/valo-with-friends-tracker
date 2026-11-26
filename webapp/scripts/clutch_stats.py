@@ -20,13 +20,16 @@ an attempt started with enough time, not whether it completed; defuse_half
 means any attempt reached half. No attempts means False in an applicable
 window; unknown timing stays None. fake_followed is null without fakes.
 
-compare returns n, outcome counts/medians, difference and interval (won minus
-lost), status, and a residual dict with n, split, lower_n/upper_n, lower_mean/
+compare returns n, contributing matches (total and per side), outcome
+counts/medians, difference and interval (won minus lost), status, and a
+residual dict with n, split, lower_n/upper_n, lower_mean/
 upper_mean, difference, interval and status. Residuals are outcome - p_stored;
 the split is by bool value or the observed group median, ties in the lower
 half. Rows missing predictions drop only from residual calculations. A constant
 has no interval. results passed to candidates/write_report are lists of these
 comparison dicts. write_report fills any missing measure/group comparisons.
+Intervals require at least two contributing matches overall and on each side
+of their contrast, after filtering missing measures or predictions.
 
 labels(contexts, friends) takes replay page contexts and roster strings (case
 insensitive), returning {uuid: {int_slot: display_label}}. Numbering uses sorted
@@ -210,15 +213,19 @@ def compare(rows, measure, group):
     measure = _BY_NAME[measure] if isinstance(measure, str) else measure
     value = measure["from"]
     eligible = [r for r in rows if r["group"] == group and _finite(value(r))]
-    won = [value(r) for r in eligible if r["won"]]
-    lost = [value(r) for r in eligible if not r["won"]]
+    won_rows = [r for r in eligible if r["won"]]
+    lost_rows = [r for r in eligible if not r["won"]]
+    won = [value(r) for r in won_rows]
+    lost = [value(r) for r in lost_rows]
     constant = bool(eligible) and len({value(r) for r in eligible}) < 2
     result = {"measure": measure["name"], "group": group, "n": len(eligible),
+              "matches": len(_clusters(eligible)),
+              "won_matches": len(_clusters(won_rows)), "lost_matches": len(_clusters(lost_rows)),
               "n_won": len(won), "n_lost": len(lost),
               "won_median": median(won) if won else None, "lost_median": median(lost) if lost else None,
               "difference": median(won) - median(lost) if won and lost else None,
               "interval": None, "status": "constant" if constant else "not estimable"}
-    if not constant and won and lost:
+    if not constant and min(result["matches"], result["won_matches"], result["lost_matches"]) >= 2:
         result["interval"] = _interval(
             lambda cs: _sample_stat(cs, value, lambda r: r["won"], median),
             lambda cs: _sample_stat(cs, value, lambda r: not r["won"], median), eligible)
@@ -226,6 +233,7 @@ def compare(rows, measure, group):
             result["status"] = "estimated"
     predicted = [r for r in eligible if _finite(r.get("p_stored"))]
     residual = {"n": len(predicted), "lower_n": 0, "upper_n": 0, "split": None,
+                "matches": len(_clusters(predicted)), "lower_matches": 0, "upper_matches": 0,
                 "lower_mean": None, "upper_mean": None, "difference": None,
                 "interval": None, "status": "constant" if constant else "not estimable"}
     if eligible:
@@ -233,11 +241,14 @@ def compare(rows, measure, group):
         residual["split"] = split
         score = lambda r: int(r["won"]) - r["p_stored"]
         for upper, key in ((False, "lower"), (True, "upper")):
-            values = [score(r) for r in predicted if high(r) == upper]
+            half = [r for r in predicted if high(r) == upper]
+            values = [score(r) for r in half]
             residual[key + "_n"] = len(values)
+            residual[key + "_matches"] = len(_clusters(half))
             residual[key + "_mean"] = mean(values) if values else None
         if not constant and residual["lower_n"] and residual["upper_n"]:
             residual["difference"] = residual["upper_mean"] - residual["lower_mean"]
+        if not constant and min(residual["matches"], residual["lower_matches"], residual["upper_matches"]) >= 2:
             residual["interval"] = _interval(
                 lambda cs: _sample_stat(cs, score, high, mean),
                 lambda cs: _sample_stat(cs, score, lambda r: not high(r), mean), predicted)
@@ -395,6 +406,7 @@ def write_report(out, rows, results, coverage, cutoffs, model_note):
          by_n.get(k, (0, 0))[0] + excluded.get(k, (0, 0))[0]) for k in sorted(set(by_n) | set(excluded))])
     lines.extend(["## Measures", "", "Nulls drop from that measure only. Differences are won minus lost medians; "
                   "95% intervals resample whole matches (1,000 draws, seed 0). "
+                  "Intervals require at least two matches overall and on each side of the contrast. "
                   "Constant measures have no interval. Median ties enter the lower half; bools split by value.", ""])
     if stored:
         lines.extend(["Residual difference is mean(outcome − p_stored) in the upper half minus the lower half.", ""])
@@ -406,14 +418,18 @@ def write_report(out, rows, results, coverage, cutoffs, model_note):
                 result = compare(rows, measure, group)
             ordered.append(result)
             lines.extend([f"### {measure['name']} / {group}", "", f"Unit: {measure['unit']}", ""])
-            headers = ["n", "Won n", "Lost n", "Won median", "Lost median", "Difference", "95% interval"]
-            values = [result["n"], result["n_won"], result["n_lost"], _number(result["won_median"]),
+            headers = ["n", "Matches", "Won n", "Won matches", "Lost n", "Lost matches",
+                       "Won median", "Lost median", "Difference", "95% interval"]
+            values = [result["n"], result["matches"], result["n_won"], result["won_matches"],
+                      result["n_lost"], result["lost_matches"], _number(result["won_median"]),
                       _number(result["lost_median"]), _number(result["difference"]),
                       _ci(result["interval"], result["status"])]
             if stored:
                 residual = result["residual"]
-                headers += ["Residual n", "Lower n", "Upper n", "Split", "Residual difference", "Residual 95% interval"]
-                values += [residual["n"], residual["lower_n"], residual["upper_n"], _number(residual["split"]),
+                headers += ["Residual n", "Residual matches", "Lower n", "Lower matches", "Upper n", "Upper matches",
+                            "Split", "Residual difference", "Residual 95% interval"]
+                values += [residual["n"], residual["matches"], residual["lower_n"], residual["lower_matches"],
+                           residual["upper_n"], residual["upper_matches"], _number(residual["split"]),
                            _number(residual["difference"]), _ci(residual["interval"], residual["status"])]
             _table(lines, headers, [values])
     lines.extend(["## Calibration", "", "Forecasts and observed outcomes use each row's own side frame.", ""])

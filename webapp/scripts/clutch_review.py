@@ -4,7 +4,7 @@ From webapp::
 
     python scripts/clutch_review.py run --limit 10 --jobs 2
     python scripts/clutch_review.py report --out %TEMP%/valo-clutch
-    python scripts/with_friends_db.py --read-only scripts/clutch_review.py export-win
+    python scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only scripts/clutch_review.py export-win
 
 Probe: python scripts/clutch_review.py run --limit 1 --jobs 1
 
@@ -199,7 +199,7 @@ def _measure_round(task, ctx, n, blob, caps):
         row.update(uuid=task["uuid"], round=n, match_id=ctx["match"]["match_id"],
                    clock_offset=ctx["match"].get("clock_offset") or 0, t_plant=plant,
                    label=task["labels"][slot], agent=players[slot]["agent"],
-                   enemy_agents={s: players[s]["agent"] for s in enemies}, clock=clock,
+                   enemy_agents={s: players[s]["agent"] for s in enemies if view.alive(s, start)}, clock=clock,
                    state=measures.state(view, rnd, blob, ctx, n, row),
                    isolation=measures.isolation_summary(engagements), engagement_rows=engagements,
                    unknown=(measures.unknown(rnd, ctl, row) if ctl else dict.fromkeys(
