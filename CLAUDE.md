@@ -48,6 +48,15 @@ missing, because Render's `rootDir: webapp` hides `docs/`. A scoring release tha
 `ACTIVE_MANIFEST` must refresh the mirror in the same PR (`tests/test_active_manifest_mirror.py`
 fails otherwise). Stale splits after a rescore still need `scripts/link_replays.py --refresh-impact`.
 
+### Clip export and highlights
+
+The export panel makes client-only H.264 MP4 clips through WebCodecs and the lazy-loaded,
+vendored `app/static/vendor/mp4-muxer-5.2.2.js`; `clipViewer` / `drawAt` in `replay.js` draw them.
+`app/services/highlights.py` computes highlights on request, with no table:
+`/replays/<uuid>/highlights.json` (ETag) and `/replays/<uuid>/potg` (the match page's card).
+Never on the demo. Only home-team friends get highlights; names follow the moments tab's rule
+through `clip_names`. The replay page accepts `?until=` and `?export=1&hl=<id>`.
+
 ### Map layouts
 
 `app/static/data/layouts.json` declares map layouts, and `app/replays/layouts.py` selects them through `layout_for` using `replays.game_branch`. Asset keys are `<Map>` for the base layout and `<Map>_<major>_<minor>` for a layout starting at that patch. In `layout_pending` or `layout_unknown`, stored control is kept stale, recomputation waits, a round without a stored row returns 404, and the viewer shows a layout note; a pending replay still shows its stored control, marked out of date, on the newest earlier layout that has a control layer, while an unknown patch shows none. The base layout is pinned byte-identical by `tests/fixtures/control/layout_golden.json` through `test_layout_base_identity.py`. Redrawing a map for a new layout follows `docs/map-layout-redraw.md` with `scripts/map_layout.py` (`notes`, `fetch-minimap`, `align`, `diff`, `overlay`, `build`, `kill-lines`).

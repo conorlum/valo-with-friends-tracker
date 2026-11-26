@@ -23,7 +23,7 @@ from test_replay_store import condensed  # noqa: E402,F401  (fixture)
 
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
-from app.models import RoundPlayerStat  # noqa: E402
+from app.models import Friendship, RoundPlayerStat  # noqa: E402
 from app.models.replay import Replay, ReplayGap, ReplayRoundGapRun  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
 from app.replays import store  # noqa: E402
@@ -194,7 +194,7 @@ def _jsonb_on_sqlite(type_, compiler, **kw):   # impact_scores.trade_detail, for
 def page_db(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=CONTROL_TABLES + [RoundPlayerStat.__table__])  # ImpactScore: in CONTROL_TABLES
+    Base.metadata.create_all(engine, tables=CONTROL_TABLES + [RoundPlayerStat.__table__])
     session = sessionmaker(bind=engine)()
     yield session
     session.close()
@@ -252,6 +252,37 @@ def test_the_start_time_is_parsed_and_sought_after_the_round(page_db, page_linke
         seen, html = render_page(page_db, monkeypatch, bad)
         assert seen["start_t"] is None, bad
         assert "window.viewer.seek(" not in html
+
+
+@pytest.mark.parametrize("query, expected", [
+    (b"round=2&t=7.5&until=12", 12.0),
+    (b"round=2&t=7.5&until=5", None),
+    (b"round=2&t=7.5&until=7.5", None),
+    (b"round=2&t=7.5&until=abc", None),
+    (b"round=2&t=7.5&until=nan", None),
+    (b"round=2&t=7.5&until=inf", None),
+    (b"round=2&t=7.5&until=-1", None),
+    (b"round=2&t=7.5", None),
+    (b"round=2&until=12", 12.0),
+])
+def test_until_is_parsed_and_set_after_seeking(page_db, page_linked, monkeypatch, query, expected):
+    seen, html = render_page(page_db, monkeypatch, query)
+    assert seen["until_t"] == expected
+    if expected is None:
+        assert "window.viewer.setUntil(" not in html
+    else:
+        assert f"window.viewer.setUntil({expected})" in html
+        assert html.index("showRound(2).then(") < html.index("window.viewer.setUntil(")
+        if seen["start_t"] is not None:
+            assert html.index("window.viewer.seek(") < html.index("window.viewer.setUntil(")
+
+
+@pytest.mark.parametrize("query, expected", [(b"export=1", True), (b"", False), (b"export=0", False),
+                                             (b"export=true", False)])
+def test_export_query_sets_the_export_panel_flag(page_db, page_linked, monkeypatch, query, expected):
+    seen, html = render_page(page_db, monkeypatch, query)
+    assert seen["open_export"] is expected
+    assert ("window.viewerOpenExport = true" in html) is expected
 
 
 @pytest.mark.parametrize("value, expected", [("0", 0.0), ("12", 12.0), ("7.25", 7.25), (None, None), ("", None),

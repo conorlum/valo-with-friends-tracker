@@ -46,6 +46,7 @@ import math
 import re
 import secrets
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
@@ -66,6 +67,7 @@ from app.services import replay_errors
 from app.services import replay_areas
 from app.services import replay_moments
 from app.services import replay_util
+from app.services import highlights
 from app.services import replay_progress as progress
 from app.services import replay_upload as uploads
 from app.services import upload_tokens
@@ -347,6 +349,59 @@ def replay_util_json(request: Request, match_uuid: str, db: Session = Depends(ge
     return _json_with_etag(request, body, etag_of(canonical))
 
 
+def moment_url(uuid, item):
+    """Python twin of replay.js momentLink, including its optional end time."""
+    # JS toFixed chooses the larger magnitude at an exact half; Python's format chooses even.
+    def fixed(value):
+        return str(Decimal.from_float(float(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+    url = f"/replays/{uuid}?round={item['round']}&t={fixed(item['t_start'])}"
+    if item.get('t_end') is not None:
+        url += f"&until={fixed(item['t_end'])}"
+    return url
+
+
+@router.get("/replays/{match_uuid}/highlights.json")
+def replay_highlights_json(request: Request, match_uuid: str, db: Session = Depends(get_db)):
+    replay = _replay_or_404(db, match_uuid)
+    if not replay_db.is_linked(replay):
+        raise HTTPException(status_code=404)
+    page = replay_service.page_context(db, replay)
+    body = highlights.payload(db, replay, page=page)
+    canonical = json.dumps(body, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return _json_with_etag(request, body, etag_of(canonical))
+
+
+@router.get("/replays/{match_uuid}/potg")
+def replay_potg(request: Request, match_uuid: str, db: Session = Depends(get_db)):
+    replay = _replay_or_404(db, match_uuid)
+    if not replay_db.is_linked(replay):
+        raise HTTPException(status_code=404)
+    page = replay_service.page_context(db, replay)
+    body = highlights.payload(db, replay, page=page)
+    item = body['potg']
+    if item is None:
+        return Response(content='', media_type='text/html')
+    url = moment_url(str(replay.match_uuid).lower(), item)
+    return templates.TemplateResponse(request, 'replays/_potg.html',
+                                      {'item': item, 'viewer_url': url,
+                                       'export_url': url + '&export=1&hl=' + item['id'],
+                                       'potg_data': _potg_data(page, body, item)})
+
+
+def _potg_data(context: dict, body: dict, item: dict) -> dict:
+    """What potg.js needs to play the item: the round's site data, and the linked players under their clip names
+    (R10), so neither a display name nor a tag reaches the page."""
+    clip_names = body['clip_names']
+    match = context['match']
+    players = {slot: {'slot': p['slot'], 'name': clip_names[slot], 'agent': p['agent'], 'team': p['team'],
+                      'side': p['side']} for slot, p in context['players'].items()}
+    return {'uuid': body['uuid'], 'asset': match['asset'], 'rotation': match['rotation'],
+            'uv_per_unit': match['uv_per_unit'], 'round': item['round'],
+            'site': context['rounds'].get(str(item['round'])), 'players': players,
+            'clip_names': clip_names, 'item': item}
+
+
 @router.get("/replays/{match_uuid}/{round_number}.json")
 def replay_round(request: Request, match_uuid: str, round_number: int, db: Session = Depends(get_db)):
     replay = _replay_or_404(db, match_uuid)
@@ -469,11 +524,20 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
     if start not in context["match"]["rounds"]:
         start = 1
     linked = context["match"]["linked"]
+    if linked:
+        friends = highlights.friend_ids(db, context['players'])
+        home = replay_moments.home_team(context['players'], friends)
+        context['clip_names'] = highlights.clip_labels(context['players'], home)
+        context['round_scores'] = highlights.round_scores(context['rounds'], home)
     viewer = get_current_player(request, db) if "session" in request.scope else None
     viewer_slot = next((p["slot"] for p in context["players"].values()
                         if viewer is not None and p.get("player_id") == viewer.id), None)
     asset = context["match"]["asset"]
     gaps_layout = asset if context["match"].get("gaps") and asset != gap_patterns.default_layout(replay.map_name) else None
+    start_t = start_time(request.query_params.get("t"))
+    until_t = start_time(request.query_params.get("until"))
+    if start_t is not None and until_t is not None and until_t <= start_t:
+        until_t = None
     return {
         "viewer_slot": viewer_slot, "gaps_layout": gaps_layout,
         "replay": {"map_name": replay.map_name, "round_numbers": context["match"]["rounds"],
@@ -482,7 +546,9 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
                    "match_url": (f"/matches/{context['match']['external_id']}" if context["match"]["linked"] else None),
                    "reason": context["match"].get("reason")},
         "linked": linked, "replay_data": context, "start_round": start,
-        "start_t": start_time(request.query_params.get("t")),
+        "start_t": start_t, "until_t": until_t,
+        "open_export": request.query_params.get("export") == "1",
+        "clip_export": True,
         "control": context["match"]["control"] if linked else None,
         "gaps": bool(linked and context["match"].get("gaps")),
         # R2-5 (2026-11-12): the match-level panels (Control tables, heatmap, Critical Moments, Critical Util)

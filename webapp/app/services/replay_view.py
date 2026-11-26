@@ -34,10 +34,8 @@ def _team(value) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
-def alive_steps(blob: dict, slot_team: dict[int, str], db_deaths: list[dict], clock_offset: float) -> list[list]:
-    """[[t, team-1 alive, team-2 alive], ...]: one entry at the round's start and one at every
-    change, on the replay clock. Deaths at the same moment land in one step."""
-    t_start = float(blob.get("t_start") or 0.0)
+def corrected_lives(blob: dict, db_deaths: list[dict], clock_offset: float) -> dict[int, list]:
+    """Copy the replay lives, closing missing DB deaths on the replay clock; preserve revives."""
     lives: dict[int, list[list[float | None]]] = {}
     for slot, intervals in (blob.get("alive") or {}).items():
         lives[int(slot)] = [[iv[0], iv[1]] for iv in intervals]
@@ -51,6 +49,14 @@ def alive_steps(blob: dict, slot_team: dict[int, str], db_deaths: list[dict], cl
             if start <= t and (end is None or t < end - SAME_DEATH_S):
                 life[1] = t
                 break
+    return lives
+
+
+def alive_steps(blob: dict, slot_team: dict[int, str], db_deaths: list[dict], clock_offset: float) -> list[list]:
+    """[[t, team-1 alive, team-2 alive], ...]: one entry at the round's start and one at every
+    change, on the replay clock. Deaths at the same moment land in one step."""
+    t_start = float(blob.get("t_start") or 0.0)
+    lives = corrected_lives(blob, db_deaths, clock_offset)
     changes = {t_start}
     for intervals in lives.values():
         for start, end in intervals:
