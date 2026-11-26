@@ -11,6 +11,7 @@ on:
       - 'webapp/app/replays/**'
       - 'webapp/app/moments/**'
       - 'webapp/app/critutil/**'
+      - 'webapp/app/postplant/**'
       - 'webapp/app/services/util_values.py'
       - 'webapp/app/services/util_model.py'
       - 'webapp/app/services/stats_math.py'

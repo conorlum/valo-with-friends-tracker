@@ -28,6 +28,7 @@ from app.models.friendship import Friendship  # noqa: E402
 from app.models.kill_event import KillEvent  # noqa: E402
 from app.models.match import Match, MatchPlayer, MatchSource  # noqa: E402
 from app.models.player import Player  # noqa: E402
+from app.models.replay_postplant import ReplayRoundPostplant
 from app.models.replay import Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel  # noqa: E402
 from app.models.round import Round, RoundPlayerStat  # noqa: E402
 from app.services import replay_control_remote, replay_gaps, replay_util, util_model, util_store, util_values  # noqa: E402
@@ -75,7 +76,7 @@ def world(tmp_path, render, monkeypatch):
 
     engine = create_engine("sqlite://")
     models = (Player, Match, MatchPlayer, Round, RoundPlayerStat, KillEvent, Friendship,
-              Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, UtilModel)
+              Replay, ReplayPlayer, ReplayRound, ReplayRoundUtil, ReplayRoundPostplant, UtilModel)
     Base.metadata.create_all(engine, tables=[m.__table__ for m in models])
     monkeypatch.setattr(remote, "settings", SimpleNamespace(util_build_remote=True, demo_mode=False))
     monkeypatch.setattr(replay_control_remote.settings, "replay_control_remote", True)

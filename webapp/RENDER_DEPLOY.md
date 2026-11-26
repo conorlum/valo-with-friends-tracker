@@ -300,6 +300,8 @@ It runs on every merge to `main`, except merges that touch only `docs/**`, `**/*
 off in the dashboard for `valomaths` and `replay-tasks`: the Action is the only thing that deploys them.
 A merge of docs or tests alone deploys nothing; run the Action by hand if one needs to go out.
 
+The post-plant value merge re-runs every gap run (`GAPS_REVISION` 8) and requires the site and worker deployed together (gap protocol 4), which this pipeline already does.
+
 The Action pauses new control/gaps rounds, height builds, auto re-parses and Critical Util builds
 (remote opens and local child starts). The worker accepts and stores uploads but starts no parses,
 including re-parses and released held jobs, until resume. Already running work can finish.

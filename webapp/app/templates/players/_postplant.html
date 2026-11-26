@@ -1,0 +1,40 @@
+{# The player page's post-plant section. Expects `postplant_sections` (players._postplant_sections) and
+   `postplant_note`. Renders nothing when the player is not eligible on either side. #}
+{% if postplant_sections %}
+<section class="postplant-section" data-postplant>
+  <h2>Post-plant</h2>
+  <p class="page-meta">{{ postplant_note }}</p>
+  {% for side in postplant_sections %}
+  <h3 data-side="{{ side.side }}">{{ side.side }} <span class="page-meta">(n={{ side.total_n }})</span></h3>
+  {% if side.no_blocks_note %}<p class="page-meta" data-no-blocks>{{ side.no_blocks_note }}</p>{% endif %}
+  {% for block in side.blocks %}
+  <h4>{{ block.map_name }}, site {{ block.site }} <span class="page-meta">(n={{ block.n }})</span></h4>
+  {% if block.sentence %}<p data-sentence>{{ block.sentence }}</p>{% endif %}
+  <div class="table-scroll">
+    <table class="plants-table">
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Your share of time</th>
+          <th>Your net win</th>
+          <th>Everyone: share of time</th>
+          <th>Everyone: net win</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in block.rows %}
+        <tr data-area="{{ row.name }}">
+          <td>{{ row.name }}</td>
+          <td>{{ "%.0f"|format(row.share * 100) }}% (n={{ row.n }})</td>
+          <td>{% if row.net %}{{ row.net }} (n={{ row.n }}){% else %}&ndash;{% endif %}</td>
+          <td>{% if row.everyone_share is not none %}{{ "%.0f"|format(row.everyone_share * 100) }}% (n={{ row.everyone_n }}){% else %}&ndash;{% endif %}</td>
+          <td>{% if row.everyone_net %}{{ row.everyone_net }} (n={{ row.everyone_n }}){% else %}&ndash;{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+  {% endfor %}
+</section>
+{% endif %}

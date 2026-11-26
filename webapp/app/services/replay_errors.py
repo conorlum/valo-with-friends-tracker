@@ -21,6 +21,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.config import settings
+from app.models.replay_postplant import ReplayRoundPostplant
 from app.models.site_events import SiteEvent
 from app.replays import contract, control_format as cf
 from app.models.replay import (Replay, ReplayPlayer, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
@@ -39,6 +40,7 @@ KINDS = (
     ("gaps_failed", "Timing gaps failed"),
     ("moments_failed", "Critical Moments failed"),
     ("util_failed", "Critical Util failed"),
+    ("postplant_failed", "Post-plant failed"),
     ("heights_rejected", "Height builds rejected"),
     ("heights_out_of_tries", "Height rebuilds out of tries"),
     ("given_up", "Rounds given up on"),
@@ -513,7 +515,8 @@ def collect(db, live=None, *, stale: Counter | None = None, notes: dict | None =
                                       reproduce=_round_command(replay, stored.round_number)))
 
     fresh = Freshness(db)
-    for key, model in (("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)):
+    for key, model in (("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil),
+                       ("postplant_failed", ReplayRoundPostplant)):
         for stored in db.query(model.replay_id, model.round_number, model.error, model.computed_at,
                                model.gaps_revision, model.fingerprint).filter(model.status == "failed"):
             replay = replays.get(stored.replay_id)
@@ -779,7 +782,8 @@ def _rest_query(key, rows):
         return ("SELECT kind, key, count, first_seen, last_seen, error, context FROM site_events "
                 f"WHERE kind = {_sql_string(key)} AND key IN ({keys}) ORDER BY last_seen DESC;")
     models = {"control_unsupported": ReplayRoundControl, "control_failed": ReplayRoundControl,
-              "gaps_failed": ReplayRoundGapRun, "moments_failed": ReplayRoundMoments, "util_failed": ReplayRoundUtil}
+              "gaps_failed": ReplayRoundGapRun, "moments_failed": ReplayRoundMoments, "util_failed": ReplayRoundUtil,
+              "postplant_failed": ReplayRoundPostplant}
     if key in models:
         identities = ", ".join(f"({_sql_string(r['match'])}, {int(r['round'])})" for r in rows)
         return (f"SELECT r.map_name, r.match_uuid, e.round_number, e.error, e.computed_at "

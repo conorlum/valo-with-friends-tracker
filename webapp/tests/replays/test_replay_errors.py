@@ -25,6 +25,7 @@ from app.config import settings
 from app.models import Player
 from app.models.replay import (ControlHeight, Replay, ReplayPlayer, ReplayRound, ReplayRoundControl, ReplayRoundGapRun,
                                ReplayRoundMoments, ReplayRoundUtil, ReplayUpload)
+from app.models.replay_postplant import ReplayRoundPostplant
 from app.models.site_events import SiteEvent
 from app.replays import contract
 from app.services import control_heights as ch, replay_progress as progress
@@ -35,7 +36,7 @@ STAMP = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
 KEYS = ["page_error", "slow_page", "loop_failed", "loop_quiet", "forced_deploy", "util_build_failed", "util_build_stale",
         "worker_overrun", "worker_refused", "warm_vanished", "unscored_match", "kill_impact_missing", "map_pool_note", "map_layout_walls", "agent_unsupported",
         "held_ability_unnamed",
-        "cache_fallback", "box_conflict", "control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed",
+        "cache_fallback", "box_conflict", "control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed", "postplant_failed",
         "heights_rejected", "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held",
         "store_failed", "ack_missing", "stuck", "unlinked", "needs_a_person", "feature_failed", "trip_too_long"]
 FIELDS = {"map", "match", "round", "t", "agent", "figures", "link", "error", "revision", "reproduce"}
@@ -544,7 +545,8 @@ def test_old_gap_failure_behind_an_unsupported_round_does_not_wait_on_a_person(e
     assert kind(errors, db, "needs_a_person")["count"] == 0
 
 
-@pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)])
+@pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil),
+                                         ("postplant_failed", ReplayRoundPostplant)])
 def test_moments_and_util_behind_an_unsupported_round_promise_no_retry(errors, db, linked, key, model):
     # Round three R3-2: the gap planner needs a current successful control row, so nothing retries these.
     put_row(db, linked, 1, status="failed")
@@ -559,7 +561,8 @@ def test_moments_and_util_behind_an_unsupported_round_promise_no_retry(errors, d
     assert found["note"] == "1 older failed rows sit behind a round map control doesn't support"
 
 
-@pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil)])
+@pytest.mark.parametrize("key,model", [("moments_failed", ReplayRoundMoments), ("util_failed", ReplayRoundUtil),
+                                         ("postplant_failed", ReplayRoundPostplant)])
 def test_moments_and_util_use_util_freshness(errors, db, linked, key, model):
     from app.services import replay_gaps
     fresh = Freshness(db)
@@ -917,7 +920,7 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
     _gap_run(factory, linked, 2, status="failed")
     db.expire_all()
     fresh = Freshness(db)
-    for model in (ReplayRoundMoments, ReplayRoundUtil):
+    for model in (ReplayRoundMoments, ReplayRoundUtil, ReplayRoundPostplant):
         db.merge(model(replay_id=linked.id, round_number=3, status="failed",
                        fingerprint=fresh.expected(linked, 3), gaps_revision=replay_gaps.GAPS_REVISION,
                        computed_at=STAMP, error="Synthetic evidence error"))
@@ -948,7 +951,7 @@ def test_every_kind_has_a_read_only_reproduction_command(errors, factory, db, li
             assert "--read-only" in command, (key, command)
             assert "--expect-database valowithfriendsdb" in command, (key, command)
             assert "--force" not in command, (key, command)
-            if key in ("control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed"):
+            if key in ("control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed", "postplant_failed"):
                 assert command.endswith("--retry-failed --dry-run"), command
             elif key in ("box_conflict", "heights_rejected"):
                 assert command.endswith(f'--out "$TEMP/{row["map"]}_heights.npz"'), command
@@ -1449,3 +1452,25 @@ def test_a_capped_checked_kind_says_it_was_cut(errors, db, monkeypatch):
     errors._verification_changed()
     entry = kind(errors, db, "unscored_match")
     assert entry["count"] == 3 and not entry["note"]
+
+
+def test_postplant_failure_is_counted_and_has_read_only_investigation(errors, db, linked):
+    assert dict(errors.KINDS).get("postplant_failed") == "Post-plant failed"
+    assert errors.GROUPS["postplant_failed"] == errors.GROUPS["util_failed"]
+    from app.models.replay_postplant import ReplayRoundPostplant
+    from app.services import replay_gaps
+    fresh = Freshness(db)
+    db.add(ReplayRoundPostplant(replay_id=linked.id, round_number=1, status="failed",
+                               fingerprint=fresh.expected(linked, 1), gaps_revision=replay_gaps.GAPS_REVISION,
+                               error="ValueError: synthetic", computed_at=STAMP))
+    db.commit()
+    row = one(errors, db, "postplant_failed")
+    assert row["error"] == "ValueError: synthetic"
+    result = errors.compute(db)
+    entry = next(k for k in result["kinds"] if k["key"] == "postplant_failed")
+    # SQL lists evidence beyond the prompt's shared 200-row budget.
+    entry["rows"] = entry["rows"] * 201
+    entry["count"] = 201
+    prompt = errors.prompt(result, "postplant_failed")
+    assert "SELECT r.map_name" in prompt and "FROM replay_round_postplant e" in prompt
+    assert "--read-only" in prompt

@@ -39,6 +39,7 @@ COPY webapp/app/control /srv/webapp/app/control
 COPY webapp/app/gaps /srv/webapp/app/gaps
 COPY webapp/app/moments /srv/webapp/app/moments
 COPY webapp/app/critutil /srv/webapp/app/critutil
+COPY webapp/app/postplant /srv/webapp/app/postplant
 # Every other file the util build reads (app/critutil/build_digest.py SOURCES): a missing one is an error.
 # (Its app/replays sources, the grid and minimap scale behind every area lookup, come with app/replays above.)
 COPY webapp/app/services/__init__.py /srv/webapp/app/services/__init__.py
@@ -55,7 +56,7 @@ COPY webapp/scripts/map_pool_messages.patch /srv/webapp/scripts/map_pool_message
 COPY replay_worker /srv/replay_worker
 COPY replay_tasks /srv/replay_tasks
 # The smoke test: the control venv imports the engine, or the build fails here (not silently later).
-RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, app.moments.fights, replay_worker.control_job, replay_worker.warm_job, replay_worker.height_job, app.control.height_job, app.replays.height_inputs, app.control.feature_job, app.replays.map_feature_artifacts, replay_tasks.tasks, replay_tasks.main, app.critutil.corpus, app.critutil.build_digest; from app.replays.contract import load_pin; load_pin(); from app.critutil import corpus, build_digest; assert corpus._ability_styles(); corpus.area_of('Ascent', 0.5, 0.5, None); build_digest.digest('/srv/webapp')"
+RUN PYTHONPATH=/srv/webapp:/srv /opt/control-venv/bin/python -c "import numpy, scipy, PIL, app.control.engine, app.control.task, app.gaps.detect, app.gaps.cache, app.gaps.rows, app.gaps.backshots, app.moments.fights, replay_worker.control_job, replay_worker.warm_job, replay_worker.height_job, app.control.height_job, app.replays.height_inputs, app.control.feature_job, app.replays.map_feature_artifacts, replay_tasks.tasks, replay_tasks.main, app.critutil.corpus, app.critutil.build_digest, app.postplant.extract; from app.replays.contract import load_pin; load_pin(); from app.critutil import corpus, build_digest; assert corpus._ability_styles(); corpus.area_of('Ascent', 0.5, 0.5, None); build_digest.digest('/srv/webapp')"
 RUN mkdir -p /jobs/control_cache && chown -R worker /jobs
 # No `USER worker` here: the entrypoint starts as root only to chown the .vrf archive's disk (Render
 # mounts it root-owned), then drops to `worker` with setpriv before the server starts. This guard fails

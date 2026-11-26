@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block title %}Post-plant on {{ map_name }} - {{ site_name }}{% endblock %}
+
+{% block content %}
+<style>
+  .plant-layer { position: relative; width: min(100%, 40rem); aspect-ratio: 1 / 1; margin: 0.5rem 0; transform: rotate({{ degrees }}deg); }
+  .plant-layer img { width: 100%; height: 100%; display: block; }
+  .plant-spot { position: absolute; transform: translate(-50%, -50%); border-radius: 50%; border: 1px solid var(--border-strong); display: flex; align-items: center; justify-content: center; }
+  .plant-spot.spot-grey { background: color-mix(in srgb, grey 35%, transparent); }
+  .plant-label { transform: rotate({{ -degrees }}deg); font-size: 0.7rem; font-weight: 600; text-align: center; line-height: 1.1; color: var(--ink); text-shadow: 0 0 3px var(--surface); pointer-events: none; }
+  .plants-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  .plants-table th, .plants-table td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border-strong); }
+  .plant-grey { color: var(--ink-muted); }
+  .pp-ci { display: block; color: var(--ink-muted); font-size: 0.8rem; }
+  @media (max-width: 640px) { .plants-table { display: block; overflow-x: auto; } }
+</style>
+<h1>Post-plant on {{ map_name }}</h1>
+<div class="tab-row" role="tablist">
+  <a class="tab-btn" href="{{ links.plants }}" role="tab" aria-selected="false">Plant spots</a>
+  <a class="tab-btn active" href="/plants/{{ map_name }}/postplant" role="tab" aria-selected="true">Post-plant</a>
+</div>
+<p class="page-meta">{{ note }}</p>
+{% if login_note %}<p class="page-meta" data-login-note>{{ login_note }}</p>{% endif %}
+{% if not has_model %}<p class="page-meta" data-no-model>{{ no_model_note }}</p>{% endif %}
+
+<div class="tab-row">
+  <a class="tab-btn{% if side == 'hold' %} active{% endif %}" href="{{ links.sides.hold }}">Hold</a>
+  <a class="tab-btn{% if side == 'retake' %} active{% endif %}" href="{{ links.sides.retake }}">Retake</a>
+</div>
+<div class="tab-row">
+  <a class="tab-btn{% if not friends %} active{% endif %}" href="{{ links.views.everyone }}">Everyone</a>
+  <a class="tab-btn{% if friends %} active{% endif %}" href="{{ links.views.friends }}">Friends</a>
+</div>
+<div class="tab-row">
+  <a class="tab-btn{% if not site %} active{% endif %}" href="{{ links.sites[''] }}">All sites</a>
+  {% for name in sites %}
+  <a class="tab-btn{% if site == name %} active{% endif %}" href="{{ links.sites[name] }}">Site {{ name }}</a>
+  {% endfor %}
+</div>
+{% if spots %}
+<div class="tab-row" data-spot-tabs>
+  <a class="tab-btn{% if not spot %} active{% endif %}" href="{{ links.spots[''] }}">All plants</a>
+  {% for s in spots %}
+  <a class="tab-btn{% if spot == s.id %} active{% endif %}" href="{{ links.spots[s.id] }}">{{ s.name }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+<div class="tab-row">
+  {% for key, label in measures %}
+  <a class="tab-btn{% if measure == key %} active{% endif %}" href="{{ links.measures[key] }}">{{ label }}</a>
+  {% endfor %}
+</div>
+
+<div class="plant-layer" data-turns="{{ turns }}" data-active-measure="{{ measure }}">
+  <img src="{{ image }}" alt="{{ map_name }} minimap">
+  {% for m in markers %}
+  <div class="plant-spot{% if m.grey %} spot-grey{% endif %}" data-marker="{{ m.name }}" data-coloured="{{ 0 if m.grey else 1 }}"
+       title="{{ m.detail }}"
+       style="left: {{ m.left }}%; top: {{ m.top }}%; width: {{ m.size }}%; height: {{ m.size }}%;{% if m.fill %} background: {{ m.fill }};{% endif %}">
+    <span class="plant-label">{{ m.name }}<br>n={{ m.n }}</span>
+  </div>
+  {% endfor %}
+</div>
+
+{% if rows %}
+<div class="card">
+  <h2>Areas <span class="plant-grey">n={{ distinct_n }} player-post-plants</span></h2>
+  <table class="plants-table">
+    <thead><tr><th>Area</th><th>Post-plants (n)</th><th>Kills per post-plant</th><th>Deaths per post-plant</th><th>K/D</th><th>Win gained per post-plant</th><th>Net win per post-plant</th><th>Deaths per minute</th><th>Line of sight</th><th>Crossfire</th><th>Examples</th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr data-area="{{ r.name }}" data-n="{{ r.n }}">
+        <td>{{ r.name }}</td>
+        <td data-fig="n">n={{ r.n }}</td>
+        <td data-fig="kills">{{ r.kills }}{% if r.kills_ci %}<span class="pp-ci" data-ci="{{ 'kills' if r.kills_ci != 'needs 2 matches' else 'none' }}">{{ r.kills_ci }}</span>{% endif %}</td>
+        <td data-fig="deaths">{{ r.deaths }}</td>
+        <td data-fig="kd">{{ r.kd }}</td>
+        <td data-fig="gained">{{ r.gained }}{% if r.gained_ci %}<span class="pp-ci" data-ci="{{ 'gained' if r.gained_ci != 'needs 2 matches' else 'none' }}">{{ r.gained_ci }}</span>{% endif %}</td>
+        <td data-fig="net">{{ r.net }}{% if r.net_ci %}<span class="pp-ci" data-ci="{{ 'net' if r.net_ci != 'needs 2 matches' else 'none' }}">{{ r.net_ci }}</span>{% endif %}</td>
+        <td data-fig="deaths-per-min">{{ r.deaths_min }}</td>
+        <td data-fig="line">{{ r.line }}</td>
+        <td data-fig="crossfire">{{ r.crossfire }}</td>
+        <td>{% for e in r.examples %}<a href="{{ e.url }}">replay {{ loop.index }} ({{ e.swing }})</a> {% endfor %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card"><p>No post-plant rounds for this selection yet.</p></div>
+{% endif %}
+{% endblock %}

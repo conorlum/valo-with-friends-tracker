@@ -24,6 +24,7 @@ from test_replay_store import TABLES, add_match, condensed, pg  # noqa: E402,F40
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.gaps.rows import to_rows  # noqa: E402
+from app.models.replay_postplant import ReplayRoundPostplant
 from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments, ReplayRoundUtil  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
@@ -40,7 +41,8 @@ def session_factory(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__,
-                                                   ReplayRoundMoments.__table__, ReplayRoundUtil.__table__])
+                                                   ReplayRoundMoments.__table__, ReplayRoundUtil.__table__,
+                                                   ReplayRoundPostplant.__table__])
     return sessionmaker(bind=engine)
 
 
@@ -269,6 +271,63 @@ def test_a_failed_util_keeps_no_data_and_no_util_leaves_the_row(session_factory,
     assert _util_row(session_factory, replay_id, n)[0::3] == ("failed", None)
     store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=MOMENTS)
     assert _util_row(session_factory, replay_id, n)[0] == "failed", "a caller with no util leaves the row"
+
+
+# ---- post-plant evidence (migration 0038)
+
+POSTPLANT_DATA = {"v": 1, "plant": None, "end": 40.0, "step": 0.5,
+                  "sides": {}, "sides_known": False, "samples": [], "kills": []}
+
+
+def _postplant_row(session_factory, replay_id, n):
+    from app.models.replay_postplant import ReplayRoundPostplant
+    with session_factory() as session:
+        row = session.get(ReplayRoundPostplant, (replay_id, n))
+        return None if row is None else (row.status, row.fingerprint, row.gaps_revision,
+                                         row.data, row.error, row.computed_at)
+
+
+def test_store_postplant_ok_replaces_one_row_with_run_keys(session_factory, stored_round):
+    replay_id, n = stored_round
+    postplant = {"status": "ok", "data": POSTPLANT_DATA, "error": None}
+    for run in (RUN, {**RUN, "fingerprint": "e" * 16, "gaps_revision": 2}):
+        assert store_gaps(session_factory, replay_id, n, run, [ROW], moments=MOMENTS,
+                          postplant=postplant) == "stored"
+        row = _postplant_row(session_factory, replay_id, n)
+        assert row[:5] == ("ok", run["fingerprint"], run["gaps_revision"], POSTPLANT_DATA, None)
+        assert row[5] is not None
+    from app.models.replay_postplant import ReplayRoundPostplant
+    with session_factory() as session:
+        assert session.query(ReplayRoundPostplant).count() == 1
+
+
+def test_failed_postplant_preserves_other_results_and_none_leaves_row(session_factory, stored_round):
+    replay_id, n = stored_round
+    util = {"status": "ok", "data": {"v": 1, "casts": []}, "error": None}
+    assert store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=MOMENTS, util=util,
+                      postplant={"status": "failed", "data": POSTPLANT_DATA,
+                                 "error": "ValueError: synthetic"}) == "stored"
+    before = _postplant_row(session_factory, replay_id, n)
+    assert before[:5] == ("failed", RUN["fingerprint"], RUN["gaps_revision"], None, "ValueError: synthetic")
+    assert _stored(session_factory, replay_id, n) == (("ok", RUN["fingerprint"]), 1)
+    assert _util_row(session_factory, replay_id, n)[3] == util["data"]
+    assert _moments_row(session_factory, replay_id, n)[0] == "ok"
+    assert store_gaps(session_factory, replay_id, n, RUN, [ROW], moments=MOMENTS, postplant=None) == "stored"
+    assert _postplant_row(session_factory, replay_id, n) == before
+
+
+def test_stale_store_leaves_postplant_unchanged(session_factory, stored_round):
+    replay_id, n = stored_round
+    with session_factory() as session:
+        fingerprint, run = _current(session, replay_id, n)
+    assert store_gaps(session_factory, replay_id, n, run, [ROW], moments=MOMENTS,
+                      postplant={"status": "ok", "data": POSTPLANT_DATA}) == "stored"
+    before = _postplant_row(session_factory, replay_id, n)
+    outcome = store_gaps(session_factory, replay_id, n, {**run, "fingerprint": "0" * 16}, [],
+                         moments=MOMENTS, postplant={"status": "failed", "error": "stale"},
+                         expected_control_fingerprint=fingerprint)
+    assert outcome.startswith("skipped")
+    assert _postplant_row(session_factory, replay_id, n) == before
 
 
 # ---- critical moments (migration 0026)
