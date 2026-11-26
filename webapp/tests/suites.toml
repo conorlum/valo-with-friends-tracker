@@ -250,7 +250,7 @@ guards = ["app/services/highlights.py", "app/static/js/highlights.js","app/route
 [critical-moments]
 about = "Critical Moments: fights, trades, sight and util tags on toy rounds, a golden real round, the moments.json endpoint and tab."
 tests = ["tests/moments/test_*.py", "tests/replays/test_moments_*.py", "tests/replays/test_replay_moments.py"]
-guards = ["app/moments/**", "app/services/replay_moments.py", "app/services/replay_aim.py", "app/services/aim_stats.py", "app/static/js/moments.js", "app/replays/control_reasons.py", "app/replays/destroyed.py", "scripts/peek_probe.py", "scripts/peek_page.js"]
+guards = ["app/moments/**", "app/services/replay_moments.py", "app/services/replay_aim.py", "app/services/aim_stats.py", "app/static/js/moments.js", "app/replays/control_reasons.py", "app/replays/destroyed.py", "scripts/peek_probe.py", "scripts/peek_page.js", "scripts/crosshair_report.py"]
 
 # ---------------------------------------------------------------------------------------------------- Replays
 
