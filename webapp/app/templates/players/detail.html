@@ -77,6 +77,13 @@
 </div>
 {% endif %}
 
+{% if not demo_mode %}
+<div id="postplant-section"
+     hx-get="/players/{{ page_player.display_name | urlencode }}/postplant{{ view_query }}"
+     hx-trigger="load delay:1s"
+     hx-swap="innerHTML"></div>
+{% endif %}
+
 {% include "players/_map_streaks.html" %}
 </div>
 

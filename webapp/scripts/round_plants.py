@@ -1,8 +1,16 @@
-"""Owner maintenance: status, sync-replays [--dry-run], backfill [--limit N]."""
+"""Owner maintenance: status, sync-replays [--dry-run], backfill [--limit N] [--archive DIR], pause.
+
+Pausing a backfill: press Ctrl+C once (the current match finishes, then the run stops
+and prints its resume command; a second Ctrl+C stops at once, still losing nothing
+already committed), or run `round_plants.py pause` from any shell, which stops the run
+before its next match. Starting a backfill removes a leftover pause file.
+"""
 import argparse
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import random
+import signal
 import sys
 import time
 
@@ -15,10 +23,13 @@ from app.models import Match, Round, RoundPlant
 from app.services import round_plants as plants
 
 
-def fetch_match_json(page, external_id):
+MIN_PACE_S = 2
+
+
+def fetch_match_json(page, external_id, **options):
     # Keep status and replay sync independent of the browser adapter.
     from app.adapters.trackergg_browserstate_source import fetch_match_json as fetch
-    return fetch(page, external_id)
+    return fetch(page, external_id, **options)
 
 
 @contextmanager
@@ -34,8 +45,44 @@ def tracker_page():
             page.close()
 
 
-def _progress(done, left):
-    print(f"done: {done}; left: {left}; estimated pacing time: {left * 5}-{left * 12} s + page loads")
+@contextmanager
+def owner_stop():
+    """Yield a ``should_stop`` for ``backfill``: the pause file or a first Ctrl+C.
+
+    The first Ctrl+C only records the request, so the match in flight can finish
+    and commit; the second restores Python's default and interrupts at once.
+    """
+    interrupted = []
+
+    def on_interrupt(signum, frame):
+        if interrupted:
+            raise KeyboardInterrupt
+        interrupted.append(True)
+        print("\nPAUSING: finishing this match, then stopping (Ctrl+C again to stop now).", flush=True)
+
+    previous = signal.signal(signal.SIGINT, on_interrupt)
+    try:
+        yield lambda: "paused" if interrupted or plants.pause_requested() else None
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+WEBAPP = Path(__file__).resolve().parents[1]
+
+
+def resume_python():
+    """The `.venv313` interpreter, relative to webapp: a worktree has none of its own,
+    and `with_friends_db.py` then uses the main checkout's."""
+    from scripts.with_friends_db import find_ingest_python
+
+    path = Path(os.path.relpath(find_ingest_python(WEBAPP), WEBAPP))
+    text = str(path).replace("/", "\\")
+    return text if text.startswith("..") else ".\\" + text
+
+
+def _progress(done, left, pace=(5, 12)):
+    print(f"done: {done}; left: {left}; estimated pacing time: "
+          f"{int(left * pace[0])}-{int(left * pace[1])} s + page loads")
 
 
 def _print_coverage(db):
@@ -69,16 +116,37 @@ def main(argv=None):
     backfill = commands.add_parser("backfill")
     backfill.add_argument("--limit", type=int)
     backfill.add_argument("--retry-unavailable", action="store_true")
+    backfill.add_argument("--archive", type=Path,
+                          help="also save each match's raw tracker.gg payload here as <id>.json.gz")
+    backfill.add_argument("--pace", type=float, nargs=2, metavar=("MIN", "MAX"), default=[5.0, 12.0],
+                          help=f"seconds between matches (default 5 12, at least {MIN_PACE_S})")
+    backfill.add_argument("--settle", type=int,
+                          help="seconds to keep a page open once its data has arrived (default 8)")
+    commands.add_parser("pause", help="stop a running backfill before its next match")
+    reposition = commands.add_parser("reposition", help="recompute tracker plants from archived payloads")
+    reposition.add_argument("--archive", type=Path, required=True)
+    reposition.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "backfill" and args.limit is not None and args.limit < 0:
         parser.error("--limit must be non-negative")
+    if args.command == "backfill":
+        if args.pace[0] < MIN_PACE_S or args.pace[1] < args.pace[0]:
+            parser.error(f"--pace needs MIN of at least {MIN_PACE_S} and MAX of at least MIN")
+        if args.settle is not None and args.settle < 0:
+            parser.error("--settle must be non-negative")
+    if args.command == "pause":
+        plants.request_pause()
+        print(f"pause requested ({plants.PAUSE_PATH}); the backfill stops before its next match")
+        return 0
     with SessionLocal() as db:
         if args.command == "status":
             unavailable = plants.load_unavailable()
             stored = db.scalar(select(func.count()).select_from(RoundPlant))
             planted = db.scalar(select(func.count()).select_from(Round).where(Round.planted.is_(True)))
             print(f"stored plants: {stored}; planted rounds: {planted}; skip-list: {len(unavailable)}")
-            print(f"pending matches: {len(plants.pending_matches(db, skip=unavailable))}")
+            missing = len(plants.pending_matches(db, skip=unavailable))
+            print(f"pending matches: {missing}")
+            print(f"matches to crawl: {len(plants.crawl_queue(db, skip=unavailable))} (includes position re-fetches)")
             _print_coverage(db)
             return 0
         if args.command == "sync-replays":
@@ -86,27 +154,52 @@ def main(argv=None):
             print(("dry-run: " if args.dry_run else "") + "; ".join(
                 f"{key}: {value}" for key, value in result.items()))
             return 0
-        pending = plants.pending_matches(db, args.limit,
-                                         skip=() if args.retry_unavailable else plants.load_unavailable())
-        _progress(0, len(pending))
+        if args.command == "reposition":
+            if not args.archive.is_dir():
+                parser.error(f"no archive folder at {args.archive}")
+            with owner_stop() as should_stop:
+                result = plants.reposition(db, args.archive, dry_run=args.dry_run, should_stop=should_stop)
+            print(("dry-run: " if args.dry_run else "") + "; ".join(f"{k}: {v}" for k, v in result.items()))
+            plants.clear_pause()
+            return 1 if result["bad"] else 0
+        if plants.clear_pause():
+            print("removed a leftover pause file")
+        pending = plants.crawl_queue(db, args.limit,
+                                     skip=() if args.retry_unavailable else plants.load_unavailable())
+        _progress(0, len(pending), args.pace)
         if not pending:
             return 0
-        with tracker_page() as page:
-            result = plants.backfill(db, page, limit=args.limit, fetch=fetch_match_json,
+        fetch = (fetch_match_json if args.settle is None
+                 else lambda page, key: fetch_match_json(page, key, settle_seconds=args.settle))
+        with tracker_page() as page, owner_stop() as should_stop:
+            result = plants.backfill(db, page, limit=args.limit, fetch=fetch,
                                     sleep=time.sleep, uniform=random.uniform,
-                                    retry_unavailable=args.retry_unavailable)
-        _progress(result["done"], result["left"])
+                                    retry_unavailable=args.retry_unavailable,
+                                    should_stop=should_stop, archive=args.archive, pace=tuple(args.pace))
+        _progress(result["done"], result["left"], args.pace)
+        print(f"stored this run: inserted {result['inserted']}, updated {result['updated']}, "
+              f"skipped {result['skipped']}; plants without facing data: {result['no_facing']}")
         print(f"unavailable: {result['unavailable']}; failed: {result['failed']}")
         if result["stopped"]:
             print(f"stopped: {result['stopped']}")
-            resume = [r".\.venv313\Scripts\python.exe", r"scripts\with_friends_db.py",
+            resume = [resume_python(), r"scripts\with_friends_db.py",
                       "--expect-database", "valowithfriendsdb", r"scripts\round_plants.py", "backfill"]
             if args.limit is not None:
                 resume += ["--limit", str(args.limit)]
             if args.retry_unavailable:
                 resume.append("--retry-unavailable")
+            if args.archive is not None:
+                resume += ["--archive", f'"{args.archive}"']
+            if args.pace != [5.0, 12.0]:
+                resume += ["--pace", f"{args.pace[0]:g}", f"{args.pace[1]:g}"]
+            if args.settle is not None:
+                resume += ["--settle", str(args.settle)]
             print("Run the resume command from webapp.")
             print("Resume: " + " ".join(resume))
+            # A stop the owner asked for is not a failure.
+            if result["stopped"] in ("paused", "interrupted"):
+                plants.clear_pause()
+                return 1 if result["failed"] else 0
             return 2
         return 1 if result["failed"] else 0
 

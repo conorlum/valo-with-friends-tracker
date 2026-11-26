@@ -275,7 +275,11 @@ def _collect(value, key, cited: _Cited, source: tuple[str, int, float | None, in
         if key in _AREA_KEYS and isinstance(value.get("name"), str):
             path = value.get("path")
             names = tuple(name for name in path if isinstance(name, str)) if isinstance(path, list) else ()
-            cited.areas.add((names or (value["name"],), *source))
+            names = names or (value["name"],)
+            also = value.get("also")
+            if isinstance(also, list):
+                names += tuple(name for name in also if isinstance(name, str))
+            cited.areas.add((names, *source))
             return
         place_hidden = value.get("alive") is True and value.get("name") in hidden
         for k, item in value.items():

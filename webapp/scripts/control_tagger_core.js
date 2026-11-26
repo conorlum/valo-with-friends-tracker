@@ -2012,6 +2012,12 @@
     return out;
   }
 
+  function areaWalkHash(walk) {
+    var text = JSON.stringify(areaEncode(walk)), hash = 2166136261;
+    for (var i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+    return "fnv1a:" + (hash >>> 0).toString(16);
+  }
+
   function areaBandOrder(a, b) { return a[0] - b[0] || a[1] - b[1] || (a[2] || 0) - (b[2] || 0); }
 
   function areaRoots(names) {
@@ -2027,6 +2033,29 @@
     return roots;
   }
 
+  function areaLinksValid(names) {
+    var byId = new Map();
+    for (var row of names) {
+      if (!Number.isInteger(row.id) || row.id < 1 || byId.has(row.id)) return false;
+      if (row.parent !== null && !Number.isInteger(row.parent)) return false;
+      if (Object.prototype.hasOwnProperty.call(row, "also_parents")) {
+        var also = row.also_parents;
+        if (row.parent === null || !Array.isArray(also) || !also.length ||
+            also.some(function (id) { return !Number.isInteger(id) || id < 1 || id === row.id || id === row.parent; }) ||
+            new Set(also).size !== also.length) return false;
+      }
+      byId.set(row.id, row);
+    }
+    function visit(id, path) {
+      if (!byId.has(id) || path.indexOf(id) !== -1 || path.length >= 3) return false;
+      var row = byId.get(id), parents = row.parent === null ? [] : [row.parent];
+      return parents.concat(row.also_parents || []).every(function (parent) {
+        return visit(parent, path.concat(id));
+      });
+    }
+    return names.every(function (row) { return visit(row.id, []); });
+  }
+
   function AreasModel(data) {
     var source = data.existing || data.draft, size = data.grid * data.grid;
     var draftRegions = new Map(data.draft.names.map(function (row) { return [row.id, row.super]; }));
@@ -2040,8 +2069,151 @@
     Object.values(this.bands).forEach(function (bands) { bands.sort(areaBandOrder); });
     this._draftRegions = areaDecode(data.draft.cells, size).map(function (id) { return draftRegions.get(id); });
     this._nextId = this.names.length ? this.names[this.names.length - 1].id + 1 : 1;
+    this.hand = new Set();
+    if (data.existing) {
+      var draftCells = areaDecode(data.draft.cells, size);
+      var draftNames = new Map(data.draft.names.map(function (row) { return [row.id, row.name]; }));
+      var savedNames = new Map(this.names.map(function (row) { return [row.id, row.name]; }));
+      this.cells.forEach(function (id, cell) {
+        if (this.walk[cell] && savedNames.get(id) !== draftNames.get(draftCells[cell])) this.hand.add(cell);
+      }, this);
+    }
+    this.queue = [];
+    this._undoStack = [];
     this.autoSupers();
   }
+
+  AreasModel.prototype.checkpoint = function () {
+    this._undoStack.push(clone({cells: this.cells, bands: this.bands, names: this.names,
+                               _nextId: this._nextId, hand: Array.from(this.hand), queue: this.queue}));
+    if (this._undoStack.length > 50) this._undoStack.shift();
+  };
+
+  AreasModel.prototype.undo = function () {
+    var saved = this._undoStack.pop();
+    if (!saved) return false;
+    this.cells = saved.cells;
+    this.bands = saved.bands;
+    this.names = saved.names;
+    this._nextId = saved._nextId;
+    this.hand = new Set(saved.hand);
+    this.queue = saved.queue;
+    return true;
+  };
+
+  AreasModel.prototype.pasteNames = function (text) {
+    var seen = new Set(), matched = [], queued = [], matchedIds = new Set();
+    var names = clone(this.names), queue = this.queue.slice();
+    var queuedKeys = new Set(queue.map(function (name) { return name.toLowerCase(); }));
+    text.split(/\r?\n/).forEach(function (line) {
+      var name = line.trim(), key = name.toLowerCase();
+      if (!name || seen.has(key)) return;
+      seen.add(key);
+      var rows = names.filter(function (row) { return row.name.toLowerCase() === key; });
+      if (rows.length) {
+        // Leave an ambiguous legacy spelling alone rather than choose an id or create a collision.
+        if (rows.length !== 1) return;
+        rows[0].name = name;
+        matchedIds.add(rows[0].id);
+        matched.push(name);
+      } else if (!queuedKeys.has(key)) {
+        queue.push(name);
+        queuedKeys.add(key);
+        queued.push(name);
+      }
+    });
+    this.checkpoint();
+    this.names = names;
+    this.queue = queue;
+    this._reconcileQueue();
+    return {matched: matched, queued: queued, unlisted: names.filter(function (row) {
+      return !matchedIds.has(row.id);
+    }).map(function (row) { return row.name; })};
+  };
+
+  AreasModel.prototype.unplaced = function () { return this.queue.slice(); };
+
+  AreasModel.prototype._reconcileQueue = function () {
+    var placed = new Set(this.names.map(function (row) { return row.name.trim().toLowerCase(); }));
+    this.queue = this.queue.filter(function (name) {
+      return typeof name !== "string" || !placed.has(name.trim().toLowerCase());
+    });
+  };
+
+  AreasModel.prototype.draftState = function () {
+    return clone({v: 1, map: this.map, grid: this.grid, walk_hash: areaWalkHash(this.walk),
+                  names: this.names, cells: areaEncode(this.cells), bands: this.bands,
+                  hand: Array.from(this.hand), queue: this.queue, next_id: this._nextId});
+  };
+
+  AreasModel.prototype.restoreDraft = function (obj) {
+    function object(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
+    function text(value) { return typeof value === "string" && value.trim().length > 0; }
+    function key(value) { return value.trim().toLowerCase(); }
+    if (!object(obj) || obj.v !== 1 || obj.map !== this.map || obj.grid !== this.grid ||
+        obj.walk_hash !== areaWalkHash(this.walk)) return false;
+    // Validation and normalization touch only copies. A refused stored draft remains available.
+    var saved = clone(obj), names = saved.names, labels = new Set(), nameKeys = new Set(), ids = new Set([0]);
+    if (!Array.isArray(names)) return false;
+    for (var row of names) {
+      if (!object(row) || !Number.isSafeInteger(row.id) || row.id < 1 || ids.has(row.id) ||
+          !text(row.name) || labels.has(row.name) || !text(row.super) ||
+          (row.super_source !== "auto" && row.super_source !== "set")) return false;
+      ids.add(row.id);
+      labels.add(row.name);
+      nameKeys.add(key(row.name));
+    }
+    if (!areaLinksValid(names)) return false;
+    var roots = areaRoots(names);
+    if (names.some(function (row) { return row.super !== roots.get(row.id).super; })) return false;
+    var size = this.grid * this.grid, count = 0;
+    if (!Array.isArray(saved.cells)) return false;
+    for (var run of saved.cells) {
+      if (!Array.isArray(run) || run.length !== 2 || !ids.has(run[0]) ||
+          !Number.isSafeInteger(run[1]) || run[1] <= 0) return false;
+      count += run[1];
+      if (count > size) return false;
+    }
+    if (count !== size) return false;
+    var cells = areaDecode(saved.cells, size), bands = saved.bands;
+    if (!object(bands)) return false;
+    for (var cellKey of Object.keys(bands)) {
+      var cell = Number(cellKey), at = bands[cellKey];
+      if (!/^(0|[1-9][0-9]*)$/.test(cellKey) || !Number.isSafeInteger(cell) || cell >= size ||
+          String(cell) !== cellKey || !Array.isArray(at) || !at.length) return false;
+      for (var band of at) {
+        if (!Array.isArray(band) || band.length !== 3 || !band.every(Number.isSafeInteger) ||
+            band[0] > band[1] || !ids.has(band[2])) return false;
+      }
+      for (var i = 0; i < at.length; i++) {
+        for (var j = i + 1; j < at.length; j++) {
+          if (at[i][2] !== at[j][2] && Math.max(at[i][0], at[j][0]) <= Math.min(at[i][1], at[j][1])) return false;
+        }
+      }
+      at.sort(areaBandOrder);
+      if (at[0][2] !== cells[cell]) return false;
+    }
+    if (!Array.isArray(saved.hand) || new Set(saved.hand).size !== saved.hand.length ||
+        saved.hand.some(function (cell) {
+          return !Number.isInteger(cell) || cell < 0 || cell >= size || !this.walk[cell];
+        }, this)) return false;
+    if (!Array.isArray(saved.queue)) return false;
+    var queued = new Set();
+    for (var name of saved.queue) {
+      if (!text(name) || nameKeys.has(key(name)) || queued.has(key(name))) return false;
+      queued.add(key(name));
+    }
+    if (!Number.isSafeInteger(saved.next_id) || saved.next_id < 1 ||
+        names.some(function (row) { return row.id >= saved.next_id; })) return false;
+    this.checkpoint();
+    this.names = names.sort(function (a, b) { return a.id - b.id; });
+    this.cells = cells;
+    this.bands = bands;
+    this.hand = new Set(saved.hand);
+    this.queue = saved.queue;
+    this._nextId = saved.next_id;
+    return true;
+  };
 
   AreasModel.prototype._row = function (id) {
     return this.names.find(function (row) { return row.id === id; });
@@ -2066,10 +2238,19 @@
   };
 
   AreasModel.prototype._saveBands = function (cell, bands) {
+    // Validate a proposed cell before publishing any of it. Same-name overlaps are legal.
+    bands = bands.slice().sort(areaBandOrder);
+    for (var i = 0; i < bands.length; i++) {
+      for (var j = i + 1; j < bands.length; j++) {
+        if (bands[i][2] !== bands[j][2] &&
+            Math.max(bands[i][0], bands[j][0]) <= Math.min(bands[i][1], bands[j][1])) return false;
+      }
+    }
     var ground = bands[0][2];
     this.cells[cell] = ground;
     if (bands.some(function (band) { return band[2] !== ground; })) this.bands[cell] = bands;
     else delete this.bands[cell];
+    return true;
   };
 
   AreasModel.prototype.paint = function (cells, nameId, band) {
@@ -2081,14 +2262,17 @@
       if (index < 0) continue;
       var ground = this.cells[cell], bands = this.bands[cell];
       if (band == null || !ranges.length) {
+        this.hand.add(cell);
         if (ground === nameId && !bands) continue;
         this.cells[cell] = nameId;
         delete this.bands[cell];
       } else {
-        bands = bands || ranges.map(function (range) { return [range[0], range[1], ground]; });
-        if (bands[index][2] === nameId) continue;
+        bands = bands ? bands.map(function (row) { return row.slice(); }) :
+          ranges.map(function (range) { return [range[0], range[1], ground]; });
+        if (bands[index][2] === nameId) { this.hand.add(cell); continue; }
         bands[index][2] = nameId;
-        this._saveBands(cell, bands);
+        if (!this._saveBands(cell, bands)) continue;
+        this.hand.add(cell);
       }
       changed++;
     }
@@ -2117,6 +2301,168 @@
     return this.paint(queue, nameId, band);
   };
 
+  AreasModel.prototype._multiFloor = function (cell) {
+    return (this.bands[cell] || []).length > 1 || (this.floors[cell] || []).length > 1;
+  };
+
+  AreasModel.prototype._walkNeighbours = function (cell) {
+    var grid = this.grid, x = cell % grid, y = Math.floor(cell / grid), out = [];
+    for (var yy = Math.max(0, y - 1); yy < Math.min(grid, y + 2); yy++) {
+      for (var xx = Math.max(0, x - 1); xx < Math.min(grid, x + 2); xx++) {
+        var next = yy * grid + xx;
+        if (next !== cell && this.walk[next] && this.walk[y * grid + xx] && this.walk[yy * grid + x]) out.push(next);
+      }
+    }
+    return out;
+  };
+
+  // Sorted seeds make the first visit at each BFS depth choose the lowest name id.
+  AreasModel.prototype._walkFlood = function (sources, allowed) {
+    var distances = new Array(this.cells.length).fill(Infinity), owners = new Array(this.cells.length).fill(0);
+    var queue = [];
+    sources.slice().sort(function (a, b) { return a.id - b.id || a.cell - b.cell; }).forEach(function (source) {
+      if (allowed.has(source.cell) && this.walk[source.cell] && distances[source.cell] === Infinity) {
+        distances[source.cell] = 0;
+        owners[source.cell] = source.id;
+        queue.push(source.cell);
+      }
+    }, this);
+    for (var head = 0; head < queue.length; head++) {
+      var here = queue[head];
+      for (var next of this._walkNeighbours(here)) {
+        if (!allowed.has(next) || distances[next] !== Infinity) continue;
+        distances[next] = distances[here] + 1;
+        owners[next] = owners[here];
+        queue.push(next);
+      }
+    }
+    return {distances: distances, owners: owners};
+  };
+
+  AreasModel.prototype._walkDistances = function (sources, allowed) {
+    return this._walkFlood(Array.from(sources, function (cell) { return {cell: cell, id: 0}; }), allowed).distances;
+  };
+
+  AreasModel.prototype.place = function (cell, name, parentId) {
+    if (!this.walk[cell]) return {error: "Choose a walkable cell"};
+    if (this.hand.has(cell)) return {error: "This cell is hand-painted"};
+    if (this._multiFloor(cell)) return {error: "Use the brush and floor picker for multiple floors"};
+    if (!this._availableName(name)) return {error: "Choose an unused name"};
+    var id = this._nextId, names = this.names.concat({
+      id: id, name: name.trim(), parent: parentId == null ? null : parentId, super: "Mid", super_source: "auto"
+    });
+    if (!areaLinksValid(names)) return {error: "Invalid parent"};
+    var from = this.cells[cell], allowed = new Set(), sumX = 0, sumY = 0, grid = this.grid;
+    this.cells.forEach(function (old, index) {
+      if (!this.walk[index] || old !== from) return;
+      if (!from && (this.hand.has(index) || this._multiFloor(index))) return;
+      allowed.add(index);
+      sumX += index % grid;
+      sumY += Math.floor(index / grid);
+    }, this);
+    var clicked = this._walkDistances([cell], allowed), centred = null;
+    if (from && allowed.size > 1) {
+      var centre, best = Infinity, count = allowed.size;
+      for (var candidate of allowed) {
+        if (candidate === cell) continue;
+        var dx = (candidate % grid) * count - sumX, dy = Math.floor(candidate / grid) * count - sumY;
+        var score = dx * dx + dy * dy;
+        if (score < best) { centre = candidate; best = score; }
+      }
+      centred = this._walkDistances([centre], allowed);
+    }
+    var placed = [];
+    for (var target of allowed) {
+      if (this.hand.has(target) || this._multiFloor(target) || clicked[target] === Infinity) continue;
+      if (target === cell || !centred || clicked[target] < centred[target]) placed.push(target);
+    }
+    this.checkpoint();
+    this.names = names;
+    this._nextId++;
+    placed.forEach(function (target) { this.cells[target] = id; delete this.bands[target]; }, this);
+    this._reconcileQueue();
+    this.autoSupers();
+    return {id: id, count: placed.length};
+  };
+
+  AreasModel.prototype._nearestRemaining = function (nameId) {
+    var sources = [], allowed = new Set();
+    this.cells.forEach(function (id, cell) {
+      if (!this.walk[cell]) return;
+      allowed.add(cell);
+      var ids = [id].concat((this.bands[cell] || []).map(function (band) { return band[2]; }));
+      ids.forEach(function (other) { if (other && other !== nameId) sources.push({cell: cell, id: other}); });
+    }, this);
+    return this._walkFlood(sources, allowed).owners;
+  };
+
+  // Change only entries being vacated; this path deliberately preserves hand protection.
+  AreasModel.prototype._vacate = function (cells, nameId, band, owners) {
+    var changed = 0;
+    for (var cell of new Set(cells)) {
+      if (!this.walk[cell]) continue;
+      var bands = this.bands[cell], replacement = owners[cell];
+      if (band == null) {
+        if (this.cells[cell] !== nameId && !(bands || []).some(function (row) { return row[2] === nameId; })) continue;
+        if (bands) {
+          if (!this._saveBands(cell, bands.map(function (row) {
+            return [row[0], row[1], row[2] === nameId ? replacement : row[2]];
+          }))) continue;
+        } else this.cells[cell] = replacement;
+      } else {
+        if (this.nameAt(cell, band) !== nameId) continue;
+        var ranges = this.floorBands(cell), index = areaFloorIndex(ranges, band);
+        if (!ranges.length) this.cells[cell] = replacement;
+        else {
+          bands = bands ? bands.map(function (row) { return row.slice(); }) :
+            ranges.map(function (range) { return [range[0], range[1], this.cells[cell]]; }, this);
+          bands[index][2] = replacement;
+          if (!this._saveBands(cell, bands)) continue;
+        }
+      }
+      changed++;
+    }
+    return changed;
+  };
+
+  AreasModel.prototype.shrink = function (cells, nameId, band) {
+    if (!this._row(nameId)) return 0;
+    var count = this._vacate(cells, nameId, band, this._nearestRemaining(nameId));
+    this.autoSupers();
+    return count;
+  };
+
+  AreasModel.prototype.deleteName = function (id) {
+    if (!this._row(id)) return false;
+    var names = this.names.filter(function (row) { return row.id !== id; }).map(function (row) {
+      var edited = Object.assign({}, row), also = (row.also_parents || []).filter(function (parent) { return parent !== id; });
+      if (row.parent === id) {
+        edited.parent = also.length ? also.shift() : null;
+        if (edited.parent === null) edited.super_source = "auto";
+      }
+      if (also.length) edited.also_parents = also;
+      else delete edited.also_parents;
+      return edited;
+    });
+    if (!areaLinksValid(names)) return false;
+    var owners = this._nearestRemaining(id);
+    this.checkpoint();
+    this.names = names;
+    // Deletion must remove wall references too; shrink still visits only walkable cells.
+    this.cells.forEach(function (name, cell) {
+      if (this.walk[cell]) return;
+      var bands = this.bands[cell];
+      if (bands && bands.some(function (row) { return row[2] === id; })) {
+        this._saveBands(cell, bands.map(function (row) {
+          return [row[0], row[1], row[2] === id ? 0 : row[2]];
+        }));
+      } else if (name === id) this.cells[cell] = 0;
+    }, this);
+    this._vacate(this.cells.map(function (_, cell) { return cell; }), id, null, owners);
+    this.autoSupers();
+    return true;
+  };
+
   AreasModel.prototype._availableName = function (name, id) {
     return typeof name === "string" && name.trim() && !this.names.some(function (row) {
       return row.id !== id && row.name === name.trim();
@@ -2129,9 +2475,11 @@
     var names = this.names.concat({
       id: id, name: name.trim(), parent: parentId == null ? null : parentId, super: "Mid", super_source: "auto"
     });
-    if (!areaRoots(names)) return null;
+    if (!areaLinksValid(names)) return null;
+    this.checkpoint();
     this.names = names;
     this._nextId++;
+    this._reconcileQueue();
     this.autoSupers();
     return id;
   };
@@ -2139,7 +2487,9 @@
   AreasModel.prototype.rename = function (id, name) {
     var row = this._row(id);
     if (!row || !this._availableName(name, id)) return false;
+    this.checkpoint();
     row.name = name.trim();
+    this._reconcileQueue();
     this.autoSupers();
     return true;
   };
@@ -2150,9 +2500,32 @@
     var names = this.names.map(function (row) {
       if (row.id !== id) return row;
       var source = row.parent !== null && parent === null ? "auto" : row.super_source;
-      return Object.assign({}, row, {parent: parent, super_source: source});
+      var edited = Object.assign({}, row, {parent: parent, super_source: source});
+      if (edited.also_parents) {
+        var also = edited.also_parents.filter(function (other) { return other !== parent; });
+        if (parent === null || !also.length) delete edited.also_parents;
+        else edited.also_parents = also;
+      }
+      return edited;
     });
-    if (!areaRoots(names)) return false;
+    if (!areaLinksValid(names)) return false;
+    this.checkpoint();
+    this.names = names;
+    this.autoSupers();
+    return true;
+  };
+
+  AreasModel.prototype.setAlsoParents = function (id, ids) {
+    if (!this._row(id) || !Array.isArray(ids)) return false;
+    var names = this.names.map(function (row) {
+      if (row.id !== id) return row;
+      var edited = Object.assign({}, row);
+      if (ids.length) edited.also_parents = ids.slice().sort(function (a, b) { return a - b; });
+      else delete edited.also_parents;
+      return edited;
+    });
+    if (!areaLinksValid(names)) return false;
+    this.checkpoint();
     this.names = names;
     this.autoSupers();
     return true;
@@ -2164,11 +2537,19 @@
     var ancestor = into;
     while (ancestor && ancestor !== from) ancestor = this._row(ancestor.parent);
     var names = this.names.filter(function (row) { return row.id !== fromId; }).map(function (row) {
-      if (ancestor && row.id === intoId) return Object.assign({}, row, {parent: from.parent});
-      if (row.parent === fromId) return Object.assign({}, row, {parent: intoId});
-      return row;
+      var edited = Object.assign({}, row);
+      if (ancestor && row.id === intoId) edited.parent = from.parent;
+      else if (row.parent === fromId) edited.parent = intoId;
+      if (row.also_parents) {
+        var also = Array.from(new Set(row.also_parents.map(function (id) { return id === fromId ? intoId : id; })))
+          .filter(function (id) { return id !== edited.id && id !== edited.parent; });
+        if (also.length) edited.also_parents = also.sort(function (a, b) { return a - b; });
+        else delete edited.also_parents;
+      }
+      return edited;
     });
-    if (!areaRoots(names)) return false;
+    if (!areaLinksValid(names)) return false;
+    this.checkpoint();
     this.names = names;
     this.cells = this.cells.map(function (id) { return id === fromId ? intoId : id; });
     Object.keys(this.bands).forEach(function (cell) {
@@ -2215,6 +2596,7 @@
   AreasModel.prototype.setSuper = function (id, region) {
     var root = areaRoots(this.names).get(id);
     if (!root || AREA_REGIONS.indexOf(region) === -1) return false;
+    this.checkpoint();
     root.super = region;
     root.super_source = "set";
     this.autoSupers();
@@ -2222,9 +2604,13 @@
   };
 
   AreasModel.prototype.confirmSuper = function (id) {
+    var root = areaRoots(this.names).get(id);
+    if (!root) return false;
+    this.checkpoint();
     this.autoSupers();
-    var row = this._row(id);
-    return row ? this.setSuper(id, row.super) : false;
+    root.super_source = "set";
+    this.autoSupers();
+    return true;
   };
 
   AreasModel.prototype.stillAuto = function () {
@@ -2243,7 +2629,17 @@
     }
     var path = [];
     for (var row = this._row(id); row; row = this._row(row.parent)) path.push(row.name);
-    return path.reverse();
+    path.reverse();
+    var pending = [id], seen = new Set(), also = [];
+    while (pending.length) {
+      var current = pending.pop(), row = this._row(current);
+      if (!row || seen.has(current)) continue;
+      seen.add(current);
+      if (path.indexOf(row.name) === -1) also.push(row.name);
+      if (row.parent !== null) pending.push(row.parent);
+      pending.push.apply(pending, row.also_parents || []);
+    }
+    return path.concat(also.sort());
   };
 
   AreasModel.prototype.pinStatus = function (pins) {
@@ -2260,7 +2656,13 @@
 
   AreasModel.prototype.exportText = function () {
     var names = this.autoSupers().map(function (row) {
-      return {id: row.id, name: row.name, parent: row.parent, super: row.super, super_source: row.super_source};
+      var name = {id: row.id, name: row.name, parent: row.parent};
+      if (row.also_parents && row.also_parents.length) {
+        name.also_parents = row.also_parents.slice().sort(function (a, b) { return a - b; });
+      }
+      name.super = row.super;
+      name.super_source = row.super_source;
+      return name;
     });
     return JSON.stringify({version: 1, map: this.map, reviewed: true, names: names,
                            cells: areaEncode(this.cells), bands: this.bands}, null, 1) + "\n";

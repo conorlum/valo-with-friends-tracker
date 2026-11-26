@@ -614,6 +614,18 @@ a {
   }
 }
 
+/* The Play of the Game card (templates/replays/_potg.html, static/js/potg.js); `.replay` only supplies the map's theme. */
+.potg-card.replay { max-width: none; margin-left: 0; margin-right: 0; }
+.potg-body { display: flex; align-items: center; gap: 0.9rem; }
+.potg-portrait { width: 64px; height: 64px; border-radius: var(--radius-sm); flex: none; }
+.potg-body p { margin: 0.15rem 0; }
+.potg-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+.potg-actions a.replay-button { text-decoration: none; display: inline-flex; align-items: center; }
+.potg-note { color: var(--ink-muted); margin: 0.5rem 0 0; }
+.potg-note:empty { display: none; }
+.potg-canvas { display: block; width: 100%; max-width: 512px; height: auto; aspect-ratio: 1; margin-top: 0.75rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius); }
+
 /* Shoutouts in a side column: each row of up to 3 shares the width evenly. */
 @media (min-width: 701px) {
   .shoutout-rows--side .shoutout-row { flex-wrap: nowrap; }

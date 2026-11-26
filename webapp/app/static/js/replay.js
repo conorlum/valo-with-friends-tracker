@@ -2035,6 +2035,7 @@
     this.cache = {};                               // round -> Promise of {blob, tracks}
     this.speed = 1;
     this.t = 0;
+    this.until = null;
     this.playing = false;
     this.current = null;
     this.icons = {};
@@ -2075,6 +2076,68 @@
     this.lastFrame = null;
     this.tick = this.tick.bind(this);
     requestAnimationFrame(this.tick);
+  }
+
+  // A frozen round with no controls, animation loop, or bindings to the live viewer.
+  function clipViewer(options, round, extra) {
+    if (!options.themeRoot) throw new Error("clipViewer requires options.themeRoot");
+    extra = extra || {};
+    var v = Object.create(ReplayViewer.prototype);
+    var control = extra.control && extra.control.status === "ok" ? extra.control : null;
+    Object.assign(v, {
+      root: options.themeRoot, options: options, turns: ((options.rotation | 0) % 4 + 4) % 4,
+      linked: options.linked || null, current: round, number: round.blob.round, t: 0,
+      icons: {}, hover: null, highlight: null, view: {k: 1, ox: 0, oy: 0},
+      canvas: {width: 1024, height: 1024}, ui: {}, _offscreen: true,
+      layers: Object.assign({names: true, abilities: true, projectiles: true, tracers: true,
+        cones: true, aim: true, control: false, gaps: false, features: true, areas: false, bar: true}, extra.layers),
+      control: control ? (options.control || {}) : null,
+      controlCache: {ready: function (n) { return n === v.number ? control : null; }},
+      controlPaint: null, controlScope: "round", unknownView: extra.unknownView || "both",
+      controlBorders: !!extra.controlBorders, controlView: extra.controlView || "true",
+      gaps: false, gapsReady: {}, gapsHover: null, gapsFlickers: false,
+      areas: null, areasPaint: null, mapDark: null, sight: null, outlines: null
+    });
+    function image(url, optional) {
+      return new Promise(function (resolve, reject) {
+        var img = new Image();
+        img.onload = function () {
+          if (!img.naturalWidth) { reject(new Error("Image failed: " + url)); return; }
+          resolve(img);
+        };
+        img.onerror = function () {
+          if (optional) resolve(null);
+          else reject(new Error("Image failed: " + url));
+        };
+        img.src = url;
+      });
+    }
+    var pending = [image(options.mapImage).then(function (img) {
+      v.map = img; v.mapDark = v.darkMap(); v.fitView();
+    })];
+    if (options.sightMask) pending.push(image(options.sightMask, true).then(function (img) {
+      if (img) decodeSightMask(v, img);
+    }));
+    var requested = {};
+    function icon(key, url) {
+      if (!url || requested[key]) return;
+      requested[key] = true;
+      pending.push(image(url).then(function (img) { v.icons[key] = img; }));
+    }
+    function ability(agent, name) {
+      var table = options.abilityIcons || {}, url = agent && name && table[agent] && table[agent][name];
+      if (!url && agent === "Iso" && name === "Kill Contract") url = "/static/img/abilities/iso/ultimate.png";
+      icon(url, url && v.assetSrc(url));
+    }
+    round.blob.players.forEach(function (p) { icon(p.agent, options.agentIcon && options.agentIcon(p.agent)); });
+    round.extras.abilities.concat(round.extras.reveals || []).forEach(function (a) {
+      var style = abilityStyle(Object.assign({kind: "GameObject"}, a));
+      ability(style.agent || v.agentOf(a.slot), style.ability);
+    });
+    castUtil(round.blob.util).forEach(function (u) { var style = utilAbility(u.ability); ability(style.agent, style.ability); });
+    if (round.arena || round.extras.abilities.some(function (a) { return a.code === "Sequoia" && a.name === "X_LineCapture"; })) ability("Iso", "Kill Contract");
+    v.ready = Promise.all(pending).then(function () { return v; });
+    return v;
   }
 
   // The stylesheet's wide replay layout (style.css, "Replay viewer, linked mode"): the same query, in em so a larger
@@ -2191,7 +2254,7 @@
   };
 
   ReplayViewer.prototype.css = function (name, fallback) {
-    return getComputedStyle(this.root).getPropertyValue(name).trim() || fallback;
+    return getComputedStyle((this.options && this.options.themeRoot) || this.root).getPropertyValue(name).trim() || fallback;
   };
 
   // Linked: the DB team's colour (team-1 / team-2, like the match page). Unlinked: the side group.
@@ -2256,16 +2319,18 @@
     return (util || []).filter(function (u) { return CAST_KINDS[u.k]; });
   }
 
+  function prepareRound(blob) {
+    var extras = blob.extras || extrasFromUtil(blob.util);
+    // Index the original abilities before adding the derived fragment zones.
+    var traces = traceWalls(extras.abilities), state = indexRoundState(blob, extras.abilities);
+    extras = Object.assign({}, extras, { abilities: extras.abilities.concat(fragmentZones(extras.abilities)) });
+    return { blob: blob, tracks: decodeRound(blob), arena: decodeArena(blob), extras: extras,
+             traces: traces, state: state };
+  }
+
   ReplayViewer.prototype.fetchRound = function (n) {
     if (!this.cache[n]) {
-      this.cache[n] = Promise.resolve(this.options.loadRound(n)).then(function (blob) {
-        var extras = blob.extras || extrasFromUtil(blob.util);
-        // `state`: this round's frozen state index (indexRoundState), built once here and read by the selectors.
-        var traces = traceWalls(extras.abilities), state = indexRoundState(blob, extras.abilities);
-        extras = Object.assign({}, extras, { abilities: extras.abilities.concat(fragmentZones(extras.abilities)) });
-        return { blob: blob, tracks: decodeRound(blob), arena: decodeArena(blob), extras: extras,
-                 traces: traces, state: state };
-      });
+      this.cache[n] = Promise.resolve(this.options.loadRound(n)).then(prepareRound);
     }
     return this.cache[n];
   };
@@ -2278,6 +2343,7 @@
     this.autoPlay = null;
     return this.fetchRound(n).then(function (round) {
       if (token !== self.loadSeq) return round;
+      if (n !== self.number || (self.until != null && (t || 0) >= self.until)) self.until = null;
       self.current = round;
       self.number = n;
       self.t = t || 0;
@@ -2305,9 +2371,9 @@
 
   // A round number in the strip: that round from its start, playing (the current one restarts). Previous and
   // next keep showing a round paused.
-  ReplayViewer.prototype.playRound = function (n) {
+  ReplayViewer.prototype.playRound = function (n, t) {
     var self = this;
-    var shown = this.showRound(n);
+    var shown = this.showRound(n, t);
     var token = this.autoPlay = this.loadSeq;      // cleared by a pause, replaced by any later load
     return shown.then(function (round) {
       if (token === self.loadSeq && self.autoPlay === token) {
@@ -2327,6 +2393,12 @@
     });
   };
 
+  // Round n from time t, playing: playRound's load-sequence guard (only the latest request is shown and sought; a
+  // pause pressed while it loads leaves it paused at t).
+  ReplayViewer.prototype.playFrom = function (n, t) {
+    return this.playRound(n, t);
+  };
+
   // The round after the one shown, or undefined on the last.
   ReplayViewer.prototype.nextRound = function () {
     var i = this.rounds.indexOf(this.number);
@@ -2341,9 +2413,15 @@
     return this.playRound(next).catch(function () { return null; });
   };
 
+  ReplayViewer.prototype.setUntil = function (t) {
+    this.until = this.current && typeof t === "number" && Number.isFinite(t) &&
+      t > this.t && t <= this.current.blob.t_end ? t : null;
+  };
+
   ReplayViewer.prototype.seek = function (t) {
     if (!this.current) return;
     this.t = Math.max(0, Math.min(this.current.blob.t_end, t));
+    if (typeof this.until === "number" && this.t >= this.until) this.until = null;
     this.updateControls();
     this.draw();
   };
@@ -2377,7 +2455,13 @@
   ReplayViewer.prototype.tick = function (now) {
     if (this.playing && this.current && this.lastFrame !== null) {
       this.t += (now - this.lastFrame) / 1000 * this.speed;
-      var ended = this.t >= this.current.blob.t_end;
+      var reachedUntil = typeof this.until === "number" && this.t >= this.until;
+      if (reachedUntil) {
+        this.t = this.until;
+        this.until = null;
+        this.playing = false;
+      }
+      var ended = !reachedUntil && this.t >= this.current.blob.t_end;
       if (ended) this.t = this.current.blob.t_end;
       this.updateControls();
       this.draw();
@@ -2429,9 +2513,39 @@
     return true;
   };
 
+  var clipExportLoading = null;
+  function loadClipExport() {
+    if (!clipExportLoading) {
+      function script(src) {
+        return new Promise(function (resolve, reject) {
+          var tag = document.createElement("script");
+          tag.src = src; tag.onload = resolve;
+          tag.onerror = function () { tag.remove(); reject(new Error("Could not load " + src)); };
+          document.head.appendChild(tag);
+        });
+      }
+      clipExportLoading = script("/static/vendor/mp4-muxer-5.2.2.js")
+        .then(function () { return script("/static/js/clip_export.js"); })
+        .catch(function (e) { clipExportLoading = null; throw e; });
+    }
+    return clipExportLoading;
+  }
+  ReplayViewer.prototype.openExport = function (prefill) {
+    var self = this, panel = this.root.querySelector("[data-clip-panel]");
+    if (!panel) return Promise.resolve(null);
+    return loadClipExport().then(function () { return global.ClipExport.openPanel(self, prefill); })
+      .catch(function (e) {
+        panel.hidden = false;
+        panel.querySelector("#clip-message").textContent = e.message;
+        return null;
+      });
+  };
+
   ReplayViewer.prototype.bindControls = function () {
     var self = this;
     var q = function (sel) { return self.root.querySelector(sel); };
+    var exportButton = q("[data-replay-export]");
+    if (exportButton) exportButton.addEventListener("click", function () { self.openExport(); });
     this.ui = {
       play: q("[data-replay-play]"), speed: q("[data-replay-speed]"), scrub: q("[data-replay-scrub]"),
       clock: q("[data-replay-clock]"), strip: q("[data-replay-strip]"), ticks: q("[data-replay-ticks]"),
@@ -2615,6 +2729,38 @@
     if (name === "gaps") this.refreshGaps();
     if (name === "moments") this.loadMoments();
     if (name === "critutil") this.loadCritUtil();
+    if (name === "highlights") this.loadHighlights();
+  };
+
+  // Highlights: fetched the first time the tab opens; a failed fetch is asked again next time.
+  ReplayViewer.prototype.loadHighlights = function () {
+    var self = this;
+    var panel = this.root.querySelector('[data-replay-panel="highlights"]');
+    if (!panel || !this.options.loadHighlights || !global.Highlights) return;
+    if (!this.highlightsPromise) {
+      panel.textContent = "Loading…";
+      this.highlightsPromise = Promise.resolve().then(function () { return self.options.loadHighlights(); }).then(function (payload) {
+        global.Highlights.render(panel, payload, {
+          jump: function (item) { self.playFrom(item.round, item.t_start).catch(function () { return null; }); },
+          exportClip: function (item) {
+            var scores = (self.options.replayData || {}).round_scores || {};
+            var score = scores[String(item.round)];
+            var names = (self.options.replayData || {}).clip_names || {};
+            var name = names[item.slot] || item.player;
+            var prefill = {
+              round: item.round, t_in: item.t_start, t_out: item.t_end,
+              segments: (item.segments || []).map(function (s) { return s.slice(); }),
+              caption: (name ? name + " · " : "") + (item.summary || "")
+            };
+            if (score) prefill.score = score.slice();
+            return self.openExport(prefill);
+          }
+        });
+      }).catch(function () {
+        self.highlightsPromise = null;
+        panel.textContent = "Could not load the highlights. Open the tab again to retry.";
+      });
+    }
   };
 
   // Critical Util: fetched the first time the tab opens, like Critical Moments.
@@ -3909,17 +4055,17 @@
   // neutral "?" when the health after a hit isn't known) above the name, on a dark plate. The bar shows while the
   // player is below full after a confirmed hit, or has overheal or decay; the name with the names toggle.
   // Either part alone keeps the same place under the circle.
-  ReplayViewer.prototype.drawBlocks = function (ctx, r, hits, marks, layout) {
+  ReplayViewer.prototype.drawBlocks = function (ctx, r, hits, marks, layout, opts) {
     var self = this, view = this.viewBounds();
     var reserved = layout.slice(), placed = [];
     var barLen = r * 1.6, hb = r * 0.75, hn = r * 1.05;
     ctx.save();
     marks.forEach(function (m) {
-      var hv = healthShown(m.health, m.overheal, m.decay) ? m.health : null;
+      var hv = (!opts || opts.health !== false) && healthShown(m.health, m.overheal, m.decay) ? m.health : null;
       var name = null;
-      if (self.linked && self.layers.names) {
-        name = self.nameOf(m.slot).split("#")[0];
-        name = name.length > 14 ? name.slice(0, 13) + "…" : name;
+      if ((self.linked || (opts && opts.nameOf)) && self.layers.names) {
+        name = (self.nameOf(m.slot) || "").split("#")[0] || null;
+        if (name && !(opts && opts.nameOf)) name = name.length > 14 ? name.slice(0, 13) + "…" : name;
       }
       if (!hv && name === null) return;
       ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";
@@ -4120,6 +4266,22 @@
   };
 
   // The map's sight mask as bytes (1 blocks sight), from its image; null while loading, without one, or on failure.
+  function decodeSightMask(viewer, img) {
+    var n = 1024, off = document.createElement("canvas");
+    off.width = off.height = n;
+    var octx = off.getContext("2d");
+    octx.drawImage(img, 0, 0, n, n);
+    var data = octx.getImageData(0, 0, n, n).data, mask = new Uint8Array(n * n);
+    for (var i = 0; i < n * n; i++) mask[i] = data[i * 4] > 127 ? 1 : 0;
+    viewer.sight = { mask: mask, size: n };
+    var lines = document.createElement("canvas"), lctx = lines.getContext("2d");
+    lines.width = lines.height = n;
+    var paint = lctx.createImageData(n, n);
+    outlinePixels(mask, n, paint.data);
+    lctx.putImageData(paint, 0, 0);
+    viewer.outlines = lines;
+  }
+
   ReplayViewer.prototype.loadSightMask = function () {
     var self = this, url = this.options.sightMask;
     this.sight = null;
@@ -4127,21 +4289,8 @@
     var img = new Image();
     img.onload = function () {
       try {
-        var n = 1024, off = document.createElement("canvas");
-        off.width = off.height = n;
-        var octx = off.getContext("2d");
-        octx.drawImage(img, 0, 0, n, n);
-        var data = octx.getImageData(0, 0, n, n).data, mask = new Uint8Array(n * n);
-        for (var i = 0; i < n * n; i++) mask[i] = data[i * 4] > 127 ? 1 : 0;
-        self.sight = { mask: mask, size: n };
-        try {                                  // the walls' and boxes' outlines, drawn over map control
-          var lines = document.createElement("canvas"), lctx = lines.getContext("2d");
-          lines.width = lines.height = n;
-          var paint = lctx.createImageData(n, n);
-          outlinePixels(mask, n, paint.data);
-          lctx.putImageData(paint, 0, 0);
-          self.outlines = lines;
-        } catch (err) { self.outlines = null; }   // no outlines: the darker map alone
+        try { decodeSightMask(self, img); }
+        catch (err) { self.outlines = null; if (!self.sight) throw err; }
         self.draw();
       } catch (err) { self.sight = null; }     // unreadable: fixed-length aim and tracers stay
     };
@@ -4421,6 +4570,7 @@
   // The control bar beside the map: team 1's share of the walkable floor from the bottom, team 2's from the top,
   // contested and unheld ground grey between (controlShares). `shares` null hides it.
   ReplayViewer.prototype.renderCtlBar = function (shares) {
+    if (this._offscreen) return;
     var bar = this.ui && this.ui.ctlBar;
     if (!bar) return;
     if (!shares || !shares.total || !this.layers.control || !this.layers.bar) { bar.hidden = true; return; }
@@ -4497,11 +4647,11 @@
   // Paints the layer (and the highlight) for the tick at t into offscreen images, only when the
   // round, the tick, the highlight or the switches change, then draws them over the map.
   ReplayViewer.prototype.drawControl = function (ctx, size, hits) {
-    if (!this.control || (!this.layers.control && this.highlight === null)) { this.renderCtlBar(null); return; }
+    if (!this.control || (!this.layers.control && this.highlight === null)) { if (!this._offscreen) this.renderCtlBar(null); return; }
     var value = this.controlCache.ready(this.number);
-    if (!value) { this.renderCtlBar(null); return; }
+    if (!value) { if (!this._offscreen) this.renderCtlBar(null); return; }
     var C = controlApi(), parsed = value.parsed, tick = C.tickAt(parsed.times, this.t);
-    if (tick < 0) { this.renderCtlBar(null); return; }
+    if (tick < 0) { if (!this._offscreen) this.renderCtlBar(null); return; }
     var knowing = this.knowingGroup(value);
     var borders = !!this.controlBorders;
     var key = [this.number, tick, this.layers.control, this.highlight, knowing, this.unknownView, borders].join(":");
@@ -4535,7 +4685,7 @@
         hl.ctx.putImageData(hl.data, 0, 0);
       }
     }
-    this.renderCtlBar(this.layers.control ? this.controlShares : null);
+    if (!this._offscreen) this.renderCtlBar(this.layers.control ? this.controlShares : null);
     ctx.save();
     ctx.imageSmoothingEnabled = false;
     if (this.layers.control) ctx.drawImage(this.controlCanvas("states").canvas, 0, 0, size, size);
@@ -5147,6 +5297,7 @@
   };
 
   ReplayViewer.prototype.renderMapFeatureEvents = function () {
+    if (this._offscreen) return;
     var panel = this.ui && this.ui.featuresEvents, data = this.current.blob.map_features, rows = [], self = this;
     var computed = this.controlCache && this.controlCache.ready(this.number);
     var applied = computed && computed.status === 'ok' && computed.parsed.header.map_features;
@@ -5165,17 +5316,17 @@
   };
 
   ReplayViewer.prototype.drawMapFeatures = function (ctx, scale, radius, hits) {
-    var data = this.current.blob.map_features, panel = this.ui.featuresState, self = this;
+    var data = this.current.blob.map_features, panel = !this._offscreen && this.ui.featuresState, self = this;
     var computed = this.controlCache && this.controlCache.ready(this.number);
     var applied = computed && computed.status === 'ok' && computed.parsed.header.map_features;
     if (applied && applied.features) data = {v: 1, status: 'decoded', features: applied.features};
-    if (this._featureApplied !== applied) {
+    if (!this._offscreen && this._featureApplied !== applied) {
       this._featureApplied = applied;
       this.renderMapFeatureEvents();
     }
     var appliedNames = applied && (data && data.features || []).filter(function (feature) { return applied.keys.indexOf(feature.key) >= 0; }).map(function (feature) { return self.mapFeatureName(feature); });
     var calculation = applied ? 'includes ' + (appliedNames.join(', ') || 'tagged map features') : data && data.calculation || 'pending geometry';
-    if (this.ui.featuresStatus) this.ui.featuresStatus.textContent = !data || data.v !== 1 || data.status === "unavailable" ? "Map states unavailable in this stored replay." :
+    if (!this._offscreen && this.ui.featuresStatus) this.ui.featuresStatus.textContent = !data || data.v !== 1 || data.status === "unavailable" ? "Map states unavailable in this stored replay." :
       (data.status === "decoded" ? "Replay states recovered. " : "Replay evidence is incomplete. ") + "Control: " + calculation + ".";
     var stateRows = [], t = this.t;
     if (data && data.v === 1 && data.status !== "unavailable") (data.features || []).forEach(function (feature) {
@@ -5326,8 +5477,8 @@
     ctx.restore();
   };
 
-  ReplayViewer.prototype.draw = function () {
-    var ctx = this.ctx, size = this.canvas.width, s = size / UV, view = this.view;
+  ReplayViewer.prototype.paint = function (ctx, t, opts) {
+    var size = 1024, s = size / UV, view = this.view;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, size, size);
     ctx.setTransform.apply(ctx, viewMatrix(view, this.turns, size));
@@ -5337,7 +5488,7 @@
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       return;
     }
-    var blob = this.current.blob, tracks = this.current.tracks, t = this.t, self = this;
+    var blob = this.current.blob, tracks = this.current.tracks, self = this;
     var r = size / 48 / Math.sqrt(view.k);   // zoomed marks grow, but only by the square root
     var hits = [];
 
@@ -5506,22 +5657,56 @@
     this.drawStatuses(ctx, s, r, hits, marks, layout);
     this.drawPlantRing(ctx, r, marks, spike);
     this.drawCarrier(ctx, r, hits, marks, layout, spike);
-    this.drawBlocks(ctx, r, hits, marks, layout);
+    this.drawBlocks(ctx, r, hits, marks, layout, opts);
     if (this.turns) {
       for (var hi = annotationStart; hi < hits.length; hi++) hits[hi].disp = true;
       ctx.setTransform.apply(ctx, viewMatrix(view, this.turns, size));
     }
-    this.layout = layout;
-
     this.drawArena(ctx, t, hits);
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.hits = hits;
-    var snap = this.snapshot(t);
-    this.ui.state.textContent = snap.live + " players on the map" + this.spikeText(spike);
-    this.canvas.setAttribute("aria-label", "Minimap, round " + blob.round + " at " + t.toFixed(1) + " s: " +
-      snap.live + " players shown");
+    return {hits: hits, layout: layout, spike: spike, snap: this.snapshot(t)};
+  };
+
+  ReplayViewer.prototype.draw = function () {
+    var frame = this.paint(this.ctx, this.t, null);
+    if (!frame) return;
+    this.hits = frame.hits;
+    this.layout = frame.layout;
+    if (this._offscreen) return;
+    this.ui.state.textContent = frame.snap.live + " players on the map" + this.spikeText(frame.spike);
+    this.canvas.setAttribute("aria-label", "Minimap, round " + this.current.blob.round + " at " + this.t.toFixed(1) + " s: " +
+      frame.snap.live + " players shown");
     if (this.hover) this.showTip(this.hover);
+  };
+
+  // Sub-draws read the viewer's time and settings. Restore even when a sub-draw throws;
+  // the export's control rasters must never overwrite the live viewer's warm buffers.
+  ReplayViewer.prototype.drawAt = function (t, ctx, opts) {
+    opts = opts || {};
+    var self = this, saved = {}, fields = ["t", "nameOf", "controlPaint", "controlImages", "controlShares", "_offscreen"];
+    fields.forEach(function (key) {
+      saved[key] = {own: Object.prototype.hasOwnProperty.call(self, key), value: self[key]};
+    });
+    var control = this.layers.control, names = this.layers.names;
+    var store = this._clipControl || (this._clipControl = {controlImages: {}, controlPaint: null, controlShares: null});
+    try {
+      this.t = t;
+      this._offscreen = true;
+      ["controlImages", "controlPaint", "controlShares"].forEach(function (key) { self[key] = store[key]; });
+      if (opts.control !== undefined) this.layers.control = opts.control;
+      if (opts.names !== undefined) this.layers.names = opts.names;
+      if (opts.nameOf !== undefined) this.nameOf = opts.nameOf;
+      this.paint(ctx, t, opts);
+    } finally {
+      ["controlImages", "controlPaint", "controlShares"].forEach(function (key) { store[key] = self[key]; });
+      this.layers.control = control;
+      this.layers.names = names;
+      fields.forEach(function (key) {
+        if (saved[key].own) self[key] = saved[key].value;
+        else delete self[key];
+      });
+    }
   };
 
   // The spike's state for the replay's state text (" · spike carried by …"), or "" when it isn't known.
@@ -5589,7 +5774,13 @@
     });
   }
 
+  function momentLink(uuid, round, tIn, tOut) {
+    return "/replays/" + uuid + "?round=" + round + "&t=" + tIn.toFixed(2) +
+      (tOut == null ? "" : "&until=" + tOut.toFixed(2));
+  }
+
   var api = {
+    clipViewer: clipViewer, prepareRound: prepareRound, momentLink: momentLink,
     ABILITY_STYLES: ABILITY_STYLES, PROJECTILE_STYLES: PROJECTILE_STYLES,
     UTIL_ABILITY_COLORS: UTIL_ABILITY_COLORS, CONTROL_PALETTES: CONTROL_PALETTES, UV: UV,
     rotatePoint: rotatePoint, unrotatePoint: unrotatePoint, rotateYaw: rotateYaw, viewMatrix: viewMatrix,

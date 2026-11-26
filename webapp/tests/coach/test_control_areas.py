@@ -2,7 +2,7 @@ import base64
 
 from app.coach import areas, control_areas
 from app.replays import control_format as cf
-from tests.coach.test_areas import painted_object, write_paint
+from tests.coach.test_areas import NAMES, painted_object, write_paint
 
 # Two walkable cells: cell 0 (top-left, nearest "A Site") and the last cell (bottom-right, nearest "B Site").
 TABLE = {"Toy": [{"name": "A Site", "super": "A", "u": 0, "v": 0},
@@ -42,8 +42,42 @@ def test_painted_shares_use_ground_floor_and_skip_unpainted_cells(tmp_path, monk
     write_paint(tmp_path, painted_object({0: 2, 1: 3}, bands={"0": [[0, 30, 2], [60, 90, 3]]}))
     shares = control_areas.area_shares(control_bytes([(1, 4)], [0]), "Sunset")
     assert shares["approximate"] is False
-    assert shares["cells"] == {"Top Mid": 1}
-    assert shares["areas"] == {"Top Mid": [[1, 0, 0]]}
+    assert shares["cells"] == {"Mid": 1, "Top Mid": 1}
+    assert shares["areas"] == {"Mid": [[1, 0, 0]], "Top Mid": [[1, 0, 0]]}
+
+
+def test_a_child_cell_counts_in_both_parents(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    names = [NAMES[0], {**NAMES[1], "also_parents": [3]}, NAMES[2]]
+    write_paint(tmp_path, painted_object({CELLS[0]: 2}, names=names))
+    shares = control_areas.area_shares(control_bytes([(1, 4), (7, 0)], [0, 160]), "Sunset")
+    assert shares["cells"] == {"A Site": 1, "Mid": 1, "Top Mid": 1}
+    assert shares["areas"] == {name: [[1, 0, 0], [0, 0, 1]] for name in shares["cells"]}
+
+
+def test_a_grandchild_cell_counts_once_in_a_root_reached_by_both_parents(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    names = [NAMES[0], NAMES[1],
+             {**NAMES[1], "id": 3, "name": "Lower Mid"},
+             {**NAMES[1], "id": 4, "name": "Link", "parent": 2, "also_parents": [3]}]
+    write_paint(tmp_path, painted_object({CELLS[0]: 4, CELLS[1]: 1}, names=names))
+    shares = control_areas.area_shares(control_bytes([(1, 4)], [0]), "Sunset")
+    assert shares["cells"] == {"Link": 1, "Lower Mid": 1, "Mid": 2, "Top Mid": 1}
+    assert shares["areas"] == {"Link": [[1, 0, 0]], "Lower Mid": [[1, 0, 0]],
+                              "Mid": [[1, 1, 0]], "Top Mid": [[1, 0, 0]]}
+
+
+def test_control_over_a_parent_weights_its_own_and_child_cells_together(tmp_path, monkeypatch):
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    write_paint(tmp_path, painted_object({CELLS[0]: 1, CELLS[1]: 2}))
+    shares = control_areas.area_shares(control_bytes([(1, 4), (4, 7)], [0, 160]), "Sunset")
+    assert shares["cells"] == {"Mid": 2, "Top Mid": 1}
+    assert control_areas.control_over(shares, "Mid", 0.0, 20.0) == {
+        "a": 0.25, "b": 0.5, "contested": 0.25, "none": 0.0,
+    }
+    assert control_areas.control_over(shares, "Top Mid", 0.0, 20.0) == {
+        "a": 0.0, "b": 0.5, "contested": 0.5, "none": 0.0,
+    }
 
 
 def test_control_over_a_span_is_time_weighted():

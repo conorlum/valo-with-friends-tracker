@@ -7,7 +7,8 @@ chances are fitted once over every layout's usable rows (`plant_stats.expected_o
 subset's values are passed on; they are never refitted on a map or on the Friends subset.
 
 The result is cached one row per (asset key, population) in `plant_stats_cache`, valid while
-`fingerprint(db)` (all plant rows, the spots file, CALCULATION_VERSION) is unchanged, so no
+`fingerprint(db)` (all plant rows, the spots file, the moved-sites file, CALCULATION_VERSION) is
+unchanged, so no
 ingest path needs a hook. A stale, missing or corrupt row degrades to a recompute. No player
 name is ever read or returned.
 """
@@ -18,20 +19,20 @@ import json
 import logging
 import zlib
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, false, func, not_, or_, select
 
 from app.models import Match, MatchPlayer, RoundPlant
 from app.models.replay import Replay
 from app.models.round_plant import PlantStatsCache
 from app.replays import layouts
 from app.scoring.plant_window import attacking_team
-from app.services import circle, plant_spots, plant_stats
+from app.services import circle, plant_site_changes, plant_spots, plant_stats
 from app.services.round_plants import asset_key_for
 
 logger = logging.getLogger(__name__)
 
-CALCULATION_VERSION = 1
-MIN_N = 100
+CALCULATION_VERSION = 2   # 2: MIN_N 100 -> 50
+MIN_N = 50                # plants a spot needs before it shows a win rate (the owner's gate, 2026-11-25)
 EXAMPLES = 3
 
 
@@ -52,7 +53,7 @@ def fingerprint(db) -> str:
             .order_by(Replay.match_id, Replay.game_branch, Replay.clock_offset)):
         links.update(f"{match_id!r}|{branch!r}|{offset!r}\n".encode("utf-8"))
     text = (f"{count}|{newest}|{links.hexdigest()}|{_registry_digest()}|"
-            f"{plant_spots.digest()}|{CALCULATION_VERSION}")
+            f"{plant_spots.digest()}|{plant_site_changes.digest()}|{CALCULATION_VERSION}")
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -68,12 +69,14 @@ def read_rows(db) -> list[dict]:
         RoundPlant.match_id, RoundPlant.round_number, RoundPlant.site, RoundPlant.u, RoundPlant.v,
         RoundPlant.plant_time, RoundPlant.attackers_alive, RoundPlant.defenders_alive,
         RoundPlant.attackers_won, RoundPlant.defused, Match.map_name, Replay.match_uuid,
-        Replay.game_branch, Replay.clock_offset,
+        Replay.game_branch, Replay.clock_offset, Match.played_at,
     )).order_by(RoundPlant.match_id, RoundPlant.round_number)
     chosen = {}
     rows = []
     for (match_id, round_number, site, u, v, plant_time, attackers_alive, defenders_alive, attackers_won,
-         defused, map_name, uuid, branch, offset) in db.execute(query):
+         defused, map_name, uuid, branch, offset, played_at) in db.execute(query):
+        if not plant_site_changes.counts(map_name, site, played_at):
+            continue
         key = (map_name, branch)
         if key not in chosen:
             chosen[key] = asset_key_for(map_name, branch)
@@ -88,10 +91,18 @@ def read_rows(db) -> list[dict]:
     return rows
 
 
+def _before_move():
+    """SQL true for a plant on a moved site from a match played before the move."""
+    moved = [and_(Match.map_name == map_name, RoundPlant.site == site, Match.played_at < start)
+             for (map_name, site), start in plant_site_changes.cutoffs().items()]
+    # A NULL map or played_at would make the test NULL, which `not_` would drop: read it as kept.
+    return func.coalesce(or_(*moved), false()) if moved else false()
+
+
 def counts_by_asset(db) -> Counter:
     """Plants per layout from one grouped query; the same answer as counting `read_rows`."""
-    query = _joined(select(Match.map_name, Replay.game_branch, func.count())).group_by(
-        Match.map_name, Replay.game_branch)
+    query = _joined(select(Match.map_name, Replay.game_branch, func.count())
+                    .where(not_(_before_move()))).group_by(Match.map_name, Replay.game_branch)
     counts = Counter()
     for map_name, branch, n in db.execute(query):
         key = asset_key_for(map_name, branch)
@@ -109,7 +120,9 @@ def _population(ids) -> str:
 def _flat_spots(asset_key):
     sites = plant_spots.load().get(asset_key, {})
     return [{"id": spot["id"], "name": spot["name"], "site": site, "u": spot["u"], "v": spot["v"],
-             "radius": spot["r"]} for site, spots in sites.items() for spot in spots]
+             **({"w": spot["w"], "h": spot["h"], "angle": spot["angle"]} if "w" in spot
+                else {"radius": spot["r"]})}
+            for site, spots in sites.items() for spot in spots]
 
 
 def _example_link(row):

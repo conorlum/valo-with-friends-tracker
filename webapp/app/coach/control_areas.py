@@ -17,29 +17,34 @@ def area_shares(data: bytes, asset_key: str, table: dict | None = None) -> dict:
     header, streams = cf.unpack_data(data)
     walk = cf.walk_bitmap(header)
     painted = areas.load_painted(asset_key)
-    labels = []
-    for cell in walk:
+    cell_indices: dict[str, list[int]] = {}
+    for index, cell in enumerate(walk):
         if painted is not None:
-            area = painted.names.get(painted.cells[cell])
+            # Ancestors include self and deduplicate roots reached through multiple parents.
+            labels = {painted.names[name_id]["name"]
+                      for name_id in painted.ancestors.get(painted.cells[cell], ())}
         else:
             u = (cell % cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
             v = (cell // cf.GRID + 0.5) / cf.GRID * fmt.UV_SCALE
             area = areas._nearest_label(asset_key, u, v, table)
-        labels.append(area["name"] if area else None)
-    names = sorted({name for name in labels if name})
+            labels = {area["name"]} if area and area["name"] else set()
+        for name in labels:
+            cell_indices.setdefault(name, []).append(index)
+    names = sorted(cell_indices)
     frames = cf.decode_states(streams["states"], len(header["ticks"]), len(walk))
     per_area = {name: [] for name in names}
     for frame in frames:
-        counts = {name: [0, 0, 0] for name in names}
-        for label, code in zip(labels, frame):
-            owner = _OWNER[code]
-            if label is not None and owner is not None:
-                counts[label][owner] += 1
+        owners = [_OWNER[code] for code in frame]
         for name in names:
-            per_area[name].append(counts[name])
+            counts = [0, 0, 0]
+            for index in cell_indices[name]:
+                owner = owners[index]
+                if owner is not None:
+                    counts[owner] += 1
+            per_area[name].append(counts)
     return {"t": [tick / header["hz"] for tick in header["ticks"]],
             "approximate": painted is None,
-            "cells": {name: labels.count(name) for name in names}, "areas": per_area,
+            "cells": {name: len(cell_indices[name]) for name in names}, "areas": per_area,
             "knew": header.get("knew"), "signals": header.get("knowledge_events"),
             "group_side": header.get("group_side")}
 

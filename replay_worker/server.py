@@ -1556,7 +1556,7 @@ HEIGHT_DIGEST = re.compile(r"^[0-9a-f]{12}$")
 # is understood (replay_worker/control_job.py; the image ships app/gaps); 2, its result also carries the
 # round's critical moments (the image ships app/moments); 3, and its Critical Util evidence (app/critutil). A plain number here, never read
 # from the detector: this process imports none of it.
-GAPS_PROTOCOL = 3
+GAPS_PROTOCOL = 4
 from app.replays import map_feature_artifacts as feature_artifacts
 _FEATURE_VERIFY_SLOTS = threading.BoundedSemaphore(2)
 CHILD_THREADS = {"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}

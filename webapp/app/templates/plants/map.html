@@ -18,6 +18,7 @@
 <h1>Plants on {{ map_name }}</h1>
 <div class="tab-row" role="tablist">
   <a class="tab-btn active" href="/plants" role="tab" aria-selected="true">Plant spots</a>
+  <a class="tab-btn" href="/plants/{{ map_name }}/postplant" role="tab" aria-selected="false">Post-plant</a>
 </div>
 <p class="page-meta">{{ thin_note }}</p>
 {% if login_note %}<p class="page-meta" data-login-note>{{ login_note }}</p>{% endif %}
@@ -38,8 +39,8 @@
   {% for s in sites %}{% for spot in s.spots %}
   <div class="plant-spot{% if spot.grey %} spot-grey{% endif %}" data-spot="{{ spot.id }}" data-site="{{ s.name }}"
        data-detail="{{ spot.name }}: n={{ spot.n }}{% if spot.adjusted_display %}, adjusted {{ spot.adjusted_display }}{% endif %}"
-       style="left: {{ spot.left }}%; top: {{ spot.top }}%; width: {{ spot.size }}%; height: {{ spot.size }}%;{% if spot.fill %} background: {{ spot.fill }};{% endif %}">
-    <span class="plant-label">{{ spot.name }}<br>n={{ spot.n }}</span>
+       style="left: {{ spot.left }}%; top: {{ spot.top }}%; width: {{ spot.width }}%; height: {{ spot.height }}%;{% if spot.rectangle %} border-radius: 0; transform: translate(-50%, -50%) rotate({{ spot.turn }}deg);{% endif %}{% if spot.fill %} background: {{ spot.fill }};{% endif %}">
+    <span class="plant-label"{% if spot.rectangle %} style="transform: rotate({{ -degrees - spot.turn }}deg);"{% endif %}>{{ spot.name }}<br>n={{ spot.n }}</span>
   </div>
   {% endfor %}{% endfor %}
 </div>

@@ -438,3 +438,223 @@ def test_rotated_replay_hover_round_buttons_and_aim_line(browser_page, tmp_path)
     assert max(map(dist2, changed)) > (radius*2)**2, 'the aim line does not reach past the player circle'
     aim.check(); page.evaluate(SETTLED)
     assert page.evaluate(GRAB) == with_aim, 'rechecking Aim lines did not restore the line'
+
+
+# ---- Clip export, the Highlights tab and the match page's Play here (W8) ----
+
+LAZY = ('clip_export.js', 'mp4-muxer')
+
+
+def record_requests(page):
+    seen = []
+    page.on('request', lambda r: seen.append((r.method, r.url, r.post_data_buffer)))
+    return seen
+
+
+def read_download(download):
+    data = Path(download.path()).read_bytes()
+    assert download.failure() is None
+    return data
+
+
+def size_of(text):
+    import re
+    found = re.search(r'([\d.]+) MB', text)
+    return float(found.group(1)) if found else 0
+
+
+def open_clip_page(page, base, uuid, query='?round=1&t=1'):
+    page.goto(base+f'/replays/{uuid}{query}')
+    page.wait_for_function('window.viewer && window.viewer.current && window.viewer.map.complete')
+
+
+def scored_match(factory, tmp_path):
+    """highlight_replay plus one Impact row per player, so the match page's scoreboard (which lists scored players)
+    has someone to show, as a real match does."""
+    from app.models import ImpactScore, MatchPlayer, Round
+    from app.models.replay import Replay
+    from tests.support.highlights import highlight_replay
+    result = highlight_replay(factory, tmp_path)
+    with factory() as db:
+        match_id = db.get(Replay, result[1]).match_id
+        first = db.query(Round).filter(Round.match_id == match_id).order_by(Round.round_number).first()
+        for mp in db.query(MatchPlayer).filter(MatchPlayer.match_id == match_id):
+            db.add(ImpactScore(round_id=first.id, match_player_id=mp.id, kill_impact=10, death_impact=0, impact=10))
+        db.commit()
+    return result
+
+
+def set_field(page, field, value):
+    page.locator(f'#clip-{field}').fill(value) if field in ('in', 'out') else page.locator(f'#clip-{field}').select_option(value)
+    page.locator(f'#clip-{field}').dispatch_event('change')
+
+
+def wait_progress(page):
+    try:
+        page.wait_for_function("() => document.querySelector('#clip-progress').value >= 1", timeout=30000)
+    except Exception:
+        state = page.evaluate("""() => { const q = id => document.querySelector('#clip-' + id);
+            return {message: q('message').textContent, progress: [q('progress').value, q('progress').max],
+                    exportDisabled: q('export').disabled, cancelDisabled: q('cancel').disabled, size: q('size').textContent,
+                    estimate: q('estimate').textContent, hidden: document.querySelector('[data-clip-panel]').hidden}; }""")
+        raise AssertionError(f'export never showed a frame: {state}') from None
+
+
+def export_ready(page):
+    page.wait_for_function("() => !document.querySelector('#clip-export').disabled || "
+                           "/not supported/.test(document.querySelector('#clip-message').textContent)")
+    message = page.locator('#clip-message').inner_text()
+    assert 'not supported' not in message, f'fixture Chromium has no H.264 encoder (pickCodec null): {message}'
+
+
+def test_export_clip_downloads_an_mp4_and_sends_nothing(browser_page, tmp_path):
+    from tests.support.highlights import highlight_replay
+    page, base, factory = browser_page
+    uuid, _, _, _, _ = highlight_replay(factory, tmp_path)
+    open_clip_page(page, base, uuid)
+    seen = record_requests(page)
+    page.locator('[data-replay-export]').click()
+    expect(page.locator('[data-clip-panel]')).to_be_visible()
+    set_field(page, 'in', '1.0'); set_field(page, 'out', '3.0')
+    export_ready(page)
+    marks = {}
+    with page.expect_download(timeout=60000) as info:
+        page.locator('#clip-export').click()
+        wait_progress(page)
+        marks['n'] = len(seen)
+    data = read_download(info.value)
+    assert len(data) > 0 and data[4:8] == b'ftyp', data[:16]
+    assert info.value.suggested_filename == 'round1-1s.mp4'
+    assert size_of(page.locator('#clip-size').inner_text()) > 0
+    assert page.locator('#clip-message').inner_text() == 'Clip downloaded.'
+    for method, url, body in seen:
+        assert method == 'GET', (method, url)
+        assert body is None, url
+    assert [u for _, u, _ in seen[marks['n']:]] == [], 'a request was made after the clip was prepared'
+    assert any('clip_export.js' in u for _, u, _ in seen) and any('mp4-muxer' in u for _, u, _ in seen)
+
+
+def test_the_potg_export_link_opens_the_panel_with_the_play_filled_in(browser_page, tmp_path):
+    from tests.support.highlights import highlight_replay
+    page, base, factory = browser_page
+    uuid, _, match_url, _, _ = scored_match(factory, tmp_path)
+    page.goto(base+match_url)
+    card = page.locator('[data-potg-card]')
+    expect(card).to_be_visible()
+    summary = card.locator('.potg-summary').inner_text()
+    potg = page.request.get(base+f'/replays/{uuid}/highlights.json').json()['potg']
+    with page.expect_navigation():
+        card.get_by_role('link', name='Export clip').click()
+    page.wait_for_function('window.viewer && window.viewer.current')
+    expect(page.locator('[data-clip-panel]')).to_be_visible(timeout=15000)
+    page.wait_for_function("() => document.querySelector('#clip-in').value !== ''")
+    assert float(page.locator('#clip-in').input_value()) == pytest.approx(potg['t_start'], abs=0.01)
+    assert float(page.locator('#clip-out').input_value()) == pytest.approx(potg['t_end'], abs=0.01)
+    assert summary in page.locator('#clip-caption').input_value()
+    if len(potg.get('segments') or []) >= 2:
+        expect(page.locator('#clip-cut')).to_be_enabled()
+    else:
+        expect(page.locator('#clip-cut')).to_be_disabled()
+
+
+def test_page_load_does_not_request_the_export_scripts(browser_page, tmp_path):
+    from tests.support.highlights import highlight_replay
+    page, base, factory = browser_page
+    uuid, _, match_url, _, _ = scored_match(factory, tmp_path)
+    seen = record_requests(page)
+    open_clip_page(page, base, uuid)
+    page.wait_for_load_state('networkidle')
+    assert not [u for _, u, _ in seen if any(k in u for k in LAZY)]
+    page.locator('[data-replay-export]').click()
+    expect(page.locator('[data-clip-panel]')).to_be_visible()
+    page.wait_for_function("() => !!window.ClipExport")
+    assert [u for _, u, _ in seen if 'clip_export.js' in u] and [u for _, u, _ in seen if 'mp4-muxer' in u]
+    # The match page loads neither the export code nor replay.js until Play here.
+    seen.clear()
+    page.goto(base+match_url)
+    expect(page.locator('[data-potg-card]')).to_be_visible()
+    page.wait_for_load_state('networkidle')
+    assert not [u for _, u, _ in seen if any(k in u for k in LAZY + ('replay.js',))]
+
+
+def test_highlights_tab_items_play_and_export_their_round(browser_page, tmp_path):
+    from tests.support.highlights import highlight_replay
+    page, base, factory = browser_page
+    uuid, _, _, _, _ = highlight_replay(factory, tmp_path)
+    open_clip_page(page, base, uuid)
+    body = page.request.get(base+f'/replays/{uuid}/highlights.json').json()
+    items = ([body['potg']] if body['potg'] else []) + [p['best'] for p in body['players'].values() if p.get('best')]
+    page.locator('[data-replay-tab="highlights"]').click()
+    first = items[0]
+    expect(page.locator(f'[data-highlight-export="{first["id"]}"]').first).to_be_visible()
+    page.locator(f'[data-highlight-export="{first["id"]}"]').first.click()
+    expect(page.locator('[data-clip-panel]')).to_be_visible()
+    page.wait_for_function("() => document.querySelector('#clip-in').value !== ''")
+    assert float(page.locator('#clip-in').input_value()) == pytest.approx(first['t_start'], abs=0.01)
+    assert float(page.locator('#clip-out').input_value()) == pytest.approx(first['t_end'], abs=0.01)
+    # An item from another round than the one shown exports that round.
+    other = next(i for i in items if i['round'] != 1)
+    page.locator(f'[data-highlight-export="{other["id"]}"]').first.click()
+    page.wait_for_function('t => Math.abs(Number(document.querySelector("#clip-in").value) - t) < 0.02', arg=other['t_start'])
+    set_field(page, 'width', '512')
+    export_ready(page)
+    with page.expect_download(timeout=120000) as info:
+        page.locator('#clip-export').click()
+    data = read_download(info.value)
+    assert len(data) > 0 and data[4:8] == b'ftyp'
+    assert info.value.suggested_filename.startswith(f'round{other["round"]}-')
+    # Play seeks to the item's round and start, and plays.
+    page.locator(f'[data-highlight-jump="{other["id"]}"]').first.click()
+    page.wait_for_function('([n, t]) => window.viewer.number === n && window.viewer.t >= t', arg=[other['round'], other['t_start']])
+
+
+def test_play_here_loops_the_potg_on_a_canvas_and_stop_ends_it(browser_page, tmp_path):
+    from tests.support.highlights import highlight_replay
+    page, base, factory = browser_page
+    uuid, _, match_url, _, _ = scored_match(factory, tmp_path)
+    seen = record_requests(page)
+    page.goto(base+match_url)
+    card = page.locator('[data-potg-card]')
+    expect(card).to_be_visible()
+    assert not [u for _, u, _ in seen if 'replay.js' in u]
+    page.evaluate("""() => { window.__draws = 0; const d = CanvasRenderingContext2D.prototype.drawImage;
+        CanvasRenderingContext2D.prototype.drawImage = function () { window.__draws++; return d.apply(this, arguments); }; }""")
+    card.locator('[data-potg-play]').click()
+    expect(card.locator('[data-potg-play]')).to_have_text('Stop', timeout=15000)
+    assert [u for _, u, _ in seen if 'replay.js' in u]
+    page.wait_for_timeout(1000)
+    total = page.evaluate("""() => { const c = document.querySelector('[data-potg-canvas]');
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let s = 0;
+        for (let i = 0; i < d.length; i++) s += d[i]; return s; }""")
+    assert total > 0
+    card.locator('[data-potg-play]').click()
+    expect(card.locator('[data-potg-play]')).to_have_text('▶ Play here')
+    page.wait_for_timeout(100)
+    frozen = page.evaluate('window.__draws')
+    page.wait_for_timeout(400)
+    assert page.evaluate('window.__draws') == frozen, 'frames kept coming after Stop'
+
+
+def test_cancel_stops_an_export_and_a_second_export_works(browser_page, tmp_path):
+    from tests.support.highlights import highlight_replay
+    page, base, factory = browser_page
+    uuid, _, _, _, _ = highlight_replay(factory, tmp_path)
+    open_clip_page(page, base, uuid)
+    downloads = []
+    page.on('download', lambda d: downloads.append(d))
+    page.locator('[data-replay-export]').click()
+    expect(page.locator('[data-clip-panel]')).to_be_visible()
+    set_field(page, 'width', '1024'); set_field(page, 'in', '0'); set_field(page, 'out', '10')
+    export_ready(page)
+    page.locator('#clip-export').click()
+    wait_progress(page)
+    page.locator('#clip-cancel').click()
+    expect(page.locator('#clip-message')).to_have_text('Cancelled.', timeout=5000)
+    page.wait_for_timeout(2000)
+    assert downloads == []
+    set_field(page, 'width', '512'); set_field(page, 'out', '2')
+    export_ready(page)
+    with page.expect_download(timeout=60000) as info:
+        page.locator('#clip-export').click()
+    data = read_download(info.value)
+    assert len(data) > 0 and data[4:8] == b'ftyp'

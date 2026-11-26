@@ -48,6 +48,15 @@ missing, because Render's `rootDir: webapp` hides `docs/`. A scoring release tha
 `ACTIVE_MANIFEST` must refresh the mirror in the same PR (`tests/test_active_manifest_mirror.py`
 fails otherwise). Stale splits after a rescore still need `scripts/link_replays.py --refresh-impact`.
 
+### Clip export and highlights
+
+The export panel makes client-only H.264 MP4 clips through WebCodecs and the lazy-loaded,
+vendored `app/static/vendor/mp4-muxer-5.2.2.js`; `clipViewer` / `drawAt` in `replay.js` draw them.
+`app/services/highlights.py` computes highlights on request, with no table:
+`/replays/<uuid>/highlights.json` (ETag) and `/replays/<uuid>/potg` (the match page's card).
+Never on the demo. Only home-team friends get highlights; names follow the moments tab's rule
+through `clip_names`. The replay page accepts `?until=` and `?export=1&hl=<id>`.
+
 ### Map layouts
 
 `app/static/data/layouts.json` declares map layouts, and `app/replays/layouts.py` selects them through `layout_for` using `replays.game_branch`. Asset keys are `<Map>` for the base layout and `<Map>_<major>_<minor>` for a layout starting at that patch. In `layout_pending` or `layout_unknown`, stored control is kept stale, recomputation waits, a round without a stored row returns 404, and the viewer shows a layout note; a pending replay still shows its stored control, marked out of date, on the newest earlier layout that has a control layer, while an unknown patch shows none. The base layout is pinned byte-identical by `tests/fixtures/control/layout_golden.json` through `test_layout_base_identity.py`. Redrawing a map for a new layout follows `docs/map-layout-redraw.md` with `scripts/map_layout.py` (`notes`, `fetch-minimap`, `align`, `diff`, `overlay`, `build`, `kill-lines`).
@@ -168,7 +177,7 @@ Which utility wins rounds, each friend's best and worst util, and the patterns i
   Critical Moments, with its own failure status: who each cast affected, kills on affected enemies, teammates it
   hit, sight lines a smoke cut, enemies held back or waiting at an area cast, a device's trigger, defuses stopped,
   heals that kept someone alive, deaths holding util after engaging first. Stored in `replay_round_util`
-  (migration 0029) under the gap run's keys (`GAPS_REVISION` 7, gap protocol 3: the site and the worker image
+  (migration 0029) under the gap run's keys (`GAPS_REVISION` 8, gap protocol 4: the site and the worker image
   must both speak it, `replay_worker/Dockerfile` ships `app/critutil`). The gap run also steps an unknown probe
   (`app/critutil/unknown.py`): how long each trip, camera, turret or molly held the map-control unknown at its edge.
   Statuses on teammates are kept from `CONDENSE_REVISION` 22, flagged `friendly`; control and Critical Moments
@@ -282,12 +291,23 @@ never re-sent; bumping `RETRY_GENERATION` (with `__version__`, then tag) makes e
 
 Where attackers plant on each map and how those rounds go. `/plants` and `/plants/<map>` (`app/routers/plants.py`,
 `app/services/plant_page.py`, `plant_stats.py`, `plant_spots.py`). Never on the demo. Only named spots show, and a
-spot shows a win rate only from 100 plants.
+spot shows a win rate only from 50 plants (`plant_page.MIN_N`). A spot is a circle (`r`) or a rotated rectangle (`w`, `h`, `angle` in
+degrees, clockwise on the minimap); a plant inside several goes to the nearest centre.
 
 - Migration `0036`: `round_plants` (one row per round; a replay's position beats tracker.gg's; models in
   `app/models/round_plant.py`) and `plant_stats_cache`. It only creates tables, so it runs through the normal
   `alembic upgrade head` on build and `RENDER_DEPLOY.md` needs no note.
 - New tracker.gg ingests save plants (`load_match`, `_store_plants`). A failure there never fails the ingest.
+  tracker.gg's plant `location` is the planter's position. The spike lands along the planter's final aim
+  (`viewRadians`) at 0.7 m, or 0.4, 0.2 or 0 m when a wall or the plant site's edge is in the way
+  (`app/services/plant_position.py`, `round_plants.plant_uv`; measured on replay Bomb positions). A tracker
+  position that still lands outside the zone (or has no facing data) is pulled to the nearest zone cell, up to
+  about 2 m (`snap_inside`); replay positions are never moved. Zones are the
+  minimaps' shaded sites, aligned to planter positions, in the committed `app/data/plant_zones.json`
+  (`scripts/build_plant_zones.py`, read-only on the DB); a map that fails its check keeps the plain 0.7 m.
+  The backfill re-fetches tracker rows saved before the 0.7 m correction, tracked in the gitignored
+  `ingest_ledgers/round_plants_corrected.json`. `scripts/round_plants.py reposition --archive <dir> [--dry-run]`
+  recomputes tracker rows from archived payloads with no crawl and never replaces a replay's position.
 - The stats cache needs no ingest hook: it is keyed by a fingerprint of the plant rows, linked replays, the layout
   registry, the spots file and `CALCULATION_VERSION`.
 - Owner commands, from `webapp`, in this order. The first two write to the friends DB through
@@ -297,14 +317,43 @@ spot shows a win rate only from 100 plants.
      It needs the tracker.gg Chrome on port 9222, resumes from the database, waits 5 to 12 s between matches and
      stops after 5 consecutive failures. Matches tracker.gg can't supply go in the gitignored skip-list
      `ingest_ledgers/round_plants_unavailable.json`. `scripts/round_plants.py status` shows progress.
+     To pause: Ctrl+C once (the match in flight finishes, then it prints the resume command; twice stops at
+     once, and still loses nothing already committed), or `scripts/round_plants.py pause` from any shell, which
+     writes `ingest_ledgers/round_plants.pause` (removed when a backfill starts). `with_friends_db.py` leaves
+     Ctrl+C to its child. `--archive <dir>` also keeps each raw payload as `<external id>.json.gz`.
+     `--pace MIN MAX` (at least 2 s) and `--settle N` change this crawl's waits; other ingests keep theirs.
   3. `scripts/plant_namer.py`, through the same wrapper with `--read-only`, writes a local page under
      `%TEMP%\valo-plant-namer`. Its Export saves the named spots only (unnamed proposals are left out and counted
      on the page), so maps can be done one at a time. It downloads `plant_spots.json`, which replaces
      `app/static/data/plant_spots.json`. That change is a PR, like any other.
 - Verification wait (`app/adapters/tracker_verification.py`): on a page titled "Just a moment", every tracker.gg
-  crawler beeps (audio only, silenced by `~/.claude/sounds/.muted`) and waits up to 15 minutes for the owner to
-  clear it. It never clicks or scripts the check. On a timeout the run stops, keeps what it added, runs its
-  end-of-run steps and exits non-zero.
+  crawler beeps (audio only, silenced by its own flag `~/.claude/sounds/.tracker-muted`) and waits up to 15
+  minutes for the owner to clear it. It never clicks or scripts the check. On a timeout the run stops, keeps what
+  it added, runs its end-of-run steps and exits non-zero. The plant backfill treats a 429 the same way first (beep,
+  retry each minute for 15 minutes), then waits 15, 30 and 30 minutes before counting one failure.
+
+### Post-plant value
+
+Where players hold and retake after a plant, from replays only. Never on the demo. The map page is
+`/plants/{map_name}/postplant` (`app/routers/plants.py`, `app/services/postplant_page.py`, `postplant_stats.py`):
+Everyone or Friends, Hold or Retake, filtered by layout, site and named plant spot.
+
+- The worker's `app/postplant/extract.py` (`round_postplant`) runs in `app/control/task.py` `_gaps`, with its own
+  failure status. It records alive players' positions every 0.5 s from plant through round decision, post-plant
+  kills and spike-line checks against walls and current smokes (no FOV or blinds). Gap protocol 4 /
+  `GAPS_REVISION` 8 requires the site and worker together; `replay_worker/Dockerfile` ships `app/postplant`.
+- Migration `0038` (`alembic/versions/0038_replay_round_postplant.py`): `replay_round_postplant` stores the worker
+  evidence under the gap fingerprint and revision; `postplant_stats_cache` stores compressed page figures.
+  Only current, successful rows count. Extractor failures show in Site health as `postplant_failed`.
+- Areas are assigned on the site by `app/coach/areas.py` `area_at`, using each replay's layout asset key.
+  Painted areas take over without a worker re-run; paint and callouts are part of the page cache fingerprint,
+  along with current rows, replay links and clock offsets, the stored win model, spots and calculation version.
+- Colour starts at n >= 20 player-post-plants (`postplant_stats.MIN_N`), with shrinkage M = 10 and 95%
+  match-clustered intervals. Win figures use only the stored Critical Util "win" model; requests never build it.
+  Without that model, win columns are unavailable and the map uses kills.
+- `/players/{display_name}/postplant` is a fragment loaded after the player page, honouring `?accounts=all`
+  and `?filter=`. A side shows only with >= 20 replay post-plants; per map/site/side rows show from 8.
+- After merge, once the gap re-run has caught up, open `/plants/Sunset/postplant` and a tracked player's page.
 
 ### Running the webapp locally
 

@@ -22,7 +22,9 @@ from playwright.sync_api import Page
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
-from app.adapters.tracker_verification import TrackerMatchUnavailable, TrackerVerificationTimeout, wait_for_owner
+from app.adapters.tracker_verification import (
+    TrackerMatchUnavailable, TrackerRateLimited, TrackerVerificationTimeout, wait_for_owner,
+)
 from app.models import KillEvent, Match, MatchPlayer, Player, Round, RoundPlayerSpend, RoundPlayerStat
 from app.models.match import MatchSource, Team
 from app.scoring.impact import compute_impact_for_match, find_unscored_match_ids
@@ -532,7 +534,7 @@ def discover_all_competitive_match_ids(
     return all_ids
 
 
-def fetch_match_json(page: Page, match_id: str) -> dict:
+def fetch_match_json(page: Page, match_id: str, settle_seconds: int = MATCH_SETTLE_SECONDS) -> dict:
     """Navigates to a match's tracker.gg page and returns the `data` object
     from tracker.gg's internal match-detail API response fired by that page
     load (round-by-round kills, damage, loadout, and outcome segments)."""
@@ -558,7 +560,7 @@ def fetch_match_json(page: Page, match_id: str) -> dict:
         # Always settle for MATCH_SETTLE_SECONDS after the load (and any verification
         # wait); then keep polling for the body up to MATCH_BODY_WAIT_SECONDS in all.
         for second in range(MATCH_BODY_WAIT_SECONDS):
-            if second >= MATCH_SETTLE_SECONDS and "body" in captured:
+            if second >= settle_seconds and "body" in captured:
                 break
             page.wait_for_timeout(1000)
     finally:
@@ -570,7 +572,8 @@ def fetch_match_json(page: Page, match_id: str) -> dict:
             # A 200 that did not parse may be a challenge page, so it stays retryable.
             permanent = captured["status"] in (404, 410) or (
                 captured["status"] == 200 and captured["parsed"])
-            error = TrackerMatchUnavailable if permanent else RuntimeError
+            error = (TrackerMatchUnavailable if permanent
+                     else TrackerRateLimited if captured["status"] == 429 else RuntimeError)
             raise error(
                 f"tracker.gg match API response for {match_id} has no data "
                 f"(status {captured['status']})"
@@ -816,7 +819,7 @@ def _store_plants(db: Session, match: Match, round_summaries: list[dict], match_
             if plant is None:
                 continue
             try:
-                u, v = round_plants.to_uv(match.map_name, plant["x"], plant["y"])
+                u, v = round_plants.plant_uv(match.map_name, plant)
             except KeyError:
                 # Maps absent from maps.json cannot supply normalized positions.
                 continue

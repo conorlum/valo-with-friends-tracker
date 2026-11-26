@@ -484,7 +484,7 @@ def _info_percentiles(summary: dict | None) -> dict:
     return out
 
 
-def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) -> dict:
+def match_payload(db, replay, *, wait: bool = False, read_only: bool = False, page: dict | None = None) -> dict:
     """The tab's body for one linked replay: each player's casts with values, best and worst, unused util, harm.
     Opponents named by agent.
 
@@ -492,7 +492,8 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
     the rebuild starts in the background (util_rebuild) and the body says `updating`,
     valued meanwhile with the stored estimator and weights. Remote mode always reads the stored products
     and leaves rebuilding to the util-build loop, including when `wait` is requested. `read_only` uses stored
-    products and reports `updating` when stale, with every build and request disabled."""
+    products and reports `updating` when stale, with every build and request disabled.
+    `page` can reuse the caller's replay page context."""
     from sqlalchemy import or_
 
     from app.models.friendship import Friendship
@@ -503,12 +504,12 @@ def match_payload(db, replay, *, wait: bool = False, read_only: bool = False) ->
 
     rows = db.query(ReplayRoundUtil).filter(ReplayRoundUtil.replay_id == replay.id).all()
     stored = {r.round_number: r for r in rows}
-    page = replay_service.page_context(db, replay)["players"]
-    ids = [p["player_id"] for p in page.values() if p.get("player_id") is not None]
+    page_players = (replay_service.page_context(db, replay) if page is None else page)["players"]
+    ids = [p["player_id"] for p in page_players.values() if p.get("player_id") is not None]
     friends = {pid for pair in db.query(Friendship.owner_player_id, Friendship.friend_player_id)
                .filter(or_(Friendship.owner_player_id.in_(ids), Friendship.friend_player_id.in_(ids)))
                for pid in pair} if ids else set()
-    players = tab_players(page, friends)
+    players = tab_players(page_players, friends)
     ctx = _replay_context(db, {replay.id}).get(replay.id)
     model = util_model.load(db)
     build_local = not util_build_remote.enabled() and not read_only

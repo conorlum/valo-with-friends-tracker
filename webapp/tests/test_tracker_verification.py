@@ -80,18 +80,19 @@ def test_absent_or_broken_title_is_not_verification():
         assert not verification.is_verification_page(page)
 
 
-@pytest.mark.parametrize("muted", [True, False])
-def test_beep_respects_mute(monkeypatch, tmp_path, muted):
+@pytest.mark.parametrize("flags,beeps", [((), 1), ((".muted",), 1), ((".tracker-muted",), 0),
+                                          ((".muted", ".tracker-muted"), 0)])
+def test_beep_has_its_own_mute_apart_from_claudes(monkeypatch, tmp_path, flags, beeps):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    if muted:
-        flag = tmp_path / ".claude" / "sounds" / ".muted"
-        flag.parent.mkdir(parents=True)
+    for name in flags:
+        flag = tmp_path / ".claude" / "sounds" / name
+        flag.parent.mkdir(parents=True, exist_ok=True)
         flag.touch()
     sound = SimpleNamespace(Beep=MagicMock())
     monkeypatch.setitem(sys.modules, "winsound", sound)
     monkeypatch.setattr(verification.sys, "platform", "win32")
     verification.beep()
-    assert sound.Beep.call_count == (0 if muted else 1)
+    assert sound.Beep.call_count == beeps
 
 
 def test_beep_is_noop_off_windows(monkeypatch):

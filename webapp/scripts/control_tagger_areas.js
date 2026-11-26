@@ -1,4 +1,4 @@
-/* Areas mode for the local control tagger. Paint and pins are kept in memory until export. */
+/* Areas mode for the local control tagger. Drafts autosave; export publishes reviewed paint. */
 (function () {
   "use strict";
   var TG = window.tagger, Core = window.TaggerCore.Areas, PX = window.TaggerCore.PX;
@@ -7,8 +7,9 @@
   var colours = ["#71b3f0", "#f5b962", "#84dcb1", "#ec9fa8", "#bba4f7", "#7ed3dc",
                  "#e1d27d", "#f3a77d", "#92a3fa", "#c4db84", "#e998d4", "#8ad9c8"];
   var maps = new Map();
-  var ui = {tool: "brush", stroke: null, hover: null, pins: [], alignment: null, drawing: false};
+  var ui = {tool: "pick", stroke: null, hover: null, pins: [], alignment: null, drawing: false};
   var storagePrefix = "control-tagger-area-reference-v1:";
+  var draftPrefix = "control-tagger-areas-draft-v1:";
 
   function active() { return TG.state.mode === "areas"; }
   function colour(id) { return colours[(id - 1) % colours.length]; }
@@ -18,11 +19,81 @@
     if (!maps.has(name)) {
       var data = TG.DATA.maps[name].areas, model = Core.fromData(data);
       var state = {model: model, selected: model.names.length ? model.names[0].id : null, floor: 0,
-                   saved: data.existing, pins: [], reference: null, referenceNote: "", pendingImage: null};
+                   saved: data.existing, pins: [], reference: null, referenceNote: "", pendingImage: null,
+                   draftPending: false, storageNote: ""};
       maps.set(name, state);
+      var stored = readDraft(state);
+      if (stored) {
+        try { JSON.parse(stored); }
+        catch (e) { storageFailure(state, "The saved draft is not valid JSON; it has been kept."); }
+      }
       restoreReference(state);
     }
-    return maps.get(name);
+    var result = maps.get(name);
+    $("areasRestoreRow").hidden = !result.draftPending;
+    return result;
+  }
+
+  // An unread first slot is protected just like an existing draft, until an explicit choice succeeds.
+  function storageFailure(state, detail) {
+    if (!state.storageNote) state.storageNote = detail || "Browser storage is unavailable; painting can continue.";
+  }
+
+  function readDraft(state) {
+    try {
+      var text = window.localStorage.getItem(draftPrefix + state.model.map);
+      state.draftPending = text !== null && text !== "";
+      return text;
+    } catch (e) {
+      state.draftPending = true;
+      storageFailure(state);
+      return undefined;
+    }
+  }
+
+  function autosave(state) {
+    try {
+      window.localStorage.setItem(draftPrefix + state.model.map + (state.draftPending ? ":newer" : ""),
+                                  JSON.stringify(state.model.draftState()));
+    } catch (e) { storageFailure(state); }
+  }
+
+  function restoreDraft() {
+    var state = current(), text = readDraft(state), restored = false;
+    if (text === undefined) { message("Could not read the saved draft; it has been kept."); return; }
+    try { restored = state.model.restoreDraft(JSON.parse(text)); }
+    catch (e) { storageFailure(state, "The saved draft is not valid JSON; it has been kept."); }
+    if (!restored) {
+      message("Could not restore this draft: its map, grid, walk mask or saved data is incompatible. Both drafts have been kept.");
+      return;
+    }
+    try {
+      window.localStorage.removeItem(draftPrefix + state.model.map + ":newer");
+      state.draftPending = false;
+    } catch (e) { storageFailure(state); }
+    changed("Draft restored.", true);
+  }
+
+  function discardDraft() {
+    var state = current(), key = draftPrefix + state.model.map;
+    if (readDraft(state) === undefined) { message("Could not read the saved draft; both drafts have been kept."); return; }
+    try {
+      var newer = window.localStorage.getItem(key + ":newer");
+      if (newer !== null) window.localStorage.setItem(key, newer);
+      else window.localStorage.removeItem(key);
+      // Never remove the second slot until promotion (or removal of the first) succeeds.
+      window.localStorage.removeItem(key + ":newer");
+      // A promoted draft must match the visible model before first-slot writes can resume.
+      state.draftPending = newer !== null && newer !== JSON.stringify(state.model.draftState());
+    } catch (e) {
+      state.draftPending = true;
+      storageFailure(state);
+      message("Could not discard the saved draft; the newer draft has been kept.");
+      return;
+    }
+    $("areasRestoreRow").hidden = !state.draftPending;
+    message(state.draftPending ? "Earlier newer edits are now the saved draft and can be restored."
+      : newer !== null ? "Newer edits saved as the draft." : "Saved draft discarded.");
   }
 
   function rowById(state, id) {
@@ -34,6 +105,7 @@
     option.value = value;
     option.textContent = text;
     select.appendChild(option);
+    return option;
   }
 
   function renderNames(revealSelection) {
@@ -70,6 +142,7 @@
     }
     $("areasName").value = selected ? selected.name : "";
     $("areasParent").replaceChildren();
+    $("areasAlsoParents").replaceChildren();
     addOption($("areasParent"), "", "No parent");
     $("areasMergeTarget").replaceChildren();
     addOption($("areasMergeTarget"), "", "Merge into…");
@@ -77,6 +150,7 @@
       if (row === selected) return;
       addOption($("areasParent"), row.id, row.name);
       addOption($("areasMergeTarget"), row.id, row.name);
+      addOption($("areasAlsoParents"), row.id, row.name).selected = !!selected && (selected.also_parents || []).indexOf(row.id) !== -1;
     });
     $("areasParent").value = selected && selected.parent !== null ? selected.parent : "";
     $("areasRegion").replaceChildren();
@@ -88,11 +162,13 @@
     $("areasRegion").disabled = !root;
     $("areasConfirmRegion").disabled = !root || selected.super_source === "set";
     $("areasRegionStatus").textContent = selected ? (root ? "Region: " + selected.super_source : "Region inherited") : "";
-    ["areasName", "areasRename", "areasParent", "areasMergeTarget", "areasAddChild"].forEach(function (id) {
+    ["areasName", "areasRename", "areasParent", "areasAlsoParents", "areasMergeTarget", "areasAddChild", "areasDelete", "areasPlaceChild"].forEach(function (id) {
       $(id).disabled = !selected;
     });
     $("areasMerge").disabled = true;
     $("areasAuto").textContent = state.model.stillAuto() + " names still auto";
+    var queue = state.model.unplaced();
+    $("areasQueue").textContent = queue.length ? "Next: " + queue[0] + ". Queue: " + queue.join(", ") : "No names queued.";
   }
 
   function selectName(id) {
@@ -130,10 +206,16 @@
     $("areasExportFixture").disabled = resolved === 0;
   }
 
-  function message(text) { $("areasMessage").textContent = text; }
+  function message(text) {
+    var note = current().storageNote;
+    $("areasMessage").textContent = [text, note].filter(Boolean).join(" ");
+  }
 
-  function changed(text, revealSelection) {
-    current().model.autoSupers();
+  function changed(text, revealSelection, state) {
+    state = state || current();
+    state.model.autoSupers();
+    if (!rowById(state, state.selected)) state.selected = state.model.names.length ? state.model.names[0].id : null;
+    autosave(state);
     renderNames(revealSelection);
     renderFloor();
     renderPins();
@@ -177,6 +259,7 @@
         }
       }
     }
+    if (ui.tool === "shrink") return state.model.shrink(cells, state.selected, state.floor);
     return ui.tool === "erase" ? state.model.erase(cells, state.floor) : state.model.paint(cells, state.selected, state.floor);
   }
 
@@ -257,7 +340,7 @@
     state.pins.forEach(function (pin) {
       mark(ctx, pin.u * PX / 10000, pin.v * PX / 10000, pin.ok ? "#63e1a2" : "#ff828a", pin.ok ? "✓" : "×", 10);
     });
-    if (ui.hover && (ui.tool === "brush" || ui.tool === "erase")) {
+    if (ui.hover && (ui.tool === "brush" || ui.tool === "erase" || ui.tool === "shrink")) {
       ctx.strokeStyle = "rgba(255,255,255,.9)";
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -286,16 +369,28 @@
       else message("This cell has no area on the selected floor.");
       return;
     }
+    if (ui.tool === "place") {
+      var queue = model.unplaced(), child = $("areasPlaceChild").checked;
+      if (!queue.length) { message("Paste names to add to the queue before placing."); return; }
+      if (child && state.selected === null) { message("Select a parent area before placing a child."); return; }
+      var placed = model.place(cell, queue[0], child ? state.selected : null);
+      if (placed.error) { message(placed.error); return; }
+      state.selected = placed.id;
+      changed(queue[0] + " placed: " + cellCount(placed.count) + ".", true);
+      return;
+    }
     if (state.selected === null && ui.tool !== "erase") {
       message("Add a name before painting.");
       return;
     }
     if (ui.tool === "fill") {
+      model.checkpoint();
       var count = model.fill(cell, state.selected, state.floor);
       changed(count ? cellCount(count) + " filled." : "No cells changed.");
       return;
     }
-    ui.stroke = {pointer: e.pointerId, last: point, count: dab(point, state)};
+    model.checkpoint();
+    ui.stroke = {pointer: e.pointerId, state: state, last: point, count: dab(point, state)};
     canvas.setPointerCapture(e.pointerId);
     drawSoon();
   });
@@ -315,10 +410,11 @@
   });
 
   function finishStroke(e) {
-    if (!ui.stroke || ui.stroke.pointer !== e.pointerId) return;
-    var count = ui.stroke.count;
+    if (!ui.stroke || (e && ui.stroke.pointer !== e.pointerId)) return;
+    var stroke = ui.stroke, count = stroke.count;
     ui.stroke = null;
-    changed(count ? cellCount(count) + (ui.tool === "erase" ? " erased." : " painted.") : "No cells changed.");
+    if (canvas.hasPointerCapture(stroke.pointer)) canvas.releasePointerCapture(stroke.pointer);
+    changed(count ? cellCount(count) + (ui.tool === "erase" ? " erased." : ui.tool === "shrink" ? " shrunk." : " painted.") : "No cells changed.", false, stroke.state);
   }
   canvas.addEventListener("pointerup", finishStroke);
   canvas.addEventListener("pointercancel", finishStroke);
@@ -459,6 +555,16 @@
     else message("Enter a unique area name.");
   }
 
+  function undo() {
+    if (ui.stroke) {
+      var pointer = ui.stroke.pointer;
+      ui.stroke = null;
+      canvas.releasePointerCapture(pointer);
+    }
+    if (!current().model.undo()) { message("Nothing to undo."); return; }
+    changed("Last action undone.", true);
+  }
+
   document.querySelectorAll("[data-area-tool]").forEach(function (button) {
     button.addEventListener("click", function () { setTool(button.dataset.areaTool); });
   });
@@ -472,6 +578,19 @@
     drawSoon();
   });
   $("areasAdd").addEventListener("click", addName);
+  $("areasUndo").addEventListener("click", undo);
+  $("areasRestore").addEventListener("click", restoreDraft);
+  $("areasDiscard").addEventListener("click", discardDraft);
+  $("areasDelete").addEventListener("click", function () {
+    var state = current();
+    if (state.model.deleteName(state.selected)) changed("Area deleted.", true);
+    else message("Could not delete the selected area.");
+  });
+  $("areasPasteAdd").addEventListener("click", function () {
+    var result = current().model.pasteNames($("areasPaste").value);
+    changed(result.queued.length + " names queued. " + result.matched.length + " matched."
+      + (result.unlisted.length ? " Unlisted: " + result.unlisted.join(", ") + "." : ""));
+  });
   $("areasNewName").addEventListener("keydown", function (e) { if (e.key === "Enter") addName(); });
   $("areasRename").addEventListener("click", rename);
   $("areasName").addEventListener("keydown", function (e) { if (e.key === "Enter") rename(); });
@@ -479,6 +598,13 @@
     var state = current(), parent = this.value ? +this.value : null;
     if (state.model.setParent(state.selected, parent)) changed("Parent updated.", true);
     else { renderNames(); message("That parent would create a cycle or a fourth level."); }
+  });
+  $("areasAlsoParents").addEventListener("change", function () {
+    var state = current(), ids = Array.from(this.children).filter(function (option) {
+      return option.selected;
+    }).map(function (option) { return +option.value; });
+    if (state.model.setAlsoParents(state.selected, ids)) changed("Extra parents updated.", true);
+    else { renderNames(); message("Those extra parents are invalid: choose distinct parents without a cycle or fourth level."); }
   });
   $("areasRegion").addEventListener("change", function () {
     var state = current();
@@ -555,13 +681,17 @@
     var model = current().model;
     download(model.map + ".areas.json", model.exportText());
     renderNames();
+    var queue = model.unplaced();
+    message("Areas exported." + (queue.length ? " Unplaced names: " + queue.join(", ") + "." : ""));
   });
   $("areasExportFixture").addEventListener("click", function () {
     download("area_cases.json", JSON.stringify(current().model.fixtureFromPins(ui.pins), null, 1) + "\n");
   });
 
   function onMap() {
-    ui.alignment = ui.stroke = ui.hover = null;
+    // The tagger has already switched maps; finish against the stroke's owning state.
+    finishStroke();
+    ui.alignment = ui.hover = null;
     if (!active()) return;
     var state = current();
     $("areasSource").textContent = state.saved ? "Saved areas" : "Walking-distance draft";
@@ -582,5 +712,5 @@
     onMap();
   }
 
-  window.taggerAreas = {onMode: onMode, onMap: onMap, cancelAlignment: cancelAlignment};
+  window.taggerAreas = {onMode: onMode, onMap: onMap, cancelAlignment: cancelAlignment, undo: undo};
 })();

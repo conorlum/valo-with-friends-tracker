@@ -65,9 +65,11 @@ PAGE_ROUTES = {
     "/matches/{external_id}/rounds/{round_number}": "not_page",
     "/plants": "page",
     "/plants/{map_name}": "page",
+    "/plants/{map_name}/postplant": "page",
     "/players": "page",
     "/players/{display_name}": "page",
     "/players/{display_name}/career": "not_page",
+    "/players/{display_name}/postplant": "not_page",
     "/players/{display_name}/recent-matches": "not_page",
     "/replays": "page",
     "/replays/areas/{map_name}.json": "not_page",
@@ -84,6 +86,8 @@ PAGE_ROUTES = {
     "/replays/{match_uuid}/control/heatmap.json": "not_page",
     "/replays/{match_uuid}/control/players.json": "not_page",
     "/replays/{match_uuid}/moments.json": "not_page",
+    "/replays/{match_uuid}/highlights.json": "not_page",
+    "/replays/{match_uuid}/potg": "not_page",
     "/replays/{match_uuid}/util.json": "not_page",
     "/replays/{match_uuid}/{round_number}.json": "not_page",
     "/replays/{match_uuid}/{round_number}/control.bin": "not_page",
@@ -808,7 +812,7 @@ KNOWN_KINDS = RECORDED_KINDS | frozenset({
     # checked (read live when the card is computed)
     "loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note",
     # replay kinds (app/services/replay_errors.py KINDS)
-    "box_conflict", "control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed", "heights_rejected",
+    "box_conflict", "control_unsupported", "control_failed", "gaps_failed", "moments_failed", "util_failed", "postplant_failed", "heights_rejected",
     "heights_out_of_tries", "given_up", "held", "upload_failed", "upload_held", "store_failed", "ack_missing",
     "stuck", "unlinked", "needs_a_person", "feature_failed",
 })

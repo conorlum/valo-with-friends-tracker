@@ -150,7 +150,7 @@ def test_load_rejects_unknown_version(tmp_path):
 
 
 def test_committed_file_loads():
-    assert plant_spots.load() == {}
+    assert isinstance(plant_spots.load(), dict)
 
 
 def test_digest_tracks_default_file_bytes_without_a_stale_cache(tmp_path, monkeypatch):

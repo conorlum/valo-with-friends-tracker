@@ -15,6 +15,7 @@ from app.db import Base
 from app.models.impact_score import ImpactScore
 from app.models.map_pool import MapPoolPatchNotes
 from app.models.match import Match, MatchSource
+from app.models.replay_postplant import ReplayRoundPostplant
 from app.models.replay import Replay, ReplayRoundUtil, UtilModel
 from app.models.round import Round
 from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
@@ -31,7 +32,7 @@ T = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
 def db(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=[UtilModel.__table__, ReplayRoundUtil.__table__,
+    Base.metadata.create_all(engine, tables=[UtilModel.__table__, ReplayRoundUtil.__table__, ReplayRoundPostplant.__table__,
                                              SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__,
                                              Match.__table__, Round.__table__, ImpactScore.__table__,
                                              Replay.__table__, MapPoolPatchNotes.__table__])

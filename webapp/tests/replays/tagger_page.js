@@ -19,13 +19,16 @@ const CORE = fs.readFileSync(path.join(SCRIPTS, "control_tagger_core.js"), "utf8
 const PANEL = fs.readFileSync(path.join(SCRIPTS, "control_tagger_features.js"), "utf8");
 const AREAS = fs.readFileSync(path.join(SCRIPTS, "control_tagger_areas.js"), "utf8");
 
-// A localStorage stand-in. `failWrites`: every write throws as a full or denied store does.
+// A localStorage stand-in. Reads/writes can throw as a full or denied store does.
 function memoryStorage(opts) {
   const m = new Map();
   return {
     m: m,
     opts: opts || {},
-    getItem(k) { return m.has(k) ? m.get(k) : null; },
+    getItem(k) {
+      if (this.opts.failReads) throw new Error("storage read denied");
+      return m.has(k) ? m.get(k) : null;
+    },
     setItem(k, v) {
       if (this.opts.failWrites) { const e = new Error("quota"); e.name = "QuotaExceededError"; throw e; }
       m.set(k, String(v));
@@ -103,7 +106,11 @@ function element(doc, id, tag) {
     closest() { return null; },
     getContext() { return this._ctx || (this._ctx = context2d()); },
     getBoundingClientRect() { return { left: 0, top: 0, right: 800, bottom: 800, width: 800, height: 800 }; },
-    setPointerCapture() {}, releasePointerCapture() {}, focus() { doc.activeElement = this; }, blur() {}, select() {}, scrollIntoView() { this.scrolled = true; },
+    capturedPointers: new Set(), releasedPointers: [],
+    setPointerCapture(id) { this.capturedPointers.add(id); },
+    releasePointerCapture(id) { this.capturedPointers.delete(id); this.releasedPointers.push(id); },
+    hasPointerCapture(id) { return this.capturedPointers.has(id); },
+    focus() { doc.activeElement = this; }, blur() {}, select() {}, scrollIntoView() { this.scrolled = true; },
     showModal() { this.open = true; }, close() { this.open = false; },
     click() { if (!this.disabled) this.dispatch("click"); },       // a disabled button takes no click
   };
@@ -130,7 +137,7 @@ function openPage(data, opts) {
     addEventListener() {},
   };
   document.body = element(document, "body");
-  const areaTools = ["brush", "erase", "fill", "pick"].map(tool => {
+  const areaTools = ["brush", "erase", "fill", "pick", "place", "shrink"].map(tool => {
     const el = element(document, "areaTool-" + tool, "button");
     el.dataset.areaTool = tool; els[el.id] = el; return el;
   });

@@ -411,14 +411,23 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
             util = _plain({"status": "ok", "data": made, "error": None})
         except Exception as error:  # noqa: BLE001 - the util extractor's failure, not the gap run's
             util = {"status": "failed", "data": None, "error": f"{type(error).__name__}: {error}"}
-        return {"run": run, "rows": out_rows, "moments": moments, "util": util}
+        # Post-plant evidence the same way (R5): its own fresh inputs, its failure is its own.
+        try:
+            from app.postplant import extract as pp
+
+            made = pp.round_postplant(engine.RoundInputs(blob, geo, link), blob)
+            postplant = _plain({"status": "ok", "data": made, "error": None})
+        except Exception as error:  # noqa: BLE001 - the post-plant extractor's failure, not the gap run's
+            postplant = {"status": "failed", "data": None, "error": f"{type(error).__name__}: {error}"}
+        return {"run": run, "rows": out_rows, "moments": moments, "util": util, "postplant": postplant}
     except _CacheFailed as error:
         run.update({"status": "failed", "notes": {}, "error": str(error)})
     except Exception as error:  # noqa: BLE001 - the gap run's failure, stored with its error
         run.update({"status": "failed", "notes": {},
                     "error": f"{type(error).__name__}: {error}\n{traceback.format_exc()[-1500:]}"})
     return {"run": run, "rows": [], "moments": {"status": "failed", "fights": [], "error": run["error"]},
-            "util": {"status": "failed", "data": None, "error": run["error"]}}
+            "util": {"status": "failed", "data": None, "error": run["error"]},
+            "postplant": {"status": "failed", "data": None, "error": run["error"]}}
 
 
 def _load_options(task: dict) -> dict:

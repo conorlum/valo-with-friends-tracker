@@ -33,6 +33,7 @@ class Painted:
     bands: dict[int, tuple[tuple[int, int, int], ...]]
     paths: dict[int, tuple[str, ...]]
     raw: bytes
+    ancestors: dict[int, frozenset[int]]
 
 
 @lru_cache(maxsize=1)
@@ -80,6 +81,26 @@ def _ancestors(names: dict[int, dict], name_id: int) -> list[int]:
     return lineage[::-1]
 
 
+def _all_ancestors(names: dict[int, dict], name_id: int) -> frozenset[int]:
+    """Include the name itself, checking every parent path against the same depth limit."""
+    def visit(current: int, path: tuple[int, ...]) -> set[int]:
+        if current in path:
+            raise ValueError(f"name {name_id} has a parent cycle")
+        if current not in names:
+            raise ValueError(f"name {name_id} has unknown parent id {current}")
+        if len(path) >= 3:
+            raise ValueError(f"name {name_id} is more than three levels deep")
+        row = names[current]
+        parents = [row["parent"]] if row["parent"] is not None else []
+        parents.extend(row.get("also_parents", []))
+        ancestors = {current}
+        for parent in parents:
+            ancestors.update(visit(parent, (*path, current)))
+        return ancestors
+
+    return frozenset(visit(name_id, ()))
+
+
 def _nonempty_string(value) -> bool:
     if not isinstance(value, str) or not value.strip():
         return False
@@ -114,14 +135,27 @@ def _validate_names(rows, errors: list[str]) -> dict[int, dict]:
         if "parent" not in row or (row["parent"] is not None and type(row["parent"]) is not int):
             errors.append(f"name {name_id} needs an integer parent id or null")
             continue
+        if "also_parents" in row:
+            also = row["also_parents"]
+            if (row["parent"] is None or not isinstance(also, list) or not also
+                    or any(type(parent) is not int or parent < 1 for parent in also)):
+                errors.append(f"name {name_id} needs non-empty also_parents of positive integer ids and a parent")
+                continue
+            if len(set(also)) != len(also) or name_id in also or row["parent"] in also:
+                errors.append(f"name {name_id} has duplicate or self ids in also_parents")
+                continue
         if not _nonempty_string(row.get("super")):
             errors.append(f"name {name_id} needs a super")
         if row.get("super_source") not in ("auto", "set"):
             errors.append(f"name {name_id} needs a super_source of auto or set")
         names[name_id] = row
     for name_id, row in names.items():
+        if any(parent not in names for parent in row.get("also_parents", [])):
+            errors.append(f"name {name_id} has unknown ids in also_parents")
+            continue
         try:
             root, *_ = _ancestors(names, name_id)
+            _all_ancestors(names, name_id)
         except ValueError as exc:
             errors.append(str(exc))
             continue
@@ -201,10 +235,14 @@ def validate(obj) -> list[str]:
 def dumps(painted_dict: dict) -> str:
     """Write deterministic JSON. The tagger uses the same field order and indentation."""
     obj = {key: painted_dict[key] for key in ("version", "map", "reviewed")}
-    obj["names"] = [
-        {key: row[key] for key in _NAME_FIELDS}
-        for row in sorted(painted_dict["names"], key=lambda row: row["id"])
-    ]
+    obj["names"] = []
+    for row in sorted(painted_dict["names"], key=lambda row: row["id"]):
+        name = {}
+        for key in _NAME_FIELDS:
+            name[key] = row[key]
+            if key == "parent" and isinstance(row.get("also_parents"), list) and row["also_parents"]:
+                name["also_parents"] = sorted(row["also_parents"])
+        obj["names"].append(name)
     obj["cells"] = painted_dict["cells"]
     obj["bands"] = {
         cell: sorted(painted_dict["bands"][cell])
@@ -233,7 +271,8 @@ def _read_painted(path: Path, raw: bytes) -> Painted | None:
     names = {row["id"]: row for row in sorted(obj["names"], key=lambda row: row["id"])}
     paths = {name_id: tuple(names[i]["name"] for i in _ancestors(names, name_id)) for name_id in names}
     bands = {int(cell): tuple(map(tuple, sorted(rows))) for cell, rows in obj["bands"].items()}
-    return Painted(names, _expand_cells(obj["cells"]), tuple(map(tuple, obj["cells"])), bands, paths, raw)
+    ancestors = {name_id: _all_ancestors(names, name_id) for name_id in names}
+    return Painted(names, _expand_cells(obj["cells"]), tuple(map(tuple, obj["cells"])), bands, paths, raw, ancestors)
 
 
 def from_raw(map_name: str, raw: bytes) -> Painted | None:
@@ -281,18 +320,25 @@ def area_at(
     if name_id == 0:
         return None
     row = painted.names[name_id]
-    return {"name": row["name"], "super": row["super"], "path": list(painted.paths[name_id]), "approximate": False}
+    result = {"name": row["name"], "super": row["super"], "path": list(painted.paths[name_id]), "approximate": False}
+    also = sorted({painted.names[i]["name"] for i in painted.ancestors[name_id]} - set(painted.paths[name_id]))
+    if also:
+        result["also"] = also
+    return result
 
 
 def tree(map_name: str, areas_dir: Path | None = None) -> list[dict] | None:
     painted = load_painted(map_name, areas_dir)
     if painted is None:
         return None
-    return [
-        {"name": row["name"], "parent": painted.names[row["parent"]]["name"] if row["parent"] else None,
-         "super": row["super"]}
-        for row in painted.names.values()
-    ]
+    rows = []
+    for row in painted.names.values():
+        entry = {"name": row["name"], "parent": painted.names[row["parent"]]["name"] if row["parent"] else None,
+                 "super": row["super"]}
+        if row.get("also_parents"):
+            entry["also_parents"] = sorted(painted.names[i]["name"] for i in row["also_parents"])
+        rows.append(entry)
+    return rows
 
 
 def all_names(map_name: str, areas_dir: Path | None = None, table: dict | None = None) -> list[str]:

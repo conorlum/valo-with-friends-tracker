@@ -30,7 +30,7 @@ from app.services import replay_moments  # noqa: E402
 @pytest.fixture
 def db(page_db, monkeypatch):
     feature_free_source(monkeypatch)      # the fixtures' control inputs, so round fingerprints exist
-    Friendship.__table__.create(page_db.get_bind())     # which team is the friends' (enemies are named by agent)
+    Friendship.__table__.create(page_db.get_bind(), checkfirst=True)  # also used by the viewer's clip labels
     return page_db
 
 

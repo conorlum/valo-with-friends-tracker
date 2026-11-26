@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -128,7 +129,18 @@ def main(argv: list[str] | None = None) -> int:
 
     mode = "read-only" if args.read_only else "read-write"
     print(f"[with_friends_db] database {database} ({mode}): {' '.join(command)}", flush=True)
-    return subprocess.call(build_command(command), cwd=WEBAPP_ROOT, env={**os.environ, "DATABASE_URL": url})
+    return run_child(build_command(command), cwd=WEBAPP_ROOT, env={**os.environ, "DATABASE_URL": url})
+
+
+def run_child(command, **kwargs):
+    """Run the command, leaving Ctrl+C to it: the console sends Ctrl+C to both processes,
+    and `subprocess.call` kills the child as soon as the parent is interrupted, which
+    would cut short a child that stops cleanly on Ctrl+C (`round_plants.py backfill`)."""
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        return subprocess.call(command, **kwargs)
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 if __name__ == "__main__":

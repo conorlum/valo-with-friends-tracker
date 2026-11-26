@@ -160,6 +160,12 @@ def test_threshold_and_null_outcomes_count_positions_only():
     assert result["adjusted_pct"] is not None
 
 
+def test_rotated_rectangle_spot_holds_only_points_inside_it():
+    spot = {"id": "strip", "site": "A", "u": 5000, "v": 5000, "w": 400, "h": 100, "angle": 90}
+    rows = [row(u=5000, v=5190), row(u=5190, v=5000)]
+    assert stats.assign_spots(rows, [spot]) == ["strip", "outside"]
+
+
 def test_nearest_containing_circle_site_boundary_tie_and_outside():
     rows = [row(u=130), row(u=500), row(u=100, v=150), row(u=120),
             row(site="B", u=100), row(site="C")]

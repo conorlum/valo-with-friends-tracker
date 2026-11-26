@@ -256,7 +256,7 @@ def test_health_names_the_recipe_the_condenser_stamps(tmp_path, stub):
         done = wait(base, post(base, vrf_bytes())[1]["id"])
         assert done["status"] == "done", done
         assert health["recipe"] and health["recipe"] == done["result"]["recipe"]
-        assert health["control"]["gaps_protocol"] == 3
+        assert health["control"]["gaps_protocol"] == 4
     finally:
         httpd.shutdown()
 

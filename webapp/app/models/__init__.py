@@ -26,6 +26,7 @@ from app.models.map_pool import MapPoolChange, MapPoolPatchNotes
 from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 from app.models.deploy_drain import DeployDrain
 from app.models.upload_token import UploadToken
+from app.models.replay_postplant import ReplayRoundPostplant, PostplantStatsCache
 from app.models import indexes  # noqa: F401  (attaches indexes kept out of digested model files)
 
 __all__ = [
@@ -58,4 +59,5 @@ __all__ = [
     "SiteEvent", "SiteEventMark", "SiteEventResolution",
     "DeployDrain",
     "UploadToken",
+    "ReplayRoundPostplant", "PostplantStatsCache",
 ]

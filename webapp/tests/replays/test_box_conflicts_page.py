@@ -124,7 +124,7 @@ def test_partial_never_has_box_heights(linked, records):
 def context(monkeypatch, linked, control, demo=False):
     page = {"match": {"rounds": [1], "linked": linked, "external_id": MATCH, "control": control, "gaps": False,
                       "asset": "Summit"},
-            "players": {}}
+            "players": {}, "rounds": {}}
     monkeypatch.setattr(router.replay_service, "page_context", lambda db, replay: page)
     monkeypatch.setattr(router.settings, "demo_mode", demo, raising=False)
     request = SimpleNamespace(query_params={}, scope={})

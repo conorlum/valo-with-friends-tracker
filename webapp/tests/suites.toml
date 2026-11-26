@@ -95,8 +95,10 @@ guards = [
 about = "Plant positions, layout selection, round outcomes, replay precedence and the derived plant cache."
 tests = ["tests/test_round_plants*.py", "tests/test_plant_stats.py", "tests/test_plant_spots.py", "tests/test_plant_namer.py",
   "tests/test_plants_page.py"]
-guards = ["app/models/round_plant.py", "app/services/round_plants.py", "app/services/plant_stats.py", "scripts/round_plants.py",
+guards = ["app/models/round_plant.py", "app/services/round_plants.py", "app/services/plant_position.py",
+  "app/data/plant_zones.json", "scripts/build_plant_zones.py", "app/services/plant_stats.py", "scripts/round_plants.py",
   "app/services/plant_spots.py", "app/static/data/plant_spots.json",
+  "app/services/plant_site_changes.py", "app/data/plant_site_changes.json",
   "scripts/plant_namer.py", "scripts/plant_namer.template.html", "scripts/plant_namer_core.js",
   "app/services/plant_page.py", "app/routers/plants.py", "app/templates/plants/*.html", "app/static/js/plants.js"]
 
@@ -208,7 +210,7 @@ guards = ["tests/replays/layout_golden.py", "tests/fixtures/control/layout_golde
 [browser]
 about = "Real browser journeys (Playwright, network blocked): fragments, event wiring, the replay canvas. Needs a browser installed."
 tests = ["tests/browser/**/test_*.py"]
-guards = ["app/static/js/**", "app/templates/**", "scripts/util_gallery/**", "scripts/render_util_gallery.py"]
+guards = ["app/static/js/**", "app/static/vendor/**", "app/templates/**", "scripts/util_gallery/**", "scripts/render_util_gallery.py"]
 
 # ---------------------------------------------------------------------------------------------------- Coach and analysis tabs
 
@@ -219,7 +221,7 @@ guards = [
   "app/coach/**", "app/routers/coach.py", "app/services/coach.py", "app/services/enemy_names.py", "app/models/coach.py",
   "app/templates/replays/_coach*.html", "app/static/js/coach.js", "app/static/data/callouts.json", "coach/**",
   "scripts/coach*", "app/replays/control_reasons.py", "app/replays/destroyed.py",
-  "scripts/area_pins.py", "tests/coach/data/area_cases.json", "alembic/versions/0033_coach_feedback_area.py",
+  "scripts/area_pins.py", "scripts/areas_files.py", "tests/coach/data/area_cases.json", "alembic/versions/0033_coach_feedback_area.py",
 ]
 
 [critical-util]
@@ -231,6 +233,18 @@ guards = [
   "app/coach/areas.py",
   "app/services/util_rebuild.py", "app/services/util_build_health.py", "app/services/util_build_remote.py", "app/routers/util_page.py", "app/templates/util/**", "app/static/js/critutil.js", "scripts/critical_util.py",
 ]
+
+[postplant]
+about = "Post-plant samples, physical spike lines and pure area/player figures on synthetic rounds."
+tests = ["tests/postplant/*.py"]
+guards = ["app/postplant/**", "app/models/replay_postplant.py", "alembic/versions/0038_replay_round_postplant.py", "app/services/postplant_stats.py", "app/services/postplant_page.py", "app/templates/plants/postplant.html", "app/templates/players/_postplant.html"]
+
+[highlights]
+about = "Replay highlights: ladder, clutch lives, kill windows, fight/util swings, DB inputs and routes."
+tests = ["tests/test_highlights_finder.py", "tests/replays/test_highlights_routes.py", "tests/replays/test_highlights_tab.py",
+         "tests/test_potg_card.py"]
+guards = ["app/services/highlights.py", "app/static/js/highlights.js","app/routers/replays.py", "app/services/replay_view.py",
+          "app/templates/replays/_potg.html", "app/static/js/potg.js", "tests/support/highlights.py"]
 
 [critical-moments]
 about = "Critical Moments: fights, trades, sight and util tags on toy rounds, a golden real round, the moments.json endpoint and tab."
@@ -269,6 +283,9 @@ guards = [
 [replay-web]
 about = "Replays on the site: upload and held uploads, storage and links, routes, re-parse queue, match states, the viewer and its JS."
 tests = [
+  "tests/replays/test_clip_export.py",
+  "tests/replays/test_viewer_until.py",
+  "tests/replays/test_viewer_draw_at.py",
   "tests/test_map_rotation.py",
   "tests/replays/test_areas_route.py",
   "tests/replays/test_replay_store.py", "tests/replays/test_replay_routes.py", "tests/replays/test_replay_upload.py",
@@ -285,7 +302,7 @@ guards = [
   "app/services/replays.py", "app/services/replay_upload.py", "app/services/replay_progress.py",
   "app/services/replay_reparse_auto.py", "app/services/replay_match_states.py", "app/services/replay_view.py",
   "app/services/replay_archive_sync.py", "app/services/state_replay.py", "app/templates/replays/**",
-  "app/static/js/replay.js", "app/models/replay.py", "scripts/archive_replays.py",
+  "app/static/js/replay.js", "app/static/js/clip_export.js", "app/models/replay.py", "scripts/archive_replays.py",
   "scripts/fetch_archived_replay.py", "scripts/_admin_client.py", "scripts/harvest_util_samples.py",
   "scripts/util_gallery/**", "scripts/render_util_gallery.py",
   "app/services/upload_tokens.py", "app/models/upload_token.py", "alembic/versions/0037_upload_tokens.py",
@@ -322,7 +339,7 @@ tests = [
 guards = [
   "app/control/__init__.py", "app/control/engine.py", "app/control/utility.py", "app/control/utility.json",
   "app/control/hearing.json", "app/control/mollies.py", "app/control/encode.py", "app/control/task.py",
-  "app/control/fight_swing.py", "app/control/geometry.py", "app/replays/control_format.py", "app/replays/control_reasons.py",
+  "app/postplant/**", "app/control/fight_swing.py", "app/control/geometry.py", "app/replays/control_format.py", "app/replays/control_reasons.py",
   "app/replays/destroyed.py", "app/replays/control_inputs.py", "scripts/control_cases.py", "scripts/render_control_scenes.py",
   "tests/fixtures/control/**", "tests/replays/control_toys.py", "tests/replays/conftest.py",
 ]
@@ -402,13 +419,18 @@ guards = [
 about = "Timing gaps: chokes, the observer and route history, predicted gaps and back-shots, storage, views, the gaps layer and the patterns page."
 tests = ["tests/replays/test_gaps_*.py", "tests/replays/test_gap_patterns*.py"]
 guards = [
-  "app/gaps/**", "app/control/observe.py", "app/control/routes.py", "app/control/chokes.py", "app/replays/choke_assets.py",
+  "app/gaps/**", "app/postplant/**", "app/control/observe.py", "app/control/routes.py", "app/control/chokes.py", "app/replays/choke_assets.py",
   "app/services/replay_gaps*.py", "app/services/gap_patterns.py", "app/routers/gap_patterns.py",
   "app/templates/gaps/**", "app/static/js/replay_gaps.js", "app/static/js/gap_patterns.js",
   "app/static/data/**/*.chokes.json",
 ]
 
 # ---------------------------------------------------------------------------------------------------- The tests themselves
+
+[clutch-research]
+about = "Offline clutch research: situation windows, measures, statistics, private exports and the cache-only CLI."
+tests = ["tests/research/test_clutch_*.py"]
+guards = ["scripts/clutch_*.py"]
 
 [test-harness]
 about = "The test machinery: lane selection and required prerequisites, the Postgres guard, the architecture and golden checks, this catalog."

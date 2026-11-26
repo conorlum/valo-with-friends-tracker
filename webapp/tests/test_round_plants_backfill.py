@@ -21,6 +21,8 @@ from tests.test_round_plants import db, planted_match
 def ledger(tmp_path, monkeypatch):
     path = tmp_path / "unavailable.json"
     monkeypatch.setattr(plants, "UNAVAILABLE_PATH", path, raising=False)
+    monkeypatch.setattr(plants, "PAUSE_PATH", tmp_path / "round_plants.pause", raising=False)
+    monkeypatch.setattr(plants, "CORRECTED_PATH", tmp_path / "corrected.json", raising=False)
     return path
 
 
@@ -41,6 +43,7 @@ def payload(*numbers):
 
 
 def run(db, fetch, **kwargs):
+    kwargs.setdefault("alert", lambda: None)
     return plants.backfill(db, object(), limit=None, fetch=fetch,
                            sleep=lambda _: None, uniform=lambda a, b: a, **kwargs)
 
@@ -246,6 +249,7 @@ def test_cli_verification_exit_resume_and_status(db, monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "SessionLocal", lambda: db)
     monkeypatch.setattr(cli, "tracker_page", fake_page)
+    monkeypatch.setattr(cli, "resume_python", lambda: r".\.venv313\Scripts\python.exe")
 
     def fetch(page, key):
         raise TrackerVerificationTimeout()
@@ -302,7 +306,8 @@ def test_fetch_match_json_classifies_last_missing_response(monkeypatch, statuses
     monkeypatch.setattr(adapter, "wait_for_owner", lambda page: None)
     with pytest.raises(RuntimeError) as error:
         adapter.fetch_match_json(page, "synthetic-match")
-    expected = verification.TrackerMatchUnavailable if unavailable else RuntimeError
+    expected = (verification.TrackerMatchUnavailable if unavailable
+                else verification.TrackerRateLimited if statuses[-1] == 429 else RuntimeError)
     assert type(error.value) is expected
     assert callbacks == {}
 
@@ -476,7 +481,8 @@ def test_status_200_json_without_data_is_unavailable_only_when_last(monkeypatch,
     from app.adapters import tracker_verification as verification
 
     got = _respond(monkeypatch, [(status, lambda: body) for status in statuses])
-    assert got is (verification.TrackerMatchUnavailable if unavailable else RuntimeError)
+    assert got is (verification.TrackerMatchUnavailable if unavailable
+                   else verification.TrackerRateLimited if statuses[-1] == 429 else RuntimeError)
 
 
 @pytest.mark.parametrize("responses", [
@@ -573,3 +579,343 @@ def test_status_reports_coverage_per_map_and_source(db, ledger, monkeypatch, cap
     assert "coverage 50.0%" in lines["Bind"]
     assert "planted rounds 1" in lines["Ascent"] and "replay 1, tracker 0" in lines["Ascent"]
     assert "coverage 100.0%" in lines["Ascent"]
+
+
+# --- Pause and resume -------------------------------------------------------------
+
+
+def test_stop_before_the_first_match_fetches_nothing(db):
+    matches(db, 2)
+    fetched = []
+    result = run(db, lambda page, key: fetched.append(key), should_stop=lambda: "paused")
+    assert fetched == [] and result["stopped"] == "paused" and result["left"] == 2
+
+
+def test_stop_requested_during_a_match_keeps_it_and_stops_before_the_next(db, ledger):
+    ids = matches(db, 3)
+    fetched, requested = [], []
+
+    def fetch(page, key):
+        fetched.append(key)
+        requested.append(True)
+        return payload(1)
+
+    result = run(db, fetch, should_stop=lambda: "interrupted" if requested else None)
+    assert fetched == ids[:1]
+    assert result["done"] == 1 and result["stopped"] == "interrupted" and result["left"] == 2
+    assert len(db.scalars(select(RoundPlant)).all()) == 1
+
+
+def test_stop_after_the_pacing_wait_skips_the_fetch(db):
+    ids = matches(db, 3)
+    fetched, waited = [], []
+    result = plants.backfill(db, None, limit=None, fetch=lambda page, key: (fetched.append(key), payload(1))[1],
+                             sleep=waited.append, uniform=lambda a, b: a,
+                             should_stop=lambda: "paused" if waited else None)
+    assert fetched == ids[:1] and waited == [5] and result["stopped"] == "paused"
+
+
+@pytest.mark.parametrize("error", [ValueError("driver gone"), plants.TrackerMatchUnavailable("x")])
+def test_a_match_broken_by_the_stop_is_neither_failed_nor_skip_listed(db, ledger, error):
+    ids = matches(db, 2)
+    requested = []
+
+    def fetch(page, key):
+        requested.append(True)
+        raise error
+
+    result = run(db, fetch, should_stop=lambda: "interrupted" if requested else None)
+    assert result["failed"] == result["unavailable"] == result["done"] == 0
+    assert result["stopped"] == "interrupted" and result["left"] == 2
+    assert not ledger.exists() or json.loads(ledger.read_text()) == []
+    assert plants.pending_matches(db)[0].external_id == ids[0]
+
+
+def test_archive_keeps_each_usable_payload(db, tmp_path):
+    ids = matches(db, 2)
+    archive = tmp_path / "archive"
+    run(db, lambda page, key: payload(1) if key == ids[0] else {"no": "segments"}, archive=archive)
+    assert sorted(path.name for path in archive.iterdir()) == [f"{ids[0]}.json.gz"]
+    assert json.loads(gzip.decompress((archive / f"{ids[0]}.json.gz").read_bytes())) == payload(1)
+
+
+def test_pause_file_round_trip():
+    assert not plants.pause_requested()
+    plants.request_pause()
+    assert plants.pause_requested()
+    assert plants.clear_pause() is True
+    assert plants.clear_pause() is False and not plants.pause_requested()
+
+
+def test_cli_pause_command_needs_no_database(monkeypatch, capsys):
+    from scripts import round_plants as cli
+
+    monkeypatch.setattr(cli, "SessionLocal", lambda: pytest.fail("pause opened the database"))
+    assert cli.main(["pause"]) == 0
+    assert plants.pause_requested() and "pause requested" in capsys.readouterr().out
+
+
+def test_cli_clears_a_leftover_pause_and_a_paused_run_exits_zero(db, monkeypatch, capsys, tmp_path):
+    from scripts import round_plants as cli
+
+    ids = matches(db, 3)
+    plants.request_pause()
+
+    @contextmanager
+    def fake_page():
+        yield object()
+
+    def fetch(page, key):
+        plants.request_pause()  # the owner pauses while the first match loads
+        return payload(1)
+
+    monkeypatch.setattr(cli, "SessionLocal", lambda: db)
+    monkeypatch.setattr(cli, "tracker_page", fake_page)
+    monkeypatch.setattr(cli, "fetch_match_json", fetch)
+    monkeypatch.setattr(cli.time, "sleep", lambda _: None)
+    assert cli.main(["backfill", "--archive", str(tmp_path / "a b")]) == 0
+    out = capsys.readouterr().out
+    assert "removed a leftover pause file" in out and "stopped: paused" in out
+    assert f'--archive "{tmp_path / "a b"}"' in next(line for line in out.splitlines() if line.startswith("Resume:"))
+    assert "done: 1; left: 2" in out
+    assert not plants.pause_requested()
+    assert (tmp_path / "a b" / f"{ids[0]}.json.gz").exists()
+
+
+def test_resume_names_the_interpreter_with_friends_db_uses(monkeypatch, tmp_path):
+    from scripts import round_plants as cli
+    from scripts import with_friends_db
+
+    main = tmp_path / "repo" / "webapp"
+    worktree = tmp_path / "repo" / ".claude" / "worktrees" / "w" / "webapp"
+    worktree.mkdir(parents=True)
+    (main / ".venv313" / "Scripts").mkdir(parents=True)
+    (main / ".venv313" / "Scripts" / "python.exe").write_text("")
+    monkeypatch.setattr(cli, "WEBAPP", worktree)
+    assert cli.resume_python() == r"..\..\..\..\webapp\.venv313\Scripts\python.exe"
+    monkeypatch.setattr(cli, "WEBAPP", main)
+    assert cli.resume_python() == r".\.venv313\Scripts\python.exe"
+    assert with_friends_db.find_ingest_python  # the same lookup the wrapper runs with
+
+
+def test_a_429_waits_and_retries_the_same_match(db, monkeypatch, capsys):
+    from app.adapters.tracker_verification import TrackerRateLimited
+
+    monkeypatch.setattr(plants, "RATE_LIMIT_ATTENTION_S", 3); monkeypatch.setattr(plants, "RATE_LIMIT_RETRY_S", 3); monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (4,))
+    ids = matches(db, 2)
+    fetched, slept = [], []
+
+    def fetch(page, key):
+        fetched.append(key)
+        if len(fetched) <= 2:
+            raise TrackerRateLimited("status 429")
+        return payload(1)
+
+    result = plants.backfill(db, None, limit=None, fetch=fetch, sleep=slept.append,
+                             uniform=lambda a, b: 5, alert=lambda: None)
+    assert fetched == [ids[0], ids[0], ids[0], ids[1]]
+    assert result["done"] == 2 and result["failed"] == 0 and result["left"] == 0
+    assert slept == [1] * 3 + [1] * 4 + [5]
+    out = capsys.readouterr().out; assert "human check" in out and "still 429: waiting" in out
+
+
+def test_a_429_after_every_wait_is_one_failure_not_skip_listed(db, ledger, monkeypatch):
+    from app.adapters.tracker_verification import TrackerRateLimited
+
+    monkeypatch.setattr(plants, "RATE_LIMIT_ATTENTION_S", 2); monkeypatch.setattr(plants, "RATE_LIMIT_RETRY_S", 2); monkeypatch.setattr(plants, "RATE_LIMIT_COOLDOWNS_S", (2,))
+    ids = matches(db, 1)
+    fetched = []
+
+    def fetch(page, key):
+        fetched.append(key)
+        raise TrackerRateLimited("status 429")
+
+    result = run(db, fetch)
+    assert fetched == ids * 3
+    assert (result["failed"], result["unavailable"], result["left"]) == (1, 0, 1)
+    assert json.loads(ledger.read_text()) == []
+
+
+def test_a_stop_during_the_wait_pauses_without_a_failure(db, monkeypatch):
+    from app.adapters.tracker_verification import TrackerRateLimited
+
+    monkeypatch.setattr(plants, "RATE_LIMIT_ATTENTION_S", 100); monkeypatch.setattr(plants, "RATE_LIMIT_RETRY_S", 100)
+    matches(db, 2)
+    fetched, slept = [], []
+
+    def fetch(page, key):
+        fetched.append(key)
+        raise TrackerRateLimited("status 429")
+
+    result = plants.backfill(db, None, limit=None, fetch=fetch, sleep=slept.append,
+                             uniform=lambda a, b: 5, alert=lambda: None,
+                             should_stop=lambda: "paused" if len(slept) >= 10 else None)
+    assert len(fetched) == 1 and len(slept) == 10
+    assert result["stopped"] == "paused" and result["failed"] == 0 and result["left"] == 2
+
+
+def facing_summary(view=0.0, who="planter"):
+    return {"type": "round-summary", "attributes": {"round": 1}, "metadata": {"plant": {
+        "site": "B", "location": {"x": 1000, "y": 2000}, "platformUserIdentifier": "planter",
+        "playerLocations": [{"platformUserIdentifier": "other", "location": {"x": 0, "y": 0}, "viewRadians": 3.0},
+                            {"platformUserIdentifier": who, "location": {"x": 1000, "y": 2000},
+                             "viewRadians": view}]}}}
+
+
+@pytest.mark.parametrize("view,x,y", [(0.0, 1070, 2000), (1.5707963267948966, 1000, 2070)])
+def test_spike_is_moved_in_front_of_the_planter(view, x, y):
+    plant = plants.plant_from_summary(facing_summary(view))
+    assert plant["corrected"] is True
+    assert plant["x"] == pytest.approx(x) and plant["y"] == pytest.approx(y)
+
+
+@pytest.mark.parametrize("summary", [facing_summary(who="someone else"), facing_summary(view=None),
+                                     facing_summary(view=float("nan"))])
+def test_a_plant_without_the_planters_facing_keeps_tracker_position(summary):
+    assert plants.plant_from_summary(summary) == {"site": "B", "x": 1000, "y": 2000}
+
+
+def test_rows_saved_before_the_fix_are_refetched_once_and_updated(db, ledger):
+    ids = matches(db, 2)
+    match = db.scalar(select(Match).where(Match.external_id == ids[1]))
+    plants.upsert_plants(db, match, [dict(round_number=1, u=1, v=2, site="B")], source="tracker")
+    db.commit()
+    assert plants.crawl_queue(db) == [ids[1], ids[0]]
+    fetched = []
+    result = run(db, lambda page, key: (fetched.append(key), {"segments": [facing_summary()]})[1])
+    assert fetched == [ids[1], ids[0]]
+    assert result["updated"] == 1 and result["inserted"] == 1 and result["no_facing"] == 0 and result["left"] == 0
+    row = db.scalar(select(RoundPlant).where(RoundPlant.match_id == match.id))
+    assert (row.u, row.v) != (1, 2)
+    assert plants.crawl_queue(db) == []
+
+
+def test_a_stopped_fix_resumes_after_the_last_saved_match(db, ledger):
+    ids = matches(db, 3)
+    for key in ids:
+        match = db.scalar(select(Match).where(Match.external_id == key))
+        plants.upsert_plants(db, match, [dict(round_number=1, u=1, v=2, site="B")], source="tracker")
+    db.commit()
+    requested = []
+    run(db, lambda page, key: (requested.append(key), {"segments": [facing_summary()]})[1],
+        should_stop=lambda: "paused" if requested else None)
+    assert requested == ids[:1] and plants.crawl_queue(db) == ids[1:]
+
+
+def test_replay_position_is_never_replaced_by_the_refetch(db, ledger):
+    match = planted_match(db, external_id="synthetic-replay")
+    plants.upsert_plants(db, match, [dict(round_number=1, u=1234, v=5678, site="A")], source="replay")
+    db.commit()
+    assert plants.crawl_queue(db) == []
+
+
+def test_backfill_uses_the_requested_pace(db):
+    matches(db, 2)
+    ranges = []
+    plants.backfill(db, None, limit=None, fetch=lambda page, key: payload(1), sleep=lambda _: None,
+                    uniform=lambda a, b: (ranges.append((a, b)), a)[1], pace=(3, 6))
+    assert ranges == [(3, 6)]
+
+
+@pytest.mark.parametrize("settle,waits", [(0, 0), (1, 1), (8, 8)])
+def test_fetch_leaves_the_page_once_settled(monkeypatch, settle, waits):
+    from app.adapters import trackergg_browserstate_source as adapter
+
+    callbacks, waited = {}, []
+
+    def goto(*args, **kwargs):
+        callbacks["response"](SimpleNamespace(url=adapter.MATCH_API_MARKER_TMPL.format(match_id="synthetic-match"),
+                                              status=200, json=lambda: {"data": {"segments": []}}))
+
+    page = SimpleNamespace(on=lambda name, callback: callbacks.update({name: callback}), goto=goto,
+                           wait_for_timeout=waited.append, remove_listener=lambda name, callback: callbacks.pop(name))
+    monkeypatch.setattr(adapter, "wait_for_owner", lambda page: None)
+    assert adapter.fetch_match_json(page, "synthetic-match", settle_seconds=settle) == {"segments": []}
+    assert len(waited) == waits
+
+
+def test_fetch_still_waits_for_a_late_response_with_no_settle(monkeypatch):
+    from app.adapters import trackergg_browserstate_source as adapter
+
+    callbacks, waited = {}, []
+
+    def wait(milliseconds):
+        waited.append(milliseconds)
+        if len(waited) == 3:
+            callbacks["response"](SimpleNamespace(url=adapter.MATCH_API_MARKER_TMPL.format(match_id="synthetic-match"),
+                                                  status=200, json=lambda: {"data": {"segments": []}}))
+
+    page = SimpleNamespace(on=lambda name, callback: callbacks.update({name: callback}), goto=lambda *a, **k: None,
+                           wait_for_timeout=wait, remove_listener=lambda name, callback: callbacks.pop(name))
+    monkeypatch.setattr(adapter, "wait_for_owner", lambda page: None)
+    assert adapter.fetch_match_json(page, "synthetic-match", settle_seconds=0) == {"segments": []}
+    assert len(waited) == 3
+
+
+def test_cli_pace_and_settle_reach_the_crawl_and_the_resume_line(db, monkeypatch, capsys):
+    from scripts import round_plants as cli
+
+    matches(db, 3)
+    seen, slept = [], []
+
+    @contextmanager
+    def fake_page():
+        yield object()
+
+    def fetch(page, key, **options):
+        seen.append(options)
+        plants.request_pause()
+        return payload(1)
+
+    monkeypatch.setattr(cli, "SessionLocal", lambda: db)
+    monkeypatch.setattr(cli, "tracker_page", fake_page)
+    monkeypatch.setattr(cli, "fetch_match_json", fetch)
+    assert cli.main(["backfill", "--pace", "3", "6", "--settle", "1"]) == 0
+    assert seen == [{"settle_seconds": 1}]
+    resume = next(line for line in capsys.readouterr().out.splitlines() if line.startswith("Resume:"))
+    assert "--pace 3 6 --settle 1" in resume
+
+
+@pytest.mark.parametrize("arguments", [["--pace", "1", "4"], ["--pace", "5", "3"], ["--settle", "-1"]])
+def test_cli_refuses_a_pace_below_the_floor(arguments):
+    from scripts import round_plants as cli
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.main(["backfill", *arguments])
+    assert stopped.value.code == 2
+
+
+def test_each_match_prints_one_running_line(db, ledger, capsys):
+    ids = matches(db, 3)
+
+    def fetch(page, key):
+        if key == ids[1]:
+            raise plants.TrackerMatchUnavailable("gone")
+        return payload(1)
+
+    run(db, fetch)
+    lines = [line for line in capsys.readouterr().out.splitlines() if "/3]" in line]
+    assert len(lines) == 3
+    assert "[1/3]" in lines[0] and "+1 new, 0 fixed" in lines[0] and "(this run: 1)" in lines[0]
+    assert "[2/3]" in lines[1] and "unavailable, skip-listed" in lines[1]
+    assert "[3/3]" in lines[2] and "(this run: 2)" in lines[2]
+
+
+def test_owner_stop_first_ctrl_c_asks_second_interrupts(capsys):
+    import signal
+    from scripts import round_plants as cli
+
+    before = signal.getsignal(signal.SIGINT)
+    with cli.owner_stop() as should_stop:
+        handler = signal.getsignal(signal.SIGINT)
+        assert should_stop() is None
+        plants.request_pause()
+        assert should_stop() == "paused"
+        plants.clear_pause()
+        assert should_stop() is None
+        handler(signal.SIGINT, None)
+        assert "PAUSING" in capsys.readouterr().out
+        assert should_stop() == "paused"
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+    assert signal.getsignal(signal.SIGINT) is before

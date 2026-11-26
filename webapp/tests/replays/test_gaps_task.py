@@ -110,6 +110,47 @@ def test_a_util_failure_never_fails_the_gap_run_or_the_moments(tmp_path, monkeyp
     assert result["gaps"]["util"] == {"status": "failed", "data": None, "error": "ValueError: no util today"}
 
 
+def _planted_task(tmp_path, monkeypatch, **extra):
+    """The toy round with a Bomb row (a completed plant at 10 s)."""
+    from control_toys import toy_ability
+    task = _task(tmp_path, monkeypatch, **extra)
+    data = blob({0: ("A", [(0.0, *A_SPOT, 180)]), 5: ("B", [(0.0, *B_SPOT, 180)])}, t_end=40.0,
+                util=[toy_ability("Bomb", "Spike", *A_SPOT, 0, t=10.0, t1=20.0, kind="Bomb")])
+    task["blob"] = gzip.compress(json.dumps(data).encode("utf-8"))
+    return task
+
+
+def test_a_gap_run_carries_the_rounds_postplant(tmp_path, monkeypatch):
+    result = compute_task(_planted_task(tmp_path, monkeypatch))
+    postplant = result["gaps"]["postplant"]
+    assert postplant["status"] == "ok" and postplant["error"] is None
+    assert postplant["data"]["plant"] is not None and postplant["data"]["samples"]
+    assert json.loads(json.dumps(postplant)) == postplant, "plain JSON"
+    only = compute_task(_planted_task(tmp_path, monkeypatch, gaps_only=True))
+    assert only["gaps"]["postplant"] == postplant, "a gaps-only run gives the same evidence"
+
+
+def test_a_postplant_failure_never_fails_the_gap_run_moments_or_util(tmp_path, monkeypatch):
+    good = compute_task(_planted_task(tmp_path, monkeypatch))["gaps"]
+    from app.postplant import extract
+
+    monkeypatch.setattr(extract, "round_postplant", lambda *a, **k: (_ for _ in ()).throw(ValueError("no post-plant")))
+    result = compute_task(_planted_task(tmp_path, monkeypatch))
+    assert result["status"] == "ok"
+    gaps = result["gaps"]
+    assert gaps["postplant"] == {"status": "failed", "data": None, "error": "ValueError: no post-plant"}
+    assert gaps["run"] == good["run"] and gaps["moments"] == good["moments"] and gaps["util"] == good["util"]
+    assert gaps["rows"] == good["rows"]
+
+
+def test_a_failed_gap_run_fails_its_postplant_with_the_runs_error(tmp_path, monkeypatch):
+    from app.gaps import detect
+    monkeypatch.setattr(detect.GapDetector, "finish", lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+    gaps = compute_task(_planted_task(tmp_path, monkeypatch))["gaps"]
+    assert gaps["run"]["status"] == "failed"
+    assert gaps["postplant"] == {"status": "failed", "data": None, "error": gaps["run"]["error"]}
+
+
 def test_gaps_only_uses_the_cache_written_by_a_full_run(tmp_path, monkeypatch):
     first = compute_task(_task(tmp_path, monkeypatch))
     assert first["gaps"]["run"]["status"] == "ok" and first["gaps"]["rows"], "the toy has gaps"
@@ -470,7 +511,8 @@ def _command(monkeypatch, gaps_result):
                "gaps_revision": replay_gaps.GAPS_REVISION, "chokes_hash": choke_assets.asset_hash(task["map"]), **gaps_result}
         result = {"status": "ok", "geometry": rc.geometry_inputs(task["map"]), "gaps": {"run": run, "rows": [],
                                                                            "moments": {"status": "ok", "fights": [], "error": None},
-                                                                           "util": {"status": "ok", "data": {"v": 1}, "error": None}}, "key": task["key"],
+                                                                           "util": {"status": "ok", "data": {"v": 1}, "error": None},
+                                                                           "postplant": {"status": "ok", "data": {"v": 1}, "error": None}}, "key": task["key"],
                   "seconds": 0.0, "peak": None}
         if not task["gaps_only"]:
             result.update({"data": b"d", "summary": b"s", "missing": {}})
@@ -507,6 +549,9 @@ def test_an_ok_gap_run_is_stored_without_rewriting_control(factory, db, linked, 
     after = db.get(ReplayRoundControl, (linked.id, 1))
     assert after.data == data and after.computed_at == computed_at
     assert db.query(ReplayGap).count() == 0
+    from app.models.replay_postplant import ReplayRoundPostplant
+    stored = db.get(ReplayRoundPostplant, (linked.id, 1))
+    assert stored is not None and stored.status == "ok" and stored.data == {"v": 1}, "the command passes postplant on"
     assert _plan_gaps(db) == [p for p in _plan_gaps(db) if p.round_number != 1]
 
 
