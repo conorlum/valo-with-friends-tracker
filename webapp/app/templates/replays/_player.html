@@ -49,8 +49,8 @@
         <label class="replay-speed">Speed <select data-replay-speed></select></label>
         <span class="replay-clock" data-replay-clock aria-live="off"></span>{% if linked %}
         <span class="replay-badge" data-replay-badge title="Players alive now: Team 1 v Team 2" hidden></span>{% endif %}
-        <button type="button" class="replay-button" data-replay-next>Next round</button>
         {% if clip_export %}<button type="button" class="replay-button" data-replay-export>Export clip</button>{% endif %}
+        <button type="button" class="replay-button" data-replay-next>Next round</button>
       </div>
       {% if clip_export %}
       <fieldset data-clip-panel hidden aria-label="Export clip">

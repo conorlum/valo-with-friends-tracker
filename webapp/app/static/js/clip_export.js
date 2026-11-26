@@ -186,9 +186,10 @@
       q("cut").disabled = !!active || req.segments.length < 2;
       q("estimate").textContent = "Estimated size: " + megabytes(size);
       q("note").hidden = size <= LIMIT;
-      q("export").disabled = true;
+      // The button stays as it was while the codec is asked: typing in a field and then pressing Export fires the
+      // field's change (a refresh) on mousedown, and a button disabled there would lose that click.
       var codec = await pickCodec(global.VideoEncoder, req.width, req.width + BAR);
-      if (rev !== revision) return;
+      if (rev !== revision || active) return;
       supported = !!codec;
       q("message").textContent = supported ? "" : "H.264 MP4 export is not supported by this browser.";
       q("export").disabled = !!active || !supported || req.t_out <= req.t_in;
