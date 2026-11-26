@@ -6,6 +6,7 @@
 <title>Plant spot namer</title>
 <style>
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin: 0; background: #111820; color: #e5edf5; font: 15px system-ui, sans-serif; }
   header { padding: 20px 24px 12px; }
   h1 { font-size: 23px; margin: 0 0 8px; }
@@ -16,7 +17,7 @@
   button { cursor: pointer; }
   button:disabled { opacity: .45; cursor: default; }
   button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #67e8b3; }
-  #viewport { width: 100%; aspect-ratio: 1; position: relative; touch-action: none; background: #0b1015; }
+  #viewport { width: 100%; aspect-ratio: 1; position: relative; overflow: hidden; touch-action: none; background: #0b1015; }
   #rotated { position: absolute; inset: 0; transform-origin: center; }
   #minimap, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
   #minimap { user-select: none; pointer-events: none; }
@@ -39,6 +40,8 @@
   <h1>Plant spot namer</h1>
   <p>Name and review the circles, then export. Export saves the named spots only, so maps can be done one at a time; unnamed proposals are left out.</p>
   <p class="muted">Drag a circle to move it; drag its edge to resize. Add places a circle at your next map click.
+    Make rectangle keeps the circle's size; drag a selected rectangle's square handles to resize each side or corner,
+    and its round handle to rotate. Fit to plants makes a rectangle around the plants inside the selected shape.
     Merge keeps the selected spot's name and covers both circles. Undo reverses one edit, including a whole drag.
     Edits stay in this tab until export; reloading restores this page's starting data.</p>
 </header>
@@ -47,9 +50,10 @@
     <nav>
       <label>Map layout <select id="map"></select></label>
       <label>Site <select id="site"></select></label>
+      <button id="zoom">Whole map</button>
       <span id="total"></span>
     </nav>
-    <div id="viewport"><div id="rotated"><img id="minimap" alt="Selected map minimap" draggable="false"><canvas id="overlay" width="1000" height="1000" aria-label="Plant positions and editable spot circles"></canvas></div></div>
+    <div id="viewport"><div id="rotated"><img id="minimap" alt="Selected map minimap" draggable="false"><canvas id="overlay" width="3000" height="3000" aria-label="Plant positions and editable spot circles"></canvas></div></div>
     <p id="outside"></p>
   </section>
   <aside aria-label="Spot editor">
@@ -61,8 +65,11 @@
       <label>Name <input id="name" type="text" autocomplete="off"></label>
       <label>U <input id="u" type="number" min="0" max="10000" step="any"></label>
       <label>V <input id="v" type="number" min="0" max="10000" step="any"></label>
-      <label>Radius <input id="r" type="number" min="0.01" max="10000" step="any"></label>
-      <div class="actions"><button id="discard">Discard</button></div>
+      <label id="rField">Radius <input id="r" type="number" min="0.01" max="10000" step="any"></label>
+      <label id="wField" hidden>Width <input id="w" type="number" min="0.01" max="10000" step="any"></label>
+      <label id="hField" hidden>Height <input id="h" type="number" min="0.01" max="10000" step="any"></label>
+      <label id="angleField" hidden>Angle <input id="angle" type="number" min="-180" max="180" step="any"></label>
+      <div class="actions"><button id="shape">Make rectangle</button><button id="fit">Fit to plants</button><button id="discard">Discard</button></div>
       <label>Merge with <select id="mergeWith"></select></label>
       <button id="merge">Merge two</button>
     </fieldset>
@@ -80,7 +87,9 @@ const model = PlantNamer.create(DATA.layouts);
 const el = id => document.getElementById(id);
 const mapPicker = el('map'), sitePicker = el('site'), canvas = el('overlay'), viewport = el('viewport');
 const ctx = canvas.getContext('2d');
-let key, site, selected = null, adding = false, gesture = null;
+ctx.setTransform(3, 0, 0, 3, 0, 0);   /* drawn in 0..1000 units, sharp when zoomed */
+let key, site, selected = null, adding = false, gesture = null, wholeMap = false, view = {zoom: 1, x: 0, y: 0};
+const FIELDS = ['name', 'u', 'v', 'r', 'w', 'h', 'angle'];
 const palette = ['#67e8b3', '#7db9ff', '#ffd06b', '#ef9dff', '#ff8d8d', '#87e1ed', '#d2e87c', '#d7b49e', '#b8abff', '#ffb5cf'];
 const currentSpots = () => model.spots(key, site);
 const selectedSpot = () => currentSpots().find(s => s.id === selected);
@@ -102,11 +111,21 @@ function chooseMap() {
 function chooseSite() {
   site = sitePicker.value; selected = null; adding = false; gesture = null;
   el('minimap').src = DATA.maps[key].image;
-  el('rotated').style.transform = 'rotate(' + DATA.maps[key].rotation * 90 + 'deg)';
+  applyView();
   message(); render();
 }
+function applyView() {
+  const turns = DATA.maps[key].rotation;
+  const framed = DATA.maps[key].points[site].length ? DATA.maps[key].points[site]
+    : currentSpots().map(s => [s.u, s.v]);
+  view = wholeMap ? {zoom: 1, x: 0, y: 0} : PlantNamer.siteView(framed, turns);
+  el('rotated').style.transform = 'translate(' + view.x + '%, ' + view.y + '%) scale(' + view.zoom + ') rotate(' + turns * 90 + 'deg)';
+  el('zoom').textContent = wholeMap ? 'Zoom to site' : 'Whole map';
+}
+const handleReach = () => 30 * 10000 / el('rotated').getBoundingClientRect().width;
 function draw() {
   ctx.clearRect(0, 0, 1000, 1000);
+  const size = 1 / view.zoom;
   const spots = currentSpots().map(s => gesture?.id === s.id ? gesture.preview : s);
   const points = DATA.maps[key].points[site], counts = new Map();
   let outside = 0;
@@ -114,17 +133,34 @@ function draw() {
     let owner = -1, nearest = Infinity;
     spots.forEach((s, i) => {
       const distance = Math.hypot(s.u - u, s.v - v);
-      if (s.name.trim() && distance <= s.r && distance < nearest) { owner = i; nearest = distance; }
+      if (s.name.trim() && distance < nearest && PlantNamer.contains(s, u, v)) { owner = i; nearest = distance; }
     });
     if (owner < 0) outside++; else counts.set(spots[owner].id, (counts.get(spots[owner].id) || 0) + 1);
-    ctx.beginPath(); ctx.arc(u / 10, v / 10, 2.6, 0, Math.PI * 2);
+    ctx.beginPath(); ctx.arc(u / 10, v / 10, 3.4 * size, 0, Math.PI * 2);
     ctx.fillStyle = owner < 0 ? '#a8adb5' : palette[owner % palette.length]; ctx.fill();
   }
   spots.forEach((s, i) => {
-    ctx.beginPath(); ctx.arc(s.u / 10, s.v / 10, s.r / 10, 0, Math.PI * 2);
-    ctx.strokeStyle = palette[i % palette.length]; ctx.lineWidth = s.id === selected ? 4 : 2;
-    ctx.setLineDash(s.name.trim() ? [] : [7, 5]); ctx.stroke(); ctx.setLineDash([]);
-    ctx.beginPath(); ctx.arc(s.u / 10, s.v / 10, 3, 0, Math.PI * 2); ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+    ctx.beginPath();
+    if (s.w === undefined) ctx.arc(s.u / 10, s.v / 10, s.r / 10, 0, Math.PI * 2);
+    else {
+      ctx.save(); ctx.translate(s.u / 10, s.v / 10); ctx.rotate(s.angle * Math.PI / 180);
+      ctx.rect(-s.w / 20, -s.h / 20, s.w / 10, s.h / 10); ctx.restore();
+    }
+    ctx.strokeStyle = palette[i % palette.length]; ctx.lineWidth = (s.id === selected ? 4 : 2) * size;
+    ctx.setLineDash(s.name.trim() ? [] : [7 * size, 5 * size]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(s.u / 10, s.v / 10, 3 * size, 0, Math.PI * 2); ctx.fillStyle = ctx.strokeStyle; ctx.fill();
+    if (s.id === selected && s.w !== undefined) {
+      const handles = PlantNamer.rectHandles(s, handleReach()), knob = handles.find(h => h.kind === 'rotate');
+      const top = handles.find(h => h.kind === 'resize' && h.sx === 0 && h.sy === -1);
+      ctx.beginPath(); ctx.moveTo(top.u / 10, top.v / 10); ctx.lineTo(knob.u / 10, knob.v / 10); ctx.lineWidth = 2 * size; ctx.stroke();
+      ctx.fillStyle = '#fff';
+      for (const h of handles) {
+        ctx.beginPath();
+        if (h.kind === 'rotate') ctx.arc(h.u / 10, h.v / 10, 6 * size, 0, Math.PI * 2);
+        else ctx.rect(h.u / 10 - 5 * size, h.v / 10 - 5 * size, 10 * size, 10 * size);
+        ctx.fill(); ctx.stroke();
+      }
+    }
   });
   el('total').textContent = points.length + ' plants';
   el('outside').textContent = outside + ' outside named spots (grey)';
@@ -141,7 +177,11 @@ function render() {
     li.appendChild(button); el('spots').appendChild(li);
   }
   el('editor').disabled = !active;
-  for (const field of ['name', 'u', 'v', 'r']) el(field).value = active ? active[field] : '';
+  for (const field of FIELDS) el(field).value = active && active[field] !== undefined ? active[field] : '';
+  const rectangle = !!active && active.w !== undefined;
+  el('rField').hidden = rectangle;
+  for (const field of ['wField', 'hField', 'angleField']) el(field).hidden = !rectangle;
+  el('shape').textContent = rectangle ? 'Make circle' : 'Make rectangle';
   el('mergeWith').replaceChildren();
   for (const s of spots) if (s.id !== selected) option(el('mergeWith'), s.id, s.name.trim() || s.id);
   el('merge').disabled = !active || spots.length < 2;
@@ -161,17 +201,23 @@ function render() {
 }
 mapPicker.onchange = chooseMap;
 sitePicker.onchange = chooseSite;
+el('zoom').onclick = () => { wholeMap = !wholeMap; applyView(); render(); };
 el('add').onclick = () => { adding = !adding; message(); render(); };
 el('undo').onclick = () => action(() => { model.undo(); gesture = null; adding = false; });
 el('discard').onclick = () => action(() => { model.discard(key, site, selected); selected = null; });
 el('merge').onclick = () => action(() => model.merge(key, site, selected, el('mergeWith').value));
-for (const field of ['name', 'u', 'v', 'r']) el(field).onchange = () => action(() => {
+el('shape').onclick = () => action(() => model.toggleShape(key, site, selected));
+el('fit').onclick = () => action(() => {
+  const inside = DATA.maps[key].points[site].filter(([u, v]) => PlantNamer.contains(selectedSpot(), u, v));
+  if (!model.fit(key, site, selected, inside)) throw new Error('Fit needs at least 3 plants inside this shape');
+});
+for (const field of FIELDS) el(field).onchange = () => action(() => {
   const input = el(field);
   if (field !== 'name' && input.value.trim() === '') throw new Error('Enter a value for ' + field);
   model.update(key, site, selected, {[field]: field === 'name' ? input.value : Number(input.value)});
 });
 function pointer(event) {
-  return PlantNamer.pointerUV(event.clientX, event.clientY, viewport.getBoundingClientRect(), DATA.maps[key].rotation);
+  return PlantNamer.pointerUV(event.clientX, event.clientY, el('rotated').getBoundingClientRect(), DATA.maps[key].rotation);
 }
 canvas.onpointerdown = event => {
   if (event.button !== 0 || gesture) return;
@@ -181,20 +227,30 @@ canvas.onpointerdown = event => {
     action(() => { selected = model.add(key, site, p.u, p.v); adding = false; });
     return;
   }
-  const tolerance = 10 * 10000 / viewport.getBoundingClientRect().width;
-  const candidates = currentSpots().filter(s => Math.hypot(p.u - s.u, p.v - s.v) <= s.r + tolerance);
+  const tolerance = 10 * 10000 / el('rotated').getBoundingClientRect().width;
+  const current = selectedSpot();
+  const handle = current && current.w !== undefined
+    ? PlantNamer.rectHandles(current, handleReach()).find(h => Math.hypot(p.u - h.u, p.v - h.v) <= tolerance) : null;
+  if (handle) {
+    gesture = {id: current.id, pointerId: event.pointerId, start: p, original: {...current}, preview: {...current}, handle};
+    canvas.setPointerCapture(event.pointerId); render();
+    return;
+  }
+  const candidates = currentSpots().filter(s => PlantNamer.contains(s, p.u, p.v, tolerance));
   const hit = candidates.find(s => s.id === selected) || candidates.sort((a, b) =>
     Math.hypot(p.u - a.u, p.v - a.v) - Math.hypot(p.u - b.u, p.v - b.v))[0];
   if (!hit) { selected = null; render(); return; }
   selected = hit.id;
   gesture = {id: hit.id, pointerId: event.pointerId, start: p, original: {...hit}, preview: {...hit},
-    resize: Math.abs(Math.hypot(p.u - hit.u, p.v - hit.v) - hit.r) <= Math.min(tolerance, hit.r * .35)};
+    resize: hit.w === undefined && Math.abs(Math.hypot(p.u - hit.u, p.v - hit.v) - hit.r) <= Math.min(tolerance, hit.r * .35)};
   canvas.setPointerCapture(event.pointerId); render();
 };
 canvas.onpointermove = event => {
   if (!gesture || gesture.pointerId !== event.pointerId) return;
   const p = pointer(event), g = gesture, s = g.original;
-  if (g.resize) g.preview = {...s, r: Math.max(0.01, Math.min(10000, Math.hypot(p.u - s.u, p.v - s.v)))};
+  if (g.handle) g.preview = g.handle.kind === 'rotate' ? PlantNamer.rotateRect(s, p.u, p.v)
+    : PlantNamer.resizeRect(s, g.handle.sx, g.handle.sy, p.u, p.v);
+  else if (g.resize) g.preview = {...s, r: Math.max(0.01, Math.min(10000, Math.hypot(p.u - s.u, p.v - s.v)))};
   else g.preview = {...s, u: Math.max(0, Math.min(10000, s.u + p.u - g.start.u)),
     v: Math.max(0, Math.min(10000, s.v + p.v - g.start.v))};
   draw();

@@ -91,10 +91,21 @@ def expected_oof(rows, folds=5):
     return result
 
 
+def _contains(spot, u, v):
+    """Whether a circle (`radius`) or rotated rectangle (`w`, `h`, `angle`) holds the point."""
+    du, dv = u - spot["u"], v - spot["v"]
+    if "w" not in spot:
+        return du * du + dv * dv <= spot["radius"] ** 2
+    turn = math.radians(spot["angle"])
+    across = du * math.cos(turn) + dv * math.sin(turn)
+    along = -du * math.sin(turn) + dv * math.cos(turn)
+    return abs(across) <= spot["w"] / 2 and abs(along) <= spot["h"] / 2
+
+
 def assign_spots(rows, spots):
     """Aligned spot ids, or 'outside'; nearest containing centre on the same site.
 
-    Circle boundaries are included. Equal distances retain committed spot order.
+    Shape boundaries are included. Equal distances retain committed spot order.
     """
     spots = list(spots)
     assigned = []
@@ -105,7 +116,7 @@ def assign_spots(rows, spots):
             if spot["site"] != _get(row, "site"):
                 continue
             distance = (spot["u"] - _get(row, "u")) ** 2 + (spot["v"] - _get(row, "v")) ** 2
-            if distance <= spot["radius"] ** 2 and distance < best_distance:
+            if distance < best_distance and _contains(spot, _get(row, "u"), _get(row, "v")):
                 closest, best_distance = spot["id"], distance
         assigned.append(closest)
     return assigned

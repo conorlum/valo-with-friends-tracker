@@ -282,12 +282,23 @@ never re-sent; bumping `RETRY_GENERATION` (with `__version__`, then tag) makes e
 
 Where attackers plant on each map and how those rounds go. `/plants` and `/plants/<map>` (`app/routers/plants.py`,
 `app/services/plant_page.py`, `plant_stats.py`, `plant_spots.py`). Never on the demo. Only named spots show, and a
-spot shows a win rate only from 100 plants.
+spot shows a win rate only from 50 plants (`plant_page.MIN_N`). A spot is a circle (`r`) or a rotated rectangle (`w`, `h`, `angle` in
+degrees, clockwise on the minimap); a plant inside several goes to the nearest centre.
 
 - Migration `0036`: `round_plants` (one row per round; a replay's position beats tracker.gg's; models in
   `app/models/round_plant.py`) and `plant_stats_cache`. It only creates tables, so it runs through the normal
   `alembic upgrade head` on build and `RENDER_DEPLOY.md` needs no note.
 - New tracker.gg ingests save plants (`load_match`, `_store_plants`). A failure there never fails the ingest.
+  tracker.gg's plant `location` is the planter's position. The spike lands along the planter's final aim
+  (`viewRadians`) at 0.7 m, or 0.4, 0.2 or 0 m when a wall or the plant site's edge is in the way
+  (`app/services/plant_position.py`, `round_plants.plant_uv`; measured on replay Bomb positions). A tracker
+  position that still lands outside the zone (or has no facing data) is pulled to the nearest zone cell, up to
+  about 2 m (`snap_inside`); replay positions are never moved. Zones are the
+  minimaps' shaded sites, aligned to planter positions, in the committed `app/data/plant_zones.json`
+  (`scripts/build_plant_zones.py`, read-only on the DB); a map that fails its check keeps the plain 0.7 m.
+  The backfill re-fetches tracker rows saved before the 0.7 m correction, tracked in the gitignored
+  `ingest_ledgers/round_plants_corrected.json`. `scripts/round_plants.py reposition --archive <dir> [--dry-run]`
+  recomputes tracker rows from archived payloads with no crawl and never replaces a replay's position.
 - The stats cache needs no ingest hook: it is keyed by a fingerprint of the plant rows, linked replays, the layout
   registry, the spots file and `CALCULATION_VERSION`.
 - Owner commands, from `webapp`, in this order. The first two write to the friends DB through
@@ -297,14 +308,20 @@ spot shows a win rate only from 100 plants.
      It needs the tracker.gg Chrome on port 9222, resumes from the database, waits 5 to 12 s between matches and
      stops after 5 consecutive failures. Matches tracker.gg can't supply go in the gitignored skip-list
      `ingest_ledgers/round_plants_unavailable.json`. `scripts/round_plants.py status` shows progress.
+     To pause: Ctrl+C once (the match in flight finishes, then it prints the resume command; twice stops at
+     once, and still loses nothing already committed), or `scripts/round_plants.py pause` from any shell, which
+     writes `ingest_ledgers/round_plants.pause` (removed when a backfill starts). `with_friends_db.py` leaves
+     Ctrl+C to its child. `--archive <dir>` also keeps each raw payload as `<external id>.json.gz`.
+     `--pace MIN MAX` (at least 2 s) and `--settle N` change this crawl's waits; other ingests keep theirs.
   3. `scripts/plant_namer.py`, through the same wrapper with `--read-only`, writes a local page under
      `%TEMP%\valo-plant-namer`. Its Export saves the named spots only (unnamed proposals are left out and counted
      on the page), so maps can be done one at a time. It downloads `plant_spots.json`, which replaces
      `app/static/data/plant_spots.json`. That change is a PR, like any other.
 - Verification wait (`app/adapters/tracker_verification.py`): on a page titled "Just a moment", every tracker.gg
-  crawler beeps (audio only, silenced by `~/.claude/sounds/.muted`) and waits up to 15 minutes for the owner to
-  clear it. It never clicks or scripts the check. On a timeout the run stops, keeps what it added, runs its
-  end-of-run steps and exits non-zero.
+  crawler beeps (audio only, silenced by its own flag `~/.claude/sounds/.tracker-muted`) and waits up to 15
+  minutes for the owner to clear it. It never clicks or scripts the check. On a timeout the run stops, keeps what
+  it added, runs its end-of-run steps and exits non-zero. The plant backfill treats a 429 the same way first (beep,
+  retry each minute for 15 minutes), then waits 15, 30 and 30 minutes before counting one failure.
 
 ### Running the webapp locally
 

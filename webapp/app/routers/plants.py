@@ -62,9 +62,13 @@ def _spot_view(spot: dict, min_n: int) -> dict:
         colour = "--good" if adjusted >= 0 else "--critical"
         style = f"color-mix(in srgb, var({colour}) {20 + 60 * strength:.0f}%, transparent)"
     interval = spot["adjusted_ci_display"]
+    rectangle = "w" in spot
     return {
         **spot,
-        "left": spot["u"] / 100, "top": spot["v"] / 100, "size": 2 * spot["radius"] / 100,
+        "left": spot["u"] / 100, "top": spot["v"] / 100,
+        "width": (spot["w"] if rectangle else 2 * spot["radius"]) / 100,
+        "height": (spot["h"] if rectangle else 2 * spot["radius"]) / 100,
+        "rectangle": rectangle, "turn": spot["angle"] if rectangle else 0,
         "grey": adjusted is None, "fill": style, "enough": spot["n"] >= min_n,
         "interval": f"{interval[0]} to {interval[1]}" if interval else None,
         "raw": None if spot["raw_pct"] is None else f"{spot['raw_pct']:.1f}%",

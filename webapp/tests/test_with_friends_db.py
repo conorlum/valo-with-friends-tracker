@@ -141,3 +141,15 @@ def test_a_worktree_without_a_venv_uses_the_main_checkouts(tmp_path):
     (worktree_webapp / ".venv313" / "Scripts").mkdir(parents=True)
     (worktree_webapp / ".venv313" / "Scripts" / "python.exe").write_text("")
     assert with_friends_db.find_ingest_python(worktree_webapp) == worktree_webapp / ".venv313" / "Scripts" / "python.exe"
+
+
+def test_ctrl_c_is_left_to_the_child_while_it_runs(monkeypatch):
+    import signal
+
+    seen = []
+    monkeypatch.setattr(with_friends_db.subprocess, "call",
+                        lambda cmd, **kw: seen.append(signal.getsignal(signal.SIGINT)) or 7)
+    before = signal.getsignal(signal.SIGINT)
+    assert with_friends_db.run_child(["x"]) == 7
+    assert seen == [signal.SIG_IGN]
+    assert signal.getsignal(signal.SIGINT) is before

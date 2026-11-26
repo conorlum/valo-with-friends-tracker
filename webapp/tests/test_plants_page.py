@@ -146,16 +146,27 @@ def test_only_named_spots_render_and_the_outside_count_shows(db):
     assert 'data-outside="2"' in page
 
 
-def test_99_is_grey_without_a_percentage_and_100_has_a_signed_adjusted_value(db):
-    _plants(db, 99)
-    small = _spot(db)
-    assert small["n"] == 99 and small["adjusted_display"] is None
+def test_a_rotated_rectangle_spot_renders_and_counts_its_plants(db, monkeypatch):
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
+        {"id": "s1", "name": "Heaven", "u": 500, "v": 500, "w": 400, "h": 200, "angle": 30}]}})
+    _plants(db, 3)                             # inside the rectangle
+    _plants(db, 2, start=10, u=500, v=690)     # past its short side
     page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
-    assert "spot-grey" in page and 'data-adjusted=""' in page and "n=99" in page
+    assert "width: 4.0%; height: 2.0%; border-radius: 0; transform: translate(-50%, -50%) rotate(30deg);" in page
+    assert 'data-outside="2"' in page and "n=3" in page
 
-    _plants(db, 1, start=99)
+
+def test_49_is_grey_without_a_percentage_and_50_has_a_signed_adjusted_value(db):
+    assert plant_page.MIN_N == 50          # the owner's gate (2026-11-25), was 100
+    _plants(db, 49)
+    small = _spot(db)
+    assert small["n"] == 49 and small["adjusted_display"] is None
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    assert "spot-grey" in page and 'data-adjusted=""' in page and "n=49" in page
+
+    _plants(db, 1, start=49)
     big = _spot(db)
-    assert big["n"] == 100
+    assert big["n"] == 50
     assert re.fullmatch(r"[+-]\d+\.\d%", big["adjusted_display"])
     page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
     assert re.search(r'data-adjusted="[+-]\d+\.\d%"', page)
@@ -386,3 +397,48 @@ def test_example_links_are_replay_deep_links(db):
     assert 1 <= len(links) <= 3
     for link in links:
         assert re.fullmatch(r"/replays/[0-9a-f-]{36}\?round=1&amp;t=38\.0|/replays/[0-9a-f-]{36}\?round=1&t=38\.0", link)
+
+
+def _moved_site(monkeypatch):
+    from app.services import plant_site_changes
+    monkeypatch.setattr(plant_site_changes, "cutoffs", lambda: {
+        ("Bind", "B"): datetime(2025, 10, 14, tzinfo=timezone.utc)})
+    monkeypatch.setattr(plant_site_changes, "digest", lambda: "moves-1")
+
+
+def _played(db, matches, when):
+    for match in matches:
+        match.played_at = when
+    db.commit()
+
+
+def test_a_moved_site_counts_only_plants_from_its_move_on(db, monkeypatch):
+    _moved_site(monkeypatch)
+    _played(db, _plants(db, 2, map_name="Bind", site="B", asset_key="Bind"),
+            datetime(2025, 10, 13, 23, tzinfo=timezone.utc))          # before: left out
+    _plants(db, 3, start=10, map_name="Bind", site="B", asset_key="Bind")   # 2026-10-01: counted
+    _played(db, _plants(db, 1, start=20, map_name="Bind", site="B", asset_key="Bind"), None)  # no date: kept
+    _played(db, _plants(db, 4, start=30, map_name="Bind", site="A", asset_key="Bind"),
+            datetime(2025, 1, 1, tzinfo=timezone.utc))                # the other site never moved
+    from collections import Counter
+    rows = plant_page.read_rows(db)
+    assert Counter(row["site"] for row in rows) == {"B": 4, "A": 4}
+    assert plant_page.counts_by_asset(db) == {"Bind": 8}
+
+
+def test_a_new_move_recomputes(db, monkeypatch):
+    from app.services import plant_site_changes
+    _plants(db, 2)
+    before = plant_page.fingerprint(db)
+    monkeypatch.setattr(plant_site_changes, "digest", lambda: "moves-2")
+    assert plant_page.fingerprint(db) != before
+
+
+def test_the_committed_moves_file_reads(monkeypatch):
+    from app.services import plant_site_changes
+    plant_site_changes.cutoffs.cache_clear()
+    moves = plant_site_changes.cutoffs()
+    assert moves[("Abyss", "B")] == datetime(2025, 10, 14, tzinfo=timezone.utc)
+    assert plant_site_changes.counts("Abyss", "B", datetime(2025, 10, 14)) is True       # naive is UTC
+    assert plant_site_changes.counts("Abyss", "B", datetime(2025, 10, 13, 23, 59)) is False
+    assert plant_site_changes.counts("Abyss", "A", datetime(2020, 1, 1)) is True

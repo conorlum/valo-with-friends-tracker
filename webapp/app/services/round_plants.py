@@ -1,8 +1,9 @@
 """Plant extraction, round outcomes and storage; callers own the transaction."""
 from collections import defaultdict
 from contextlib import nullcontext
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
+import gzip
 import json
 import math
 from pathlib import Path
@@ -10,7 +11,9 @@ import zlib
 
 from sqlalchemy import select
 
-from app.adapters.tracker_verification import TrackerMatchUnavailable, TrackerVerificationTimeout
+from app.adapters.tracker_verification import (
+    TrackerMatchUnavailable, TrackerRateLimited, TrackerVerificationTimeout, beep,
+)
 from app.models import KillEvent, Match, MatchPlayer, Round, RoundPlant
 from app.models.match import Team
 from app.models.replay import Replay, ReplayRound
@@ -18,6 +21,7 @@ from app.replays import layouts
 from app.replays.condense import load_maps
 from app.replays.format import decode_blob
 from app.scoring.plant_window import attacking_team, is_phantom_plant
+from app.services import plant_position
 from app.services import state_replay as sr
 
 
@@ -72,7 +76,51 @@ def plant_from_summary(round_summary):
     x, y = location.get("x"), location.get("y")
     if not (_finite_number(x) and _finite_number(y)):
         return None
-    return {"site": plant["site"], "x": x, "y": y}
+    view = _planter_view(plant)
+    if view is None:
+        return {"site": plant["site"], "x": x, "y": y}
+    return {"site": plant["site"], "x": x + SPIKE_OFFSET_UNITS * math.cos(view),
+            "y": y + SPIKE_OFFSET_UNITS * math.sin(view), "corrected": True,
+            "planter_x": x, "planter_y": y, "view": view}
+
+
+def plant_uv(map_name, plant):
+    """The spike's minimap position: the first clear step where the map's zone is known, else 0.7 m.
+
+    Where the zone is known, the result is also pulled inside it (`plant_position.snap_inside`),
+    including a plant without facing data. Tracker rows have no patch, so a map with several
+    layouts is not covered.
+    """
+    u, v = to_uv(map_name, plant["x"], plant["y"])
+    key = asset_key_for(map_name, None)
+    if not plant_position.covers(key):
+        return u, v
+    if "view" not in plant:
+        return plant_position.snap_inside(key, u, v)
+    cos, sin = math.cos(plant["view"]), math.sin(plant["view"])
+
+    def point_at(metres):
+        return to_uv(map_name, plant["planter_x"] + metres * 100 * cos, plant["planter_y"] + metres * 100 * sin)
+
+    return plant_position.snap_inside(key, *point_at(plant_position.pick_step(key, point_at)))
+
+
+# tracker.gg's plant location is the planter's position; the spike lands this far
+# in front of them (measured against replay Bomb positions, world units = cm).
+SPIKE_OFFSET_UNITS = 70
+
+
+def _planter_view(plant):
+    """The planter's facing in radians, or None when the payload does not give it."""
+    who = plant.get("platformUserIdentifier")
+    players = plant.get("playerLocations")
+    if who is None or not isinstance(players, list):
+        return None
+    for player in players:
+        if isinstance(player, dict) and player.get("platformUserIdentifier") == who:
+            view = player.get("viewRadians")
+            return view if _finite_number(view) else None
+    return None
 
 
 def asset_key_for(map_name, game_branch):
@@ -332,51 +380,233 @@ def _tracker_plants(match, payload):
         if plant is None:
             continue
         try:
-            u, v = to_uv(match.map_name, plant["x"], plant["y"])
+            u, v = plant_uv(match.map_name, plant)
         except KeyError:
             continue
-        positions.append(dict(round_number=attributes["round"],
-                              u=u, v=v, site=plant["site"]))
+        positions.append(dict(round_number=attributes["round"], u=u, v=v, site=plant["site"],
+                              corrected=plant.get("corrected", False)))
     return positions
 
 
-def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False):
-    """Commit positions alone per match; the DB and local ledger are the resume point."""
+PAUSE_PATH = UNAVAILABLE_PATH.parent / "round_plants.pause"
+
+
+def pause_requested():
+    """The owner's pause file: a run stops before its next match while it exists."""
+    return PAUSE_PATH.exists()
+
+
+def request_pause():
+    PAUSE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PAUSE_PATH.write_text("pause\n", encoding="utf-8")
+
+
+def clear_pause():
+    """A run starting means the owner wants it running; return whether a pause file was left."""
+    try:
+        PAUSE_PATH.unlink()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def archive_payload(directory, external_id, payload):
+    """Keep the raw tracker.gg payload as ``<external id>.json.gz``, written atomically."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{external_id}.json.gz"
+    temporary = target.with_suffix(".tmp")
+    temporary.write_bytes(gzip.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8")))
+    temporary.replace(target)
+
+
+# tracker.gg's 429 has come with a human check on a page whose title is not
+# "Just a moment", so it is first treated as one: beep and retry the same match
+# every minute for up to 15 minutes (each retry reloads the page). Then quiet long
+# waits, retrying after each; a 429 after the last counts as a failure.
+RATE_LIMIT_ATTENTION_S = 900
+RATE_LIMIT_RETRY_S = 60
+RATE_LIMIT_COOLDOWNS_S = (900, 1800, 1800)
+
+
+def _wait(seconds, *, sleep, stop):
+    """Sleep a second at a time; True when the owner asked to stop."""
+    for _ in range(seconds):
+        if stop() is not None:
+            return True
+        sleep(1)
+    return False
+
+
+def _fetch_patiently(fetch, page, external_id, *, sleep, stop, alert):
+    """Fetch, waiting out tracker.gg's 429s; a stop during a wait re-raises the 429,
+    which the caller then treats as the owner's stop, not a failure."""
+    retries = [RATE_LIMIT_RETRY_S] * (RATE_LIMIT_ATTENTION_S // RATE_LIMIT_RETRY_S)
+    waits = [(wait, True) for wait in retries] + [(wait, False) for wait in RATE_LIMIT_COOLDOWNS_S]
+    for index, (wait, attention) in enumerate((*waits, (None, False))):
+        try:
+            return fetch(page, external_id)
+        except TrackerRateLimited:
+            if wait is None:
+                raise
+            if attention:
+                alert()
+                if index == 0:
+                    print(f"429 on {external_id}: if the scraper Chrome shows a human check, clear it; "
+                          f"retrying every minute for up to {RATE_LIMIT_ATTENTION_S // 60} min",
+                          flush=True)
+            else:
+                until = datetime.now().astimezone() + timedelta(seconds=wait)
+                print(f"still 429: waiting {wait // 60} min, until {until:%H:%M}, "
+                      f"then retrying {external_id}", flush=True)
+            if _wait(wait, sleep=sleep, stop=stop):
+                raise
+
+
+CORRECTED_PATH = UNAVAILABLE_PATH.parent / "round_plants_corrected.json"
+
+
+def load_corrected():
+    """External IDs this crawl has stored with the spike correction."""
+    if not CORRECTED_PATH.exists():
+        return set()
+    rows = json.loads(CORRECTED_PATH.read_text(encoding="utf-8"))
+    if not isinstance(rows, list) or any(not isinstance(row, str) for row in rows):
+        raise ValueError("round plants corrected ledger must be a list of external match IDs")
+    return set(rows)
+
+
+def _save_corrected(rows):
+    CORRECTED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CORRECTED_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(sorted(rows)) + "\n", encoding="utf-8")
+    temporary.replace(CORRECTED_PATH)
+
+
+def crawl_queue(db, limit=None, skip=()):
+    """External IDs to fetch: tracker rows saved before the correction, then missing plants."""
+    if limit is not None and limit < 0:
+        raise ValueError("limit must be non-negative")
+    skip, corrected = set(skip), load_corrected()
+    stored = db.scalars(select(Match.external_id).where(
+        select(RoundPlant.round_id).where(RoundPlant.match_id == Match.id,
+                                          RoundPlant.source == "tracker").exists(),
+    ).order_by(Match.played_at.desc().nullslast(), Match.created_at.desc(), Match.id.desc())).all()
+    queue = [key for key in stored if key not in corrected and key not in skip]
+    queued = set(queue)
+    queue += [match.external_id for match in pending_matches(db, skip=skip)
+              if match.external_id not in queued]
+    return queue if limit is None else queue[:limit]
+
+
+def reposition(db, archive, *, dry_run=False, should_stop=None, log=print):
+    """Recompute tracker plants from archived payloads, one commit per match; safe to rerun.
+
+    A replay's position is never replaced (`upsert_plants`). A bad archive file is counted and skipped.
+    """
+    stop = should_stop or (lambda: None)
+    result = dict(files=0, inserted=0, updated=0, skipped=0, bad=0, unknown=0, stopped=None)
+    paths = sorted(Path(archive).glob("*.json.gz"))
+    for index, path in enumerate(paths):
+        if (reason := stop()) is not None:
+            result["stopped"] = reason
+            break
+        external_id = path.name[:-len(".json.gz")]
+        try:
+            payload = json.loads(gzip.decompress(path.read_bytes()))
+            match = db.scalar(select(Match).where(Match.external_id == external_id))
+            if match is None:
+                result["unknown"] += 1
+                db.rollback()
+                continue
+            counts = upsert_plants(db, match, _tracker_plants(match, payload), source="tracker", dry_run=dry_run)
+            if dry_run:
+                db.rollback()
+            else:
+                db.commit()
+        except Exception as error:
+            db.rollback()
+            result["bad"] += 1
+            log(f"bad archive file {path.name}: {type(error).__name__}: {error}")
+            continue
+        result["files"] += 1
+        for key in counts:
+            result[key] += counts[key]
+        if (index + 1) % 100 == 0:
+            log(f"{index + 1}/{len(paths)} files; updated {result['updated']}, inserted {result['inserted']}")
+    return result
+
+
+def _match_line(index, total, text):
+    """One running line per match, so the owner can see the crawl moving."""
+    print(f"{datetime.now():%H:%M:%S}  [{index + 1}/{total}]  {text}", flush=True)
+
+
+def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False,
+             should_stop=None, archive=None, alert=None, pace=(5, 12)):
+    """Commit positions alone per match; the DB and local ledger are the resume point.
+
+    ``should_stop`` returns a reason ("paused", "interrupted") or None; it is checked
+    before each match and again after the pacing wait. A match whose fetch or storage
+    breaks while a stop is requested is rolled back and neither failed nor skip-listed.
+    ``archive`` is a directory that receives every usable payload.
+    """
+    stop = should_stop or (lambda: None)
     unavailable = load_unavailable()
-    todo = pending_matches(db, limit, skip=() if retry_unavailable else unavailable)
-    result = dict(done=0, failed=0, unavailable=0, inserted=0, updated=0, skipped=0, stopped=None)
+    corrected = load_corrected()
+    result = dict(done=0, failed=0, unavailable=0, inserted=0, updated=0, skipped=0, no_facing=0, stopped=None)
     consecutive_failures = 0
     # Plain strings: the loop below ends the transaction before every fetch, which
     # expires the ORM objects, and reading one would open a transaction again.
-    external_ids = [match.external_id for match in todo]
+    external_ids = crawl_queue(db, limit, skip=() if retry_unavailable else unavailable)
     for index, external_id in enumerate(external_ids):
         # The fetch can wait up to 15 minutes for the owner's verification; hold no
         # transaction across it (or the pacing sleep before it).
         end_transaction(db)
+        if (reason := stop()) is not None:
+            result["stopped"] = reason
+            break
         if index:
-            sleep(uniform(5, 12))
+            sleep(uniform(*pace))
+            if (reason := stop()) is not None:
+                result["stopped"] = reason
+                break
         try:
-            payload = fetch(page, external_id)
+            payload = _fetch_patiently(fetch, page, external_id, sleep=sleep, stop=stop,
+                                       alert=alert or beep)
             if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
                 raise TrackerMatchUnavailable("match payload has no usable segments")
+            if archive is not None:
+                archive_payload(archive, external_id, payload)
             match = db.scalar(select(Match).where(Match.external_id == external_id))
             if match is None:
                 raise LookupError(f"match {external_id} left the database")
-            counts = upsert_plants(db, match, _tracker_plants(match, payload), source="tracker")
+            map_name = match.map_name  # the commit expires it
+            positions = _tracker_plants(match, payload)
+            counts = upsert_plants(db, match, positions, source="tracker")
             db.commit()
+            result["no_facing"] += sum(not position["corrected"] for position in positions)
+            corrected.add(external_id)
+            _save_corrected(corrected)
         except TrackerVerificationTimeout:
             db.rollback()
             result["stopped"] = "verification"
             break
-        except TrackerMatchUnavailable:
+        except Exception as error:
             db.rollback()
-            unavailable.add(external_id)
-            result["unavailable"] += 1
-            consecutive_failures = 0
-        except Exception:
-            db.rollback()
-            result["failed"] += 1
-            consecutive_failures += 1
+            if (reason := stop()) is not None:
+                # The owner's stop broke this match mid-way: not tracker.gg's fault.
+                result["stopped"] = reason
+                break
+            if isinstance(error, TrackerMatchUnavailable):
+                unavailable.add(external_id)
+                result["unavailable"] += 1
+                consecutive_failures = 0
+                _match_line(index, len(external_ids), "unavailable, skip-listed")
+            else:
+                result["failed"] += 1
+                consecutive_failures += 1
+                print(f"failed {external_id}: {type(error).__name__}: {error}", flush=True)
         else:
             consecutive_failures = 0
             result["done"] += 1
@@ -390,9 +620,15 @@ def backfill(db, page, *, limit, fetch, sleep, uniform, retry_unavailable=False)
             ).limit(1)) is not None:
                 unavailable.add(external_id)
                 result["unavailable"] += 1
+                partial = ", partial: skip-listed"
+            else:
+                partial = ""
+            _match_line(index, len(external_ids),
+                        f"{map_name}  +{counts['inserted']} new, {counts['updated']} fixed{partial}  "
+                        f"(this run: {result['inserted'] + result['updated']})")
         _save_unavailable(unavailable)
         if consecutive_failures >= 5:
             result["stopped"] = "failures"
             break
-    result["left"] = len(pending_matches(db, skip=unavailable))
+    result["left"] = len(crawl_queue(db, skip=unavailable))
     return result
