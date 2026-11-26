@@ -441,6 +441,10 @@ def state(view, rnd, blob: dict, ctx: dict, n: int, row: dict) -> dict:
 
     Loadouts sum all page stat rows for each team, including dead teammates.
     Missing observations stay unknown; an absent stat row contributes no sum.
+    HP plus shield uses the latest event at or before entry in the life
+    containing t_s. Without one, an untouched player (damaged_by is false)
+    uses mhp plus msh from that life's first later event. Missing events or
+    unknown shield stay unknown; earlier and later lives never supply vitals.
     """
     slot, t = row["slot"], row["t_s"]
     util = sorted(blob.get("util") or [], key=lambda event: event["t"])
@@ -452,14 +456,17 @@ def state(view, rnd, blob: dict, ctx: dict, n: int, row: dict) -> dict:
         return _tier(gun)
 
     ps = blob.get("player_state") or {}
-    vital = player_state.vitals_at(ps, slot, t)
-    # A revived player's vitals cannot come from an earlier life.
     lives = view._intervals(slot)
     life_index = next((i for i, (a, b) in enumerate(lives) if a <= t < b), None)
-    if vital is not None and life_index is not None and life_index > 0 and vital["t"] < lives[life_index][0]:
-        vital = None
+    vital = (player_state.vitals_at(ps, slot, t, life=life_index)
+             if life_index is not None else None)
     hp_shield = (vital["hp"] + vital["sh"] if vital is not None
                  and vital.get("hp") is not None and vital.get("sh") is not None else None)
+    if vital is None and life_index is not None and not player_state.damaged_by(ps, slot, t):
+        later = next((e for e in (ps.get("vitals") or {}).get(str(slot), [])
+                      if e["life"] == life_index and e["t"] > t), None)
+        if later is not None and later.get("mhp") is not None and later.get("msh") is not None:
+            hp_shield = later["mhp"] + later["msh"]
     stats = ctx["rounds"][str(n)].get("stats") or {}
     if isinstance(stats, str):
         stats = ast.literal_eval(stats)

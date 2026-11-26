@@ -296,6 +296,42 @@ def test_state_enemies_vitals_loadouts_and_spike_at_start(stats_shape):
     assert result["team_loadouts"] == {}
 
 
+@pytest.mark.parametrize("mode,expected", [
+    ("untouched", 150), ("unknown_shield", None), ("damaged", None),
+    ("no_vitals", None), ("empty_slot", None), ("before_entry", 80),
+])
+def test_state_hp_start_before_first_vitals_event(mode, expected):
+    ctx, blob = context([[0, 5, 5]])
+    events = [{"t": 45, "life": 0, "hp": 60, "sh": 0, "mhp": 100, "msh": 50},
+              {"t": 55, "life": 0, "hp": 40, "sh": 0, "mhp": 100, "msh": 0}]
+    ps = blob["player_state"] = {"vitals": {"0": events}, "damage_taken": {"0": [45, 55]}}
+    if mode == "unknown_shield":
+        events[0]["msh"] = None
+    elif mode == "damaged":
+        ps["damage_taken"]["0"].insert(0, 35)
+    elif mode == "no_vitals":
+        ps.pop("vitals")
+    elif mode == "empty_slot":
+        ps["vitals"] = {}
+    elif mode == "before_entry":
+        events.insert(0, {"t": 35, "life": 0, "hp": 60, "sh": 20, "mhp": 100, "msh": 50})
+    view, rnd = views(blob)
+    assert measures.state(view, rnd, blob, ctx, 1, window())["hp_shield"] == expected
+
+
+@pytest.mark.parametrize("current_life_later,expected", [(False, None), (True, 100)])
+def test_state_hp_start_uses_only_entry_life_maxima(current_life_later, expected):
+    ctx, blob = context([[0, 5, 5]])
+    blob["alive"]["0"] = [[0, 20, "kill"], [30, 60, "kill"], [70, None, None]]
+    events = [{"t": 10, "life": 0, "hp": 60, "sh": 20, "mhp": 100, "msh": 50}]
+    if current_life_later:
+        events.append({"t": 45, "life": 1, "hp": 60, "sh": 0, "mhp": 100, "msh": 0})
+    events.append({"t": 75, "life": 2, "hp": 60, "sh": 0, "mhp": 100, "msh": 25})
+    blob["player_state"] = {"vitals": {"0": events}}
+    view, rnd = views(blob)
+    assert measures.state(view, rnd, blob, ctx, 1, window())["hp_shield"] == expected
+
+
 def test_vitals_do_not_carry_across_revive_or_guess_unknown_shield():
     ctx, blob = context([[0, 5, 5]])
     blob["alive"]["0"] = [[0, 20, "kill"], [30, None, None]]

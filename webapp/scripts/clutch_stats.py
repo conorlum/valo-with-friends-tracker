@@ -380,7 +380,7 @@ def write_report(out, rows, results, coverage, cutoffs, model_note):
     stored = any(_finite(r.get("p_stored")) for r in rows)
     comparisons = {(r["measure"], r["group"]): r for r in results}
     lines = [SIGHT_NOTE, "", "# Clutch research", "", _text(model_note), ""]
-    if not stored:
+    if not stored and model_note != NO_EXPORT:
         lines.extend([NO_EXPORT, ""])
     lines.extend(["## Coverage", "", *_coverage_lines(coverage), "", "## Situation counts", ""])
     by_n, by_group = _counts(rows, _by_n), _counts(rows, lambda r: r["group"])

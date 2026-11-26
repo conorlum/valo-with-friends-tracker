@@ -217,6 +217,14 @@ def test_every_measure_group_table_and_opening_sight_note(tmp_path):
     assert text.index("Cutoff reconciliation") < text.index("### one_at_a_time") < text.index("Calibration")
 
 
+@pytest.mark.parametrize("model_note", [stats.NO_EXPORT, "toy model"])
+def test_report_without_stored_predictions_has_one_no_export_note(tmp_path, model_note):
+    rows = [row(p_stored=None)]
+    path = stats.write_report(tmp_path, rows, [], {}, [], model_note)
+    text = path.read_text(encoding="utf-8")
+    assert text.splitlines().count(stats.NO_EXPORT) == 1
+
+
 def test_no_export_still_has_fit_calibration_and_isolation_examples(tmp_path):
     rows = [row(i, won=i % 2 == 0, value=i % 2) for i in range(20)]
     stats.expected(rows, None)
