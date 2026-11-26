@@ -25,7 +25,7 @@ from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.gaps.rows import to_rows  # noqa: E402
 from app.models.replay_postplant import ReplayRoundPostplant
-from app.models.replay import Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments, ReplayRoundUtil  # noqa: E402
+from app.models.replay import Replay, ReplayAimEvent, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments, ReplayRoundUtil  # noqa: E402
 from app.replays import choke_assets  # noqa: E402
 from app.replays import control_format as cf  # noqa: E402
 from app.replays import store  # noqa: E402
@@ -42,7 +42,7 @@ def session_factory(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine, tables=TABLES + [ReplayRoundGapRun.__table__, ReplayGap.__table__,
                                                    ReplayRoundMoments.__table__, ReplayRoundUtil.__table__,
-                                                   ReplayRoundPostplant.__table__])
+                                                   ReplayRoundPostplant.__table__, ReplayAimEvent.__table__])
     return sessionmaker(bind=engine)
 
 
