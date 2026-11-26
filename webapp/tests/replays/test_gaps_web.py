@@ -194,7 +194,7 @@ def _jsonb_on_sqlite(type_, compiler, **kw):   # impact_scores.trade_detail, for
 def page_db(monkeypatch):
     monkeypatch.setattr(settings, "demo_mode", False)
     engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine, tables=CONTROL_TABLES + [RoundPlayerStat.__table__, Friendship.__table__])
+    Base.metadata.create_all(engine, tables=CONTROL_TABLES + [RoundPlayerStat.__table__])
     session = sessionmaker(bind=engine)()
     yield session
     session.close()
