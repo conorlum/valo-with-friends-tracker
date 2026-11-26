@@ -89,3 +89,79 @@ def test_rows_from_events_keeps_ok_won_lost_and_uses_window():
     assert len(rows) == 2
     assert rows[0]["tto"] is None and rows[0]["window"] == pytest.approx(2.0)
     assert rows[1]["tto"] == pytest.approx(0.4) and rows[0]["won"] == 1
+
+
+# ---- events subcommand: selection and formatting on synthetic events (offline)
+
+def _ev(uuid, rnd, cls, i=0, d_m=8.0, turn=0.0, t=10.0, err=3.0, on=None):
+    return {"uuid": uuid, "round": rnd, "slot": 1, "opponent": 6, "t": t, "cls": cls, "err": err, "d_m": d_m,
+            "opener": "peeker", "on": on if on is not None else [None] * 14, "shot": 0.3, "dmg": 0.4,
+            "turn": turn, "i": i}
+
+
+def test_select_spreads_across_classes_and_replays():
+    evs = []
+    for u in ("aaaaaaaa-1", "bbbbbbbb-2", "cccccccc-3"):
+        for r in range(1, 5):
+            for k in range(6):
+                evs.append(_ev(u, r, "ok", i=k, t=float(k)))
+            evs.append(_ev(u, r, "behind"))
+            evs.append(_ev(u, r, "turning"))
+    sel = cr.select_events(evs, 20)
+    assert len(sel) == 20
+    classes = {e["cls"] for e in sel}
+    assert classes == {"ok", "behind", "turning"}
+    assert {e["uuid"] for e in sel} == {"aaaaaaaa-1", "bbbbbbbb-2", "cccccccc-3"}
+    assert len({(e["uuid"], e["round"], e["t"], e["cls"], e["i"]) for e in sel}) == 20
+
+
+def test_select_fewer_than_n_returns_all_and_is_deterministic():
+    evs = [_ev("aaaaaaaa-1", 1, "ok", i=k) for k in range(5)]
+    assert cr.select_events(evs, 20) == cr.select_events(list(evs), 20)
+    assert len(cr.select_events(evs, 20)) == 5
+
+
+def test_times_to_on_target_by_rule():
+    from app.services import aim_stats
+    on = [None] * 14
+    on[aim_stats._ladder_index(aim_stats.on_threshold(10.0, "body"))] = 0.4
+    on[aim_stats._ladder_index(aim_stats.on_threshold(10.0, "five"))] = 0.2
+    t = cr.times_to_on_target(_ev("u", 1, "ok", d_m=10.0, on=on))
+    assert t == {"body": 0.4, "five": 0.2, "fixed5": 0.2}
+
+
+def test_deciles_of_values():
+    out = cr.deciles(list(range(101)))
+    assert out == [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0]
+    assert cr.deciles([]) == []
+
+
+def test_band_counts_and_distance_deciles():
+    evs = [_ev("u", 1, "ok", d_m=d) for d in (3, 5, 12, 15, 30, 45)]
+    c = cr.band_counts(evs)
+    assert sum(c.values()) == 6 and set(c) == {"close", "mid", "long"}
+
+
+def test_format_row_has_link_and_no_names():
+    ev = _ev("0a9ab548-718b-41ee-94ce-db25fd430bf8", 3, "ok", t=12.5)
+    line = cr.format_row(ev)
+    assert "0a9ab548" in line and "/replays/0a9ab548-718b-41ee-94ce-db25fd430bf8?round=3&t=12" in line
+    assert " ok " in f" {line} "
+
+
+def test_report_header_says_fine_false_and_sections():
+    evs = [_ev("aaaaaaaa-1", 1, "ok", turn=float(k), d_m=5.0 + k) for k in range(30)]
+    text = cr.build_report(evs, 20, fine=False)
+    assert "fine: false" in text
+    assert text.count("\n") > 20
+    assert "turn" in text and "distance" in text.lower() and "close" in text
+
+
+def test_report_summary_counts_ok_under_10m():
+    from app.services import aim_stats
+    on = [None] * 14
+    on[aim_stats._ladder_index(aim_stats.on_threshold(5.0, "body"))] = 0.5
+    evs = [_ev("u", 1, "ok", d_m=5.0, on=on), _ev("u", 1, "ok", d_m=5.0), _ev("u", 1, "behind", d_m=5.0)]
+    s = cr.summary_lines(evs)
+    assert "ok 2" in s and "behind 1" in s
+    assert "1 of 2" in s
