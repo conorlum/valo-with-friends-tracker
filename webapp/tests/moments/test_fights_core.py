@@ -35,7 +35,7 @@ def of(out, slot):
 
 def test_envelope_and_every_field_present():
     out = run(team(), util=[damage(10, 0, 5)])
-    assert out["v"] == 1 and out["sight"] is True
+    assert out["v"] == 2 and out["sight"] is True
     f = of(out, 0)[0]
     for key in ("slot", "i", "t0", "t1", "opponents", "first", "man", "kills", "died", "trade", "moving",
                 "mates", "util_on", "util_near", "smoke_near", "util_on_you", "mollied", "duels",

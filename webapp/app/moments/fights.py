@@ -19,7 +19,7 @@ from app.moments.constants import (ABILITY_KIND, CLEAN_MAX_MOVING, CLEAN_SPOT_TO
                                    SHOT_LEAD_S, SIGHT_LOOK_S, SIGHT_STEP_S, SPEED_MAX_SPAN_S, TRADE_RANGE_M,
                                    TRADE_WINDOW_S, UNTAGGED_CLASSES, UTIL_LOOKBACK_S, UTIL_NEAR_M)
 
-VERSION = 1
+VERSION = 2
 PLACED_KINDS = ("Zone", "Patch", "GameObject", "Pawn")
 _EPS = 0.01        # alive counts and positions are read this long before a fight's first event
 
@@ -497,11 +497,19 @@ def _fight(rnd, blob: dict, slot: int, i: int, group: list[tuple], kds: dict | N
 
 
 def round_moments(rnd: engine.RoundInputs, blob: dict, *, sight: bool = True) -> dict:
-    """Every fight of the round's ten players: {"v": 1, "sight": bool, "fights": [fight, ...]}."""
+    """Every fight of the round's ten players: {"v": 2, "sight": bool, "fights": [fight, ...], "aim": [event, ...]}.
+    "aim" (crosshair placement, app.moments.aim) is [] without sight and absent when computing it failed."""
     out = []
     kds = {(t, killer, victim): _kd(rnd, blob, t, killer, victim, sight)
            for t, killer, victim in rnd.kills if t <= rnd.t_decided}
     for slot in sorted(rnd.team):
         for i, group in enumerate(_split(_events(rnd, blob, slot))):
             out.append(_fight(rnd, blob, slot, i, group, kds, sight))
-    return {"v": VERSION, "sight": sight, "fights": out}
+    made = {"v": VERSION, "sight": sight, "fights": out}
+    try:
+        # Imported here: aim imports peeks, which imports fights, so a top-level import would be circular.
+        from app.moments import aim
+        made["aim"] = aim.round_aim(rnd, blob, out) if sight else []
+    except Exception:  # noqa: BLE001 - the aim events' failure leaves the fights as they are
+        pass
+    return made

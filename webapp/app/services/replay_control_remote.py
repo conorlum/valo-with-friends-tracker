@@ -496,7 +496,8 @@ def _trusted_gaps(result: dict, f: InFlight) -> dict | None:
         return None
     moments = gaps.get("moments")
     if not isinstance(moments, dict) or moments.get("status") not in ("ok", "failed") \
-            or (moments["status"] == "ok" and not isinstance(moments.get("fights"), list)):
+            or (moments["status"] == "ok" and (not isinstance(moments.get("fights"), list)
+                                               or ("aim" in moments and not isinstance(moments["aim"], list)))):
         return None
     util = gaps.get("util")     # protocol 3 always sends it; a malformed one is the result's, like moments
     if not isinstance(util, dict) or util.get("status") not in ("ok", "failed") \
