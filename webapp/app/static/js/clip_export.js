@@ -32,8 +32,8 @@
       bitrate: Math.round(w * h * FPS * 0.07), avc: {format: "avc"}};
   }
   function captionText(item, round, score) {
-    score = score || [0, 0];
-    return "Round " + round + " · " + score[0] + "–" + score[1] + " · " + (typeof item === "string" ? item : item.summary || "");
+    return "Round " + round + (score ? " · " + score[0] + "–" + score[1] : "") +
+      " · " + (typeof item === "string" ? item : item.summary || "");
   }
   function fileName(req) {
     var t = (Math.round(req.t_in * 10) / 10).toFixed(1).replace(/\.0$/, "");
@@ -64,13 +64,24 @@
     stopped(signal);
     var options = Object.assign({}, viewer.options, {themeRoot: viewer.root});
     var layers = Object.assign({}, viewer.layers);
+    var extra = {layers: layers, controlBorders: viewer.controlBorders,
+      unknownView: viewer.unknownView, controlView: viewer.controlView};
     var round = viewer.current && viewer.current.blob.round === req.round ? viewer.current : null;
     if (!round) round = global.Replay.prepareRound(await waitFor(options.loadRound(req.round), signal));
     stopped(signal);
     var control = null;
-    if (req.control && viewer.controlCache) control = await waitFor(viewer.controlCache.get(req.round), signal);
+    if (req.control && options.loadControl && global.ReplayControl) {
+      // A clip owns its decoder and abort controller; live navigation cannot evict its round.
+      var cache = new global.ReplayControl.ControlCache(options.loadControl, 1);
+      try { control = await waitFor(cache.get(req.round), signal); }
+      finally { cache.keep([]); }
+    }
     stopped(signal);
-    var clip = global.Replay.clipViewer(options, round, {control: control, layers: layers});
+    control = control && control.status === "ok" ? control : null;
+    if (req.control && !control) layers.control = false;
+    extra.control = control;
+    var clip = global.Replay.clipViewer(options, round, extra);
+    clip.controlUnavailable = !!req.control && !control;
     await waitFor(clip.ready, signal);
     stopped(signal);
     return clip;
@@ -83,8 +94,8 @@
     var bytes = 0, submitted = 0, received = 0;
     req = Object.assign({}, req, {segments: (req.segments || []).map(function (s) { return s.slice(); })});
     var names = Object.assign({}, dataOf(viewer).clip_names);
-    var score = (dataOf(viewer).round_scores || {})[String(req.round)] || [0, 0];
-    var caption = captionText(labelCaption(req.caption, names), req.round, score.slice());
+    var score = (dataOf(viewer).round_scores || {})[String(req.round)];
+    var caption = captionText(labelCaption(req.caption, names), req.round, score && score.slice());
     var times = frameTimes(req), w = evenSize(req.width), h = w + BAR;
     function progress() {
       if (callbacks.onProgress) callbacks.onProgress({frames: submitted, total: times.length, bytes: bytes});
@@ -97,6 +108,9 @@
       stopped(signal);
       var clip = await prepareClip(viewer, req, signal);
       stopped(signal);
+      if (clip.controlUnavailable && callbacks.onWarning) {
+        callbacks.onWarning("Map control isn't ready for this round; exported without it.");
+      }
       var codec = await waitFor(pickCodec(global.VideoEncoder, w, h), signal);
       stopped(signal);
       if (!codec) throw new Error("H.264 MP4 export is not supported by this browser.");
@@ -117,8 +131,8 @@
       var off = global.document.createElement("canvas"); off.width = off.height = 1024;
       var out = global.document.createElement("canvas"); out.width = w; out.height = h;
       var offCtx = off.getContext("2d"), ctx = out.getContext("2d");
-      var opts = {control: req.control, names: req.names, health: req.health,
-        nameOf: function (slot) { return names[String(slot)] || ""; }};
+      var opts = {control: req.control && !clip.controlUnavailable, names: req.names, health: req.health,
+        nameOf: function (slot) { return names[String(slot)] || null; }};
       for (var i = 0; i < times.length; i++) {
         stopped(signal); if (error) throw error;
         while (encoder.encodeQueueSize > 8) await waiting(new Promise(function (r) { setTimeout(r, 0); }));
@@ -149,13 +163,17 @@
   async function openPanel(viewer, prefill) {
     var panel = viewer.root.querySelector("[data-clip-panel]");
     if (!panel) return null;
+    var generation = panel.clipGeneration = (panel.clipGeneration || 0) + 1;
+    function current() { return generation === panel.clipGeneration; }
     if (panel.clipController) panel.clipController.cancel();
     prefill = prefill || {};
     if (Array.isArray(prefill)) prefill = {t_in: prefill[0], t_out: prefill[1]};
     var n = prefill.round || viewer.number, round = viewer.current;
     if (!round || round.blob.round !== n) round = {blob: await viewer.options.loadRound(n)};
+    if (!current()) return null;
     var end = round.blob.t_end, window = defaultWindow(viewer.t, end);
     var q = function (key) { return panel.querySelector("#clip-" + key); };
+    function message(text) { if (current()) q("message").textContent = text; }
     var fields = ["in", "out", "speed", "width", "cut", "control", "names", "health", "caption"];
     var segments = (prefill.segments || []).map(function (s) { return s.slice(); });
     var active = null, revision = 0, supported = false;
@@ -178,10 +196,10 @@
       return {round: n, t_in: a, t_out: b, speed: Number(q("speed").value) === 2 ? 2 : 1,
         width: [512, 720, 1024].includes(Number(q("width").value)) ? Number(q("width").value) : 720,
         cut: q("cut").checked && parts.length >= 2, segments: parts, caption: q("caption").value,
-        score: ((dataOf(viewer).round_scores || {})[String(n)] || [0, 0]).slice(),
         control: !!viewer.controlCache && q("control").checked, names: q("names").checked, health: q("health").checked};
     }
     async function refresh() {
+      if (!current()) return;
       var rev = ++revision, req = request(), size = estimateBytes(req);
       q("cut").disabled = !!active || req.segments.length < 2;
       q("estimate").textContent = "Estimated size: " + megabytes(size);
@@ -189,13 +207,14 @@
       // The button stays as it was while the codec is asked: typing in a field and then pressing Export fires the
       // field's change (a refresh) on mousedown, and a button disabled there would lose that click.
       var codec = await pickCodec(global.VideoEncoder, req.width, req.width + BAR);
-      if (rev !== revision || active) return;
+      if (!current() || rev !== revision || active) return;
       supported = !!codec;
-      q("message").textContent = supported ? "" : "H.264 MP4 export is not supported by this browser.";
+      message(supported ? "" : "H.264 MP4 export is not supported by this browser.");
       q("export").disabled = !!active || !supported || req.t_out <= req.t_in;
     }
     function cancel() { if (active) active.abort(); }
     function busy(value) {
+      if (!current()) return;
       fields.forEach(function (key) { q(key).disabled = value; });
       q("in-now").disabled = q("out-now").disabled = value;
       q("control").disabled = value || !viewer.controlCache;
@@ -205,43 +224,50 @@
     }
     // Reopening replaces handlers instead of accumulating listeners or retaining an old round.
     fields.forEach(function (key) { q(key).onchange = refresh; });
-    q("in-now").onclick = function () { q("in").value = viewer.t; return refresh(); };
-    q("out-now").onclick = function () { q("out").value = viewer.t; return refresh(); };
+    q("in-now").onclick = function () { if (!current()) return; q("in").value = viewer.t; return refresh(); };
+    q("out-now").onclick = function () { if (!current()) return; q("out").value = viewer.t; return refresh(); };
     q("cancel").onclick = cancel;
-    q("close").onclick = function () { cancel(); panel.hidden = true; };
+    q("close").onclick = function () { if (!current()) return; cancel(); panel.hidden = true; };
     q("link").onclick = async function () {
+      if (!current()) return;
       var req = request(), data = dataOf(viewer);
       try {
         var link = global.Replay.momentLink(data.match.uuid, req.round, req.t_in, req.t_out);
         await global.navigator.clipboard.writeText(new URL(link, global.location.href).href);
-        q("message").textContent = "Moment link copied.";
-      } catch (e) { q("message").textContent = "Could not copy link: " + e.message; }
+        message("Moment link copied.");
+      } catch (e) { message("Could not copy link: " + e.message); }
     };
     q("export").onclick = async function () {
-      if (active || !supported) return;
+      if (!current() || active || !supported) return;
       var controller = active = new AbortController(), req = request();
+      var warning = "";
+      function status(text) { message(text + (warning ? " " + warning : "")); }
       busy(true); q("progress").value = 0; q("size").textContent = "0 MB";
-      q("message").textContent = "Preparing clip…";
+      status("Preparing clip…");
       try {
-        var blob = await exportClip(viewer, req, {signal: controller.signal, onProgress: function (p) {
+        var blob = await exportClip(viewer, req, {signal: controller.signal,
+          onWarning: function (text) { warning = text; status("Preparing clip…"); }, onProgress: function (p) {
+          if (!current()) return;
           q("progress").max = p.total; q("progress").value = p.frames;
           q("size").textContent = megabytes(p.bytes);
           q("note").hidden = p.bytes <= LIMIT && estimateBytes(req) <= LIMIT;
-          q("message").textContent = "Encoding…";
+          status("Encoding…");
         }});
+        if (!current()) return;
         if (blob && !controller.signal.aborted) {
           var url = global.URL.createObjectURL(blob), a = global.document.createElement("a");
           a.href = url; a.download = fileName(req);
           try { a.click(); } finally { setTimeout(function () { global.URL.revokeObjectURL(url); }, 1000); }
           q("size").textContent = megabytes(blob.size);
           q("note").hidden = blob.size <= LIMIT;
-          q("message").textContent = "Clip downloaded.";
-        } else q("message").textContent = "Cancelled.";
-      } catch (e) { q("message").textContent = e.message; }
+          status("Clip downloaded.");
+        } else status("Cancelled.");
+      } catch (e) { status(e.message); }
       finally { active = null; busy(false); }
     };
     var result = {request: request, refresh: refresh, cancel: cancel};
     panel.clipController = result;
+    busy(false);
     await refresh();
     return result;
   }

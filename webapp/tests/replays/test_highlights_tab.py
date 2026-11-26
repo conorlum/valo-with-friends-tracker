@@ -104,7 +104,25 @@ def test_render_util_fallback_note_and_missing_note():
     }""", p)
     joined = "\n".join(got)
     assert "best util" in joined and "best kill" not in joined
-    assert "Fight swings not available yet" in joined
+    assert "Team-fight swings not available yet" in joined
+
+
+@needs_node
+@pytest.mark.parametrize("missing, notes", [
+    (["util"], ["Util plays not available yet"]),
+    (["winchance"], ["Win-chance swings not available yet"]),
+    (["fight", "util"], ["Team-fight swings not available yet", "Util plays not available yet"]),
+    ([], []),
+    (["unknown"], []),
+    (["fight", "fight"], ["Team-fight swings not available yet"]),
+])
+def test_missing_notes_describe_each_missing_kind(missing, notes):
+    got = run_node("""function run(p) {
+      const panel = document.createElement("div");
+      H.render(panel, p, {});
+      return texts(panel).filter(t => t.includes("not available yet"));
+    }""", payload(missing=missing))
+    assert got == notes
 
 
 @needs_node

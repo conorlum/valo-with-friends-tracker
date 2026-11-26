@@ -132,7 +132,7 @@
       caf: function (id) { global.cancelAnimationFrame(id); },
       now: function () { return global.performance.now(); },
       document: document, ctx: canvas.getContext("2d"), off: off, item: data.item,
-      nameOf: function (slot) { return clipNames[String(slot)] || ""; },
+      nameOf: function (slot) { return clipNames[String(slot)] || null; },
       load: viewerLoader(card, data),
       onState: function (name) {
         button.textContent = name === "stopped" ? "▶ Play here" : "Stop";

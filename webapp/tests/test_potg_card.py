@@ -195,3 +195,31 @@ def test_hidden_during_playback_stops_frames():
       return {before, after: r.draws.length, pending: r.pending()};
     """)
     assert out['after'] == out['before'] and out['pending'] == 0
+
+
+@needs_node
+@pytest.mark.parametrize("names", [{}, {"1": "Jett", "6": ""}])
+def test_card_glue_uses_null_for_missing_slot_labels(names):
+    script = r"""
+const fs=require('fs'), vm=require('vm');
+const data={uuid:'fixture',round:1,item:{t_start:0,t_end:1},clip_names:NAMES};
+const labels=[], events={}, button={textContent:''}, canvas={getContext:()=>({drawImage(){}})};
+const card={attrs:{},getAttribute(k){return this.attrs[k];},setAttribute(k,v){this.attrs[k]=v;},
+  querySelector(s){return s==='script[data-potg]' ? {textContent:JSON.stringify(data)} :
+    s==='[data-potg-play]' ? button : s==='[data-potg-canvas]' ? canvas : null;}};
+button.closest=s=>s==='[data-potg-play]' ? button : card;
+const document={hidden:false,addEventListener(k,fn){events[k]=fn;},
+  createElement(tag){return tag==='script' ? {} : {getContext:()=>({})};},
+  head:{appendChild(s){s.onload();}}};
+const context={document,performance:{now:()=>0},requestAnimationFrame:()=>1,cancelAnimationFrame(){},
+  fetch:async()=>({ok:true,json:async()=>({})}),
+  Replay:{prepareRound:b=>b,withSiteData:()=>({}),clipViewer:()=>({ready:Promise.resolve({
+    drawAt(t,ctx,opts){labels.push([opts.nameOf(1),opts.nameOf(6),opts.nameOf(9)]);}})})}};
+vm.runInNewContext(fs.readFileSync(process.argv[1],'utf8'),context);
+events.click({target:button});
+setImmediate(()=>process.stdout.write(JSON.stringify(labels)));
+""".replace("NAMES", json.dumps(names))
+    completed = subprocess.run([NODE, "-e", script, str(POTG_JS)], capture_output=True,
+                               text=True, encoding="utf-8", timeout=30, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [[names.get("1") or None, None, None]]

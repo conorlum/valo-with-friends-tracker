@@ -159,7 +159,7 @@ global.Image = class {
   }
 };
 assert.throws(() => R.clipViewer({mapImage: 'map'}, R.prepareRound(H.simpleBlob())), /themeRoot/);
-const control = {parsed: {times: []}};
+const control = {status: 'ok', parsed: {times: [], header: {}}};
 const blob = H.scenes()[0].blob;
 blob.util[0].agent = 'Omen'; blob.util[0].thrown = {t0: 9, t1: 11, u: 2400, v: 3600};
 const v = R.clipViewer({themeRoot, mapImage: 'map', sightMask: 'sight', agentIcon: () => 'agent',
@@ -198,3 +198,41 @@ assert.deepEqual(await v.fetchRound(blob.round), expected);
 assert(v.fetchRound.toString().includes('prepareRound'));
 blob.extras = extras; assert.deepEqual(R.prepareRound(blob).tracks, expected.tracks);
 """)
+
+
+@pytest.mark.parametrize("status", ["not_ready", "failed", "unavailable", "error", "aborted", None])
+def test_clip_cache_hides_non_ok_control_from_painters(status):
+    node(CANVAS_ENV + """
+global.Image = class {set src(url) {
+  this.complete=true; this.naturalWidth=this.naturalHeight=2; queueMicrotask(()=>this.onload());
+}};
+const v=R.clipViewer({themeRoot:{},mapImage:'map'}, R.prepareRound(H.simpleBlob()),
+  {control:p === null ? null : {status:p},layers:{control:true}});
+await v.ready;
+assert.equal(v.controlCache.ready(v.number),null);
+v.controlView='A';
+assert.equal(v.knowingGroup(v.controlCache.ready(v.number)),null);
+v.drawAt(5,H.mockCtx([]));
+""", status)
+
+
+@pytest.mark.parametrize("label", [None, "", "#", "Fixture"])
+@pytest.mark.parametrize("linked", [False, True])
+def test_unlabelled_slots_have_no_name_plate_or_text(label, linked):
+    node("""
+const {v}=H.makeViewer(R);
+if(p.linked) v.linked={players:{}};
+v.nameOf=()=>p.label;
+const log=[], layout=[], opts={health:false,nameOf:v.nameOf};
+v.drawBlocks(H.mockCtx(log),20,[],[{slot:1,x:300,y:300,dim:1}],layout,opts);
+const visible=!!(p.label && p.label.split('#')[0]);
+assert.equal(log.some(c=>c.op==='fillRect'),visible);
+assert.equal(log.some(c=>c.op==='fillText'),visible);
+assert.equal(layout.length,visible ? 1 : 0);
+// Exercise the complete unlinked/linked export draw path as well.
+const calls=[]; v.drawAt(5,H.mockCtx(calls),opts);
+if(!visible) {
+  assert(!calls.some(c=>c.op==='fillRect' && c.style.fillStyle==='rgba(10, 10, 12, 0.78)'));
+  assert(!calls.some(c=>c.op==='fillText' && c.args[0]===''));
+}
+""", {"label": label, "linked": linked})

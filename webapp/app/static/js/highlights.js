@@ -9,7 +9,8 @@
 
   var MORE_LIMIT = 2;
   var FALLBACK_NOTES = { kill: "best kill", util: "best util" };
-  var MISSING_NOTE = "Fight swings not available yet";
+  var MISSING_NOTES = {fight: "Team-fight swings not available yet", util: "Util plays not available yet",
+    winchance: "Win-chance swings not available yet"};
 
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -72,7 +73,9 @@
       (p.more || []).slice(0, MORE_LIMIT).forEach(function (item) { list.appendChild(itemRow(item, safe)); });
       container.appendChild(list);
     });
-    if ((payload.missing || []).length) container.appendChild(el("p", "replay-side-note", MISSING_NOTE));
+    Object.keys(MISSING_NOTES).forEach(function (kind) {
+      if ((payload.missing || []).indexOf(kind) >= 0) container.appendChild(el("p", "replay-side-note", MISSING_NOTES[kind]));
+    });
   }
 
   var api = { render: render, durationText: durationText };

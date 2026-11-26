@@ -2082,7 +2082,8 @@
   function clipViewer(options, round, extra) {
     if (!options.themeRoot) throw new Error("clipViewer requires options.themeRoot");
     extra = extra || {};
-    var v = Object.create(ReplayViewer.prototype), control = extra.control || null;
+    var v = Object.create(ReplayViewer.prototype);
+    var control = extra.control && extra.control.status === "ok" ? extra.control : null;
     Object.assign(v, {
       root: options.themeRoot, options: options, turns: ((options.rotation | 0) % 4 + 4) % 4,
       linked: options.linked || null, current: round, number: round.blob.round, t: 0,
@@ -2092,7 +2093,8 @@
         cones: true, aim: true, control: false, gaps: false, features: true, areas: false, bar: true}, extra.layers),
       control: control ? (options.control || {}) : null,
       controlCache: {ready: function (n) { return n === v.number ? control : null; }},
-      controlPaint: null, controlScope: "round", unknownView: "both",
+      controlPaint: null, controlScope: "round", unknownView: extra.unknownView || "both",
+      controlBorders: !!extra.controlBorders, controlView: extra.controlView || "true",
       gaps: false, gapsReady: {}, gapsHover: null, gapsFlickers: false,
       areas: null, areasPaint: null, mapDark: null, sight: null, outlines: null
     });
@@ -2341,7 +2343,7 @@
     this.autoPlay = null;
     return this.fetchRound(n).then(function (round) {
       if (token !== self.loadSeq) return round;
-      if (n !== self.number) self.until = null;
+      if (n !== self.number || (self.until != null && (t || 0) >= self.until)) self.until = null;
       self.current = round;
       self.number = n;
       self.t = t || 0;
@@ -4060,8 +4062,8 @@
       var hv = (!opts || opts.health !== false) && healthShown(m.health, m.overheal, m.decay) ? m.health : null;
       var name = null;
       if ((self.linked || (opts && opts.nameOf)) && self.layers.names) {
-        name = self.nameOf(m.slot).split("#")[0];
-        if (!(opts && opts.nameOf)) name = name.length > 14 ? name.slice(0, 13) + "…" : name;
+        name = (self.nameOf(m.slot) || "").split("#")[0] || null;
+        if (name && !(opts && opts.nameOf)) name = name.length > 14 ? name.slice(0, 13) + "…" : name;
       }
       if (!hv && name === null) return;
       ctx.font = "700 " + Math.round(r * 0.6) + "px system-ui, sans-serif";

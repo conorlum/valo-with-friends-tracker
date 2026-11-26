@@ -12,6 +12,7 @@ NODE = shutil.which("node")
 HARNESS = r"""
 const assert = require('assert/strict'), fs = require('fs'), vm = require('vm');
 const C = require(process.argv[1] + '/app/static/js/clip_export.js');
+global.ReplayControl = require(process.argv[1] + '/app/static/js/replay_control.js');
 vm.runInThisContext(fs.readFileSync(process.argv[1] + '/app/static/vendor/mp4-muxer-5.2.2.js', 'utf8'));
 global.Mp4Muxer = Mp4Muxer;
 const texts = [], draws = [], encoders = [], frames = [], loads = [], clips = [], configs = [];
@@ -146,7 +147,8 @@ def test_cancel_at_every_await_and_next_export_succeeds(phase):
 const phase = 'PHASE', gate=deferred(), controller=new AbortController();
 let requested={...req,round:2,t_out:2.4};
 if(phase==='load') load=()=>gate.promise;
-if(phase==='control') {requested.control=true; viewer.controlCache={get:()=>gate.promise};}
+if(phase==='control') {requested.control=true; viewer.controlCache={get:()=>{throw Error('live cache used');}};
+  viewer.options.loadControl=()=>gate.promise;}
 if(phase==='ready') ready=gate.promise;
 if(phase==='codec') Encoder.isConfigSupported=()=>gate.promise;
 if(phase==='flush') flushWait=gate.promise;
@@ -173,6 +175,115 @@ await C.exportClip(viewer,{...req,t_in:8,t_out:21,cut:true,segments:[[8,11],[18,
   caption:{summary:'1v3 clutch',slot:1}},{});
 assert(texts.includes('0:10')); assert(texts.includes('0:20'));
 assert(texts.some(t=>t.includes('Jett') && t.includes('1v3 clutch')));
+""")
+
+
+@pytest.mark.parametrize("status", ["not_ready", "failed", "unavailable", "error", "aborted", None])
+def test_control_failure_exports_without_control_and_explains_in_panel(status):
+    import json
+    node("""
+const status=STATUS;
+viewer.controlCache={get:()=>{throw Error('live cache used');}, keep:()=>{throw Error('live cache changed');}};
+viewer.layers.control=true;
+let calls=0;
+viewer.options.loadControl=(n,signal)=>{calls++; assert.equal(n,4); assert(signal instanceof AbortSignal);
+  return status ? {status} : null;};
+await C.openPanel(viewer,{t_in:2,t_out:2.1});
+await nodes['#clip-export'].click();
+assert.equal(downloads,1); assert.equal(calls,1);
+assert.equal(clips[0].extra.control,null); assert.equal(clips[0].extra.layers.control,false);
+assert(nodes['#clip-message'].textContent.includes("Map control isn't ready for this round; exported without it."));
+""".replace("STATUS", json.dumps(status)))
+
+
+def test_control_is_decoded_privately_and_cancellation_aborts_only_its_load():
+    node("""
+viewer.controlCache={get:()=>{throw Error('live cache used');}};
+const header=Buffer.from(JSON.stringify({cells:0,walk:'',ticks:[],hz:16,checkpoints:[],streams:{}}));
+const prefix=Buffer.from([86,67,84,76,1,0,0,0,0]); prefix.writeUInt32LE(header.length,5);
+viewer.options.loadControl=()=>({status:'ok',buffer:Buffer.concat([prefix,header])});
+const clip=await C.prepareClip(viewer,{...req,control:true});
+assert.equal(clip.extra.control.status,'ok'); assert.deepEqual(clip.extra.control.parsed.times,[]);
+assert.equal(typeof clip.extra.control.cursor.states,'function');
+assert.equal(clip.controlUnavailable,false);
+let privateSignal;
+viewer.options.loadControl=(n,signal)=>{privateSignal=signal; return new Promise(()=>{});};
+const controller=new AbortController();
+const pending=C.exportClip(viewer,{...req,control:true},{signal:controller.signal});
+while(!privateSignal) await tick(); controller.abort();
+assert.equal(await pending,null); assert(privateSignal.aborted);
+""")
+
+
+def test_missing_labels_and_round_score_are_omitted_from_export():
+    node("""
+viewer.options.replayData={};
+global.Replay.clipViewer=(options,round,extra)=>({ready,drawAt(t,ctx,opts){
+  for(const slot of [1,6,9]) assert.equal(opts.nameOf(slot),null);
+}});
+const blob=await C.exportClip(viewer,{...req,t_out:2.1},{});
+assert(blob.size>0); assert(texts.includes('Round 4 \u00b7 1v3 clutch'));
+assert.equal(C.captionText('summary',4),'Round 4 \u00b7 summary');
+assert.equal(C.captionText('summary',4,[0,0]),'Round 4 \u00b7 0\u20130 \u00b7 summary');
+viewer.options.replayData={clip_names:{1:'Jett',6:''},round_scores:{3:[2,1]}};
+global.Replay.clipViewer=(options,round,extra)=>({ready,drawAt(t,ctx,opts){
+  assert.equal(opts.nameOf(1),'Jett'); assert.equal(opts.nameOf(6),null); assert.equal(opts.nameOf(9),null);
+}});
+await C.exportClip(viewer,{...req,t_out:2.1},{});
+""")
+
+
+def test_reopening_panel_ignores_old_export_progress_message_and_finally():
+    node("""
+await C.openPanel(viewer,{t_in:2,t_out:2.1,segments:[[2,2.1]]});
+const gate=deferred(); flushWait=gate.promise;
+const pending=nodes['#clip-export'].click();
+while(!encoders.length || draws.length<3) await tick();
+await C.openPanel(viewer,{t_in:4,t_out:6,segments:[[4,4.5],[5,6]],caption:'second'});
+nodes['#clip-message'].textContent='second panel';
+const progress=nodes['#clip-progress'].value;
+gate.resolve(); await pending; await tick();
+assert.equal(nodes['#clip-cut'].disabled,false);
+for(const key of ['in','out','speed','width','names','health','caption','in-now','out-now'])
+  assert.equal(nodes['#clip-'+key].disabled,false,key);
+assert.equal(nodes['#clip-message'].textContent,'second panel');
+assert.equal(nodes['#clip-progress'].value,progress);
+assert.equal(nodes['#clip-caption'].value,'second'); assert.equal(downloads,0);
+""")
+
+
+def test_reopening_panel_ignores_old_round_and_codec_loads():
+    node("""
+const oldRound=deferred(); load=()=>oldRound.promise;
+const oldOpen=C.openPanel(viewer,{round:2,t_in:1,t_out:2});
+await C.openPanel(viewer,{caption:'new',t_in:4,t_out:6,segments:[[4,4.5],[5,6]]});
+oldRound.resolve({round:2,t_end:100}); await oldOpen;
+assert.equal(nodes['#clip-caption'].value,'new'); assert.equal(nodes['#clip-cut'].disabled,false);
+const oldCodec=deferred(); Encoder.isConfigSupported=()=>oldCodec.promise;
+const oldRefresh=panel.clipController.refresh();
+Encoder.isConfigSupported=async()=>({supported:true});
+await C.openPanel(viewer,{caption:'newest'});
+nodes['#clip-message'].textContent='newest panel';
+oldCodec.resolve({supported:false}); await oldRefresh;
+assert.equal(nodes['#clip-message'].textContent,'newest panel');
+assert.equal(nodes['#clip-export'].disabled,false);
+""")
+
+
+def test_prepare_clip_freezes_all_control_display_settings():
+    node("""
+global.Replay=require(process.argv[1]+'/app/static/js/replay.js');
+viewer.current=global.Replay.prepareRound({v:1,round:4,t_end:100,hz:1,players:[],tracks:{},alive:{},kills:[],util:[]});
+global.Image=class {set src(url) {this.complete=true; this.naturalWidth=this.naturalHeight=2;
+  queueMicrotask(()=>this.onload());}};
+global.getComputedStyle=()=>({getPropertyValue:()=>''});
+for(const controlView of ['true','A','B']) {
+  Object.assign(viewer,{controlBorders:true,unknownView:'off',controlView});
+  const clip=await C.prepareClip(viewer,req);
+  assert.equal(clip.controlBorders,true); assert.equal(clip.unknownView,'off'); assert.equal(clip.controlView,controlView);
+  viewer.controlBorders=false; viewer.unknownView='both'; viewer.controlView='true';
+  assert.equal(clip.controlBorders,true); assert.equal(clip.unknownView,'off'); assert.equal(clip.controlView,controlView);
+}
 """)
 
 

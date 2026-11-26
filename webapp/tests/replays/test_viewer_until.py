@@ -101,6 +101,25 @@ v.tick(500); assert.equal(v.t, 6.5); assert.equal(v.playing, true);
 """)
 
 
+@pytest.mark.parametrize("method", ["playFrom", "playRound", "showRound"])
+@pytest.mark.parametrize("start", [12, 15, 30])
+def test_same_round_play_clears_until_only_at_or_after_endpoint(method, start):
+    node("""
+const v=viewer(3,100); v.number=5; v.rounds=[5]; v.setUntil(15);
+v.fetchRound=async n=>({blob:{round:n,t_end:100}});
+for(const name of ['renderStrip','renderTicks','renderBanner','renderFeed','renderMapFeatureEvents',
+  'renderAnalysis','renderUtilList','refreshControl','renderControlTable','refreshGaps']) v[name]=()=>{};
+await v[p.method](5,p.start);
+assert.equal(v.t,p.start); assert.equal(v.until,p.start<15 ? 15 : null);
+if(p.method==='showRound') assert.equal(v.playing,false);
+else {
+  assert.equal(v.playing,true); v.tick(1000); v.tick(1500);
+  assert.equal(v.t,p.start+0.5); assert.equal(v.playing,true);
+  if(p.start<15) {v.tick(4500); assert.equal(v.t,15); assert.equal(v.playing,false);}
+}
+""", {"method": method, "start": start})
+
+
 @pytest.mark.parametrize("t_in, t_out, expected", [
     (3, None, "/replays/clip-id?round=2&t=3.00"),
     (7.5, 12, "/replays/clip-id?round=2&t=7.50&until=12.00"),
