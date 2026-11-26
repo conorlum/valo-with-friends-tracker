@@ -39,12 +39,13 @@ def flash(t, by, hits, x=0, y=0, k="flash", name="Flash") -> dict:
     return {"k": k, "t": t, "by": by, "u": u, "v": v, "name": name, "hits": [list(h) for h in hits]}
 
 
-def round_of(players, *, kills=(), util=(), t_end=30.0, t_decided=None, db_deaths=(), geo=None):
+def round_of(players, *, kills=(), util=(), t_end=30.0, t_decided=None, db_deaths=(), geo=None, hz=None):
     """`players` = {slot: (side, [(t, x px, y px, yaw), ...])}. Kills end their victim's life.
     Returns (RoundInputs, blob)."""
     geo = geo or open_hall()
     deaths = {k["victim"]: k["t"] for k in kills}
-    data = blob(players, t_end=t_end, t_decided=t_decided, util=list(util), deaths=deaths)
+    data = blob(players, t_end=t_end, t_decided=t_decided, util=list(util), deaths=deaths,
+                **({} if hz is None else {"hz": hz}))
     data["kills"] = list(kills)
     link = ce.ControlLink(db_deaths=tuple(db_deaths))
     return ce.RoundInputs(data, geo, link), data
