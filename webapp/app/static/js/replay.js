@@ -2505,9 +2505,39 @@
     return true;
   };
 
+  var clipExportLoading = null;
+  function loadClipExport() {
+    if (!clipExportLoading) {
+      function script(src) {
+        return new Promise(function (resolve, reject) {
+          var tag = document.createElement("script");
+          tag.src = src; tag.onload = resolve;
+          tag.onerror = function () { tag.remove(); reject(new Error("Could not load " + src)); };
+          document.head.appendChild(tag);
+        });
+      }
+      clipExportLoading = script("/static/vendor/mp4-muxer-5.2.2.js")
+        .then(function () { return script("/static/js/clip_export.js"); })
+        .catch(function (e) { clipExportLoading = null; throw e; });
+    }
+    return clipExportLoading;
+  }
+  ReplayViewer.prototype.openExport = function (prefill) {
+    var self = this, panel = this.root.querySelector("[data-clip-panel]");
+    if (!panel) return Promise.resolve(null);
+    return loadClipExport().then(function () { return global.ClipExport.openPanel(self, prefill); })
+      .catch(function (e) {
+        panel.hidden = false;
+        panel.querySelector("#clip-message").textContent = e.message;
+        return null;
+      });
+  };
+
   ReplayViewer.prototype.bindControls = function () {
     var self = this;
     var q = function (sel) { return self.root.querySelector(sel); };
+    var exportButton = q("[data-replay-export]");
+    if (exportButton) exportButton.addEventListener("click", function () { self.openExport(); });
     this.ui = {
       play: q("[data-replay-play]"), speed: q("[data-replay-speed]"), scrub: q("[data-replay-scrub]"),
       clock: q("[data-replay-clock]"), strip: q("[data-replay-strip]"), ticks: q("[data-replay-ticks]"),

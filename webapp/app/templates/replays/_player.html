@@ -50,7 +50,38 @@
         <span class="replay-clock" data-replay-clock aria-live="off"></span>{% if linked %}
         <span class="replay-badge" data-replay-badge title="Players alive now: Team 1 v Team 2" hidden></span>{% endif %}
         <button type="button" class="replay-button" data-replay-next>Next round</button>
+        {% if clip_export %}<button type="button" class="replay-button" data-replay-export>Export clip</button>{% endif %}
       </div>
+      {% if clip_export %}
+      <fieldset data-clip-panel hidden aria-label="Export clip">
+        <legend>Export clip</legend>
+        <label for="clip-in">In (seconds)</label>
+        <input id="clip-in" type="number" min="0" step="0.01">
+        <button id="clip-in-now" type="button">Set in to now</button>
+        <label for="clip-out">Out (seconds)</label>
+        <input id="clip-out" type="number" min="0" step="0.01">
+        <button id="clip-out-now" type="button">Set out to now</button>
+        <label for="clip-speed">Speed</label>
+        <select id="clip-speed"><option value="1">1x</option><option value="2">2x</option></select>
+        <label for="clip-width">Width</label>
+        <select id="clip-width"><option value="512">512 px</option><option value="720" selected>720 px</option><option value="1024">1024 px</option></select>
+        <span>30 fps</span>
+        <label><input id="clip-cut" type="checkbox" disabled> Cut between kills</label>
+        <label><input id="clip-control" type="checkbox"> Control</label>
+        <label><input id="clip-names" type="checkbox" checked> Names</label>
+        <label><input id="clip-health" type="checkbox" checked> Health bars</label>
+        <label for="clip-caption">Caption</label><input id="clip-caption" type="text" maxlength="240">
+        <p id="clip-estimate"></p>
+        <progress id="clip-progress" value="0" max="1" aria-label="Export progress"></progress>
+        <span id="clip-size" aria-live="polite"></span>
+        <p id="clip-note" hidden>Over Discord's free limit of 10 MB (Nitro allows more).</p>
+        <p id="clip-message" role="status"></p>
+        <button id="clip-export" type="button" disabled>Export</button>
+        <button id="clip-cancel" type="button" disabled>Cancel</button>
+        <button id="clip-link" type="button">Copy link to this moment</button>
+        <button id="clip-close" type="button">Close</button>
+      </fieldset>
+      {% endif %}
       <div class="replay-scrub-wrap">
         <input class="replay-scrub" data-replay-scrub type="range" min="0" max="1000" value="0" aria-label="Time in round">
         <div class="replay-ticks" data-replay-ticks aria-hidden="true"></div>

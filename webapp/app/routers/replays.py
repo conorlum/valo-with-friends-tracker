@@ -531,6 +531,7 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
         "linked": linked, "replay_data": context, "start_round": start,
         "start_t": start_t, "until_t": until_t,
         "open_export": request.query_params.get("export") == "1",
+        "clip_export": True,
         "control": context["match"]["control"] if linked else None,
         "gaps": bool(linked and context["match"].get("gaps")),
         # R2-5 (2026-11-12): the match-level panels (Control tables, heatmap, Critical Moments, Critical Util)

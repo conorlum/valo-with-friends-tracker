@@ -27,6 +27,7 @@
     Promise.all(tables).then(function (loaded) {
       var abilityIcons = loaded[0], gunIcons = loaded[1];
       window.viewer = new Replay.ReplayViewer(root, {
+        replayData: data,
         rounds: match.rounds,
         rotation: match.rotation || 0,
         mapImage: "/static/img/maps/" + match.asset + ".png",
@@ -76,7 +77,18 @@
         {% if start_t is not none %}window.viewer.seek({{ start_t }});{% endif %}
         {% if until_t is defined and until_t is not none %}window.viewer.setUntil({{ until_t }});{% endif %}
         return round;
-      }){% endif %};
+      }){% endif %}.then(function (round) {
+        if (!window.viewerOpenExport) return round;
+        var prefill = {round: {{ start_round }}, t_in: window.viewer.t};
+        if (window.viewer.until != null) prefill.t_out = window.viewer.until;
+        var id = new URLSearchParams(window.location.search).get("hl");
+        var item = id ? json("/replays/" + match.uuid + "/highlights.json").then(function (body) {
+          return (body.highlights || []).concat(body.potg ? [body.potg] : []).find(function (h) { return h.id === id; });
+        }).catch(function () { return null; }) : Promise.resolve(null);
+        return item.then(function (highlight) {
+          return window.viewer.openExport(highlight || prefill);
+        }).then(function () { return round; });
+      });
     });
   })();
 </script>
