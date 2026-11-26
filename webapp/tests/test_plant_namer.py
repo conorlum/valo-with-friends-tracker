@@ -274,15 +274,28 @@ def _fake_database(monkeypatch, rows):
 
 
 def test_reader_selects_only_position_fields_in_read_only_transaction(monkeypatch):
-    plant_namer, calls = _fake_database(monkeypatch, [("Ascent", "release-13.08", "A", 2000, 3000)])
+    plant_namer, calls = _fake_database(monkeypatch, [("Ascent", "release-13.08", "A", 2000, 3000, None)])
     assert plant_namer.read_points() == [("Ascent", "A", 2000, 3000)]
     assert calls[0] == "SET TRANSACTION READ ONLY"
     select = " ".join(calls[1].lower().split())
-    assert select.startswith("select m.map_name, r.game_branch, p.site, p.u, p.v from round_plants p")
+    assert select.startswith("select m.map_name, r.game_branch, p.site, p.u, p.v, m.played_at from round_plants p")
     assert "link_status = 'linked'" in select
     for private in ("display_name", "external_id", "match_uuid", "player", "riot"):
         assert private not in select
     assert calls[2] == "disposed"
+
+
+def test_reader_leaves_out_a_moved_sites_plants_from_before_the_move(monkeypatch):
+    from datetime import datetime, timezone
+    from app.services import plant_site_changes
+    monkeypatch.setattr(plant_site_changes, "cutoffs", lambda: {
+        ("Ascent", "B"): datetime(2025, 10, 14, tzinfo=timezone.utc)})
+    plant_namer, _ = _fake_database(monkeypatch, [
+        ("Ascent", "release-13.08", "B", 1, 1, datetime(2025, 10, 13, tzinfo=timezone.utc)),
+        ("Ascent", "release-13.08", "B", 2, 2, datetime(2025, 10, 14, tzinfo=timezone.utc)),
+        ("Ascent", "release-13.08", "A", 3, 3, datetime(2025, 1, 1, tzinfo=timezone.utc)),
+    ])
+    assert plant_namer.read_points() == [("Ascent", "B", 2, 2), ("Ascent", "A", 3, 3)]
 
 
 def test_reader_decides_the_layout_when_rows_are_read(monkeypatch):
@@ -295,11 +308,11 @@ def test_reader_decides_the_layout_when_rows_are_read(monkeypatch):
                          "Bind": [row("Bind", None)]}}
     monkeypatch.setattr(layouts, "load_registry", lambda path=None: registry)
     plant_namer, _ = _fake_database(monkeypatch, [
-        ("Ascent", None, "A", 1, 1),                        # tracker row, no replay: layout unknown
-        ("Ascent", "release-13.08", "A", 2000, 3000),       # base layout
-        ("Ascent", "release-14.00", "B", 4000, 5000),       # the later layout
-        ("Bind", None, "A", 10, 20),                        # one layout: known without a replay
-        (None, None, "A", 7, 7),                            # no map at all
+        ("Ascent", None, "A", 1, 1, None),                      # tracker row, no replay: layout unknown
+        ("Ascent", "release-13.08", "A", 2000, 3000, None), # base layout
+        ("Ascent", "release-14.00", "B", 4000, 5000, None), # the later layout
+        ("Bind", None, "A", 10, 20, None),                  # one layout: known without a replay
+        (None, None, "A", 7, 7, None),                      # no map at all
     ])
     assert plant_namer.read_points() == [
         ("Ascent", "A", 2000, 3000), ("Ascent_14_0", "B", 4000, 5000), ("Bind", "A", 10, 20)]

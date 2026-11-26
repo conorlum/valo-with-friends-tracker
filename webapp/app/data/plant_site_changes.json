@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "changes": [
+    {
+      "map": "Abyss",
+      "site": "B",
+      "from": "2025-10-14",
+      "why": "B site moved in a patch between 2025-10-13 and 2025-10-18: 80-100% of earlier B plants land outside today's zone, none after."
+    },
+    {
+      "map": "Lotus",
+      "site": "A",
+      "from": "2025-10-14",
+      "why": "A site changed in the same patch as Abyss B: 25-100% of A plants a month land outside today's zone up to 2025-10-13, none after."
+    },
+    {
+      "map": "Sunset",
+      "site": "B",
+      "from": "2024-10-23",
+      "why": "B site changed: 50-100% of B plants land outside today's zone up to 2024-10-22, none from the next B plant (2025-01-03) on."
+    }
+  ]
+}

@@ -396,3 +396,48 @@ def test_example_links_are_replay_deep_links(db):
     assert 1 <= len(links) <= 3
     for link in links:
         assert re.fullmatch(r"/replays/[0-9a-f-]{36}\?round=1&amp;t=38\.0|/replays/[0-9a-f-]{36}\?round=1&t=38\.0", link)
+
+
+def _moved_site(monkeypatch):
+    from app.services import plant_site_changes
+    monkeypatch.setattr(plant_site_changes, "cutoffs", lambda: {
+        ("Bind", "B"): datetime(2025, 10, 14, tzinfo=timezone.utc)})
+    monkeypatch.setattr(plant_site_changes, "digest", lambda: "moves-1")
+
+
+def _played(db, matches, when):
+    for match in matches:
+        match.played_at = when
+    db.commit()
+
+
+def test_a_moved_site_counts_only_plants_from_its_move_on(db, monkeypatch):
+    _moved_site(monkeypatch)
+    _played(db, _plants(db, 2, map_name="Bind", site="B", asset_key="Bind"),
+            datetime(2025, 10, 13, 23, tzinfo=timezone.utc))          # before: left out
+    _plants(db, 3, start=10, map_name="Bind", site="B", asset_key="Bind")   # 2026-10-01: counted
+    _played(db, _plants(db, 1, start=20, map_name="Bind", site="B", asset_key="Bind"), None)  # no date: kept
+    _played(db, _plants(db, 4, start=30, map_name="Bind", site="A", asset_key="Bind"),
+            datetime(2025, 1, 1, tzinfo=timezone.utc))                # the other site never moved
+    from collections import Counter
+    rows = plant_page.read_rows(db)
+    assert Counter(row["site"] for row in rows) == {"B": 4, "A": 4}
+    assert plant_page.counts_by_asset(db) == {"Bind": 8}
+
+
+def test_a_new_move_recomputes(db, monkeypatch):
+    from app.services import plant_site_changes
+    _plants(db, 2)
+    before = plant_page.fingerprint(db)
+    monkeypatch.setattr(plant_site_changes, "digest", lambda: "moves-2")
+    assert plant_page.fingerprint(db) != before
+
+
+def test_the_committed_moves_file_reads(monkeypatch):
+    from app.services import plant_site_changes
+    plant_site_changes.cutoffs.cache_clear()
+    moves = plant_site_changes.cutoffs()
+    assert moves[("Abyss", "B")] == datetime(2025, 10, 14, tzinfo=timezone.utc)
+    assert plant_site_changes.counts("Abyss", "B", datetime(2025, 10, 14)) is True       # naive is UTC
+    assert plant_site_changes.counts("Abyss", "B", datetime(2025, 10, 13, 23, 59)) is False
+    assert plant_site_changes.counts("Abyss", "A", datetime(2020, 1, 1)) is True

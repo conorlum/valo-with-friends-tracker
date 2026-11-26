@@ -22,7 +22,7 @@ from sqlalchemy.engine import make_url
 WEBAPP_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WEBAPP_ROOT))
 
-from app.services import plant_spots  # noqa: E402
+from app.services import plant_site_changes, plant_spots  # noqa: E402
 from app.services.map_rotation import quarter_turns  # noqa: E402
 from app.services.round_plants import asset_key_for  # noqa: E402
 
@@ -33,7 +33,7 @@ STATIC = WEBAPP_ROOT / "app" / "static"
 # Position fields plus what decides the layout (map and the linked replay's branch).
 # No player, match or replay identifier is selected; the join is plant_page._joined's.
 POINTS_SQL = (
-    "SELECT m.map_name, r.game_branch, p.site, p.u, p.v FROM round_plants p "
+    "SELECT m.map_name, r.game_branch, p.site, p.u, p.v, m.played_at FROM round_plants p "
     "JOIN matches m ON m.id = p.match_id "
     "LEFT JOIN replays r ON r.match_id = p.match_id AND r.link_status = 'linked'"
 )
@@ -60,7 +60,9 @@ def read_points():
     # asset_key (R9): a row whose layout is unknown now is dropped, not guessed.
     chosen = {}
     points = []
-    for map_name, game_branch, site, u, v in rows:
+    for map_name, game_branch, site, u, v, played_at in rows:
+        if not plant_site_changes.counts(map_name, site, played_at):   # a moved site counts forward only
+            continue
         if (map_name, game_branch) not in chosen:
             chosen[map_name, game_branch] = asset_key_for(map_name, game_branch)
         if chosen[map_name, game_branch] is not None:
