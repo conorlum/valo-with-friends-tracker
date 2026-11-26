@@ -15,7 +15,7 @@ from collections import Counter
 import numpy as np
 
 from app.moments import constants as mc
-from app.moments.peeks import distance_band
+from app.moments import peek_constants as pc
 from app.services import player_data, replay_aim, replay_gaps
 
 ON_RULE = "body"
@@ -23,6 +23,14 @@ MIN_N = 10
 EVERYONE_TTL_S = 600
 BANDS = ("close", "mid", "long")
 _FLOOR_DEG = 0.5
+
+
+def distance_band(distance) -> str | None:
+    """Same bands and boundaries as the peek types (D11), from the constants alone: importing
+    `app.moments.peeks` would pull the control engine into the web app."""
+    if distance is None:
+        return None
+    return "close" if distance < pc.DIST_BANDS_M[0] else "mid" if distance < pc.DIST_BANDS_M[1] else "long"
 
 
 def on_threshold(d_m: float, rule: str = ON_RULE) -> float:

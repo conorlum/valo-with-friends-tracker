@@ -72,6 +72,7 @@ EXPECTED = {
         "{{ form_title }}": 1,
     },
     "stats/detail.html": {
+        "Aim": 2,
         "Attack vs. defense win rate by map": 2,
         "Buying after a pistol win": 2,
         "Force buy vs. full save": 2,

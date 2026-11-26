@@ -27,6 +27,16 @@ def ev(cls="ok", err=1.0, d_m=10.0, on=None, shot=None, dmg=None, match_id=1, pl
                            played_at=played_at)
 
 
+def test_bands_equal_the_peek_bands_on_the_boundaries():
+    """aim_stats keeps its own copy so the web app never imports the engine; it must not drift from peeks."""
+    from app.moments import peek_constants as pc
+    from app.moments.peeks import distance_band
+
+    lo, hi = pc.DIST_BANDS_M[0], pc.DIST_BANDS_M[1]
+    for d in (None, 0, lo - 0.01, lo, lo + 0.01, hi - 0.01, hi, hi + 0.01, 200):
+        assert aim_stats.distance_band(d) == distance_band(d)
+
+
 # ---------------------------------------------------------------------------------------------- the on rule
 
 @pytest.mark.parametrize("d, want", [(2, 10), (5, 4), (10, 2), (20, 1), (60, 0.5)])
