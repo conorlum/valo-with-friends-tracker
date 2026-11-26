@@ -1,0 +1,11 @@
+{# Aim on /stats: where the crosshair was when an enemy came into view, from uploaded replays, loaded after the
+   page. The replay viewer is off on the demo site, so this card is too. #}
+{% if not demo_mode %}
+{% set aim_group = "all" if group == "all" else "friends" %}
+<div class="card aim-card">
+  <h2>Aim</h2>
+  <div hx-get="/stats/aim?group={{ aim_group }}" hx-trigger="load" hx-swap="innerHTML">
+    <p class="page-meta htmx-indicator">Loading aim&hellip;</p>
+  </div>
+</div>
+{% endif %}

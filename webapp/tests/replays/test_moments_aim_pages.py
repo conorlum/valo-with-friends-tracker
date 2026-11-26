@@ -174,6 +174,73 @@ def test_no_opponent_name_in_the_fragment(site):
     assert STRANGER not in _fragment(client).text
 
 
+def _stats_aim(client, group="all"):
+    return client.get(f"/stats/aim?group={group}")
+
+
+def _log_in(client, name):
+    assert client.post("/login", data={"display_name": name}).status_code in (200, 303)
+
+
+def _circle_world(db):
+    """Aimer (viewer), Pal and Rare (friends, 12 and 4 events), the stranger (12 events, errors 4.5)."""
+    from app.models import Friendship
+    me, pal, rare, other = (_player(db, n) for n in ("Aimer", "Palname", "Rareplayer", STRANGER))
+    db.add(Friendship(owner_player_id=me.id, friend_player_id=pal.id))
+    db.add(Friendship(owner_player_id=me.id, friend_player_id=rare.id))
+    _match(db, 0, [(me, "Jett", 12, 1.5), (pal, "Sova", 12, 3.0), (rare, "Sage", 4, 2.0)], stranger=other, events=12)
+    db.commit()
+
+
+def test_stats_aim_all_is_one_pooled_row_with_n_and_no_names(site):
+    client, factory = site
+    with factory() as db:
+        _circle_world(db)
+    r = _stats_aim(client, "all")
+    assert r.status_code == 200
+    assert r.text.count("data-aim-pooled") == 1 and "data-aim-member" not in r.text
+    assert "n=40" in r.text and "IQR" in r.text
+    assert "Horizontal only" in r.text
+    for name in ("Aimer", "Palname", "Rareplayer", STRANGER):
+        assert name not in r.text
+
+
+def test_stats_aim_friends_has_a_row_per_member_over_the_threshold_and_a_pooled_row(site):
+    client, factory = site
+    with factory() as db:
+        _circle_world(db)
+    _log_in(client, "Aimer")
+    r = _stats_aim(client, "friends")
+    assert r.status_code == 200
+    assert r.text.count("data-aim-member") == 2
+    assert "Aimer" in r.text and "Palname" in r.text
+    assert "Rareplayer" not in r.text and STRANGER not in r.text
+    pooled = re.search(r"<tr data-aim-pooled>(.*?)</tr>", r.text, re.S).group(1)
+    assert "n=28" in pooled
+
+
+def test_stats_aim_friends_logged_out_is_the_login_note(site):
+    client, factory = site
+    with factory() as db:
+        _circle_world(db)
+    r = _stats_aim(client, "friends")
+    assert r.status_code == 200
+    assert "needs a login" in r.text and "data-aim-pooled" not in r.text
+
+
+def test_stats_aim_demo_404s_and_the_stats_page_has_no_aim_card(site, monkeypatch):
+    client, factory = site
+    with factory() as db:
+        _circle_world(db)
+    page = client.get("/stats/all")
+    assert page.status_code == 200 and "/stats/aim?group=all" in page.text
+    from app.templates import templates
+    monkeypatch.setattr(settings, "demo_mode", True)
+    monkeypatch.setitem(templates.env.globals, "demo_mode", True)
+    assert _stats_aim(client).status_code == 404
+    assert "/stats/aim" not in client.get("/stats/all").text
+
+
 def test_trend_is_a_table_under_three_matches_and_a_chart_from_three(site):
     client, factory = site
     with factory() as db:
