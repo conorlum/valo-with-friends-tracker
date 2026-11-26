@@ -56,7 +56,7 @@ def database_snapshot(factory):
 
 @pytest.mark.parametrize('suffix,status', [('',200), ('/coach',200), ('/coach/prompt',200),
     ('/moments.json',200), ('/1.json',200), ('/1/gaps.json',200), ('/1/control.bin',202),
-    ('/control/players.json',200)])
+    ('/control/players.json',200), ('/highlights.json',200), ('/potg',200)])
 def test_demo_refuses_the_same_accessible_linked_replay(site, monkeypatch, tmp_path, suffix, status):
     client, factory = site
     uuid, _, _, _ = stored_replay(factory, tmp_path)

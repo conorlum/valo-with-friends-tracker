@@ -46,6 +46,7 @@ import math
 import re
 import secrets
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
@@ -66,6 +67,7 @@ from app.services import replay_errors
 from app.services import replay_areas
 from app.services import replay_moments
 from app.services import replay_util
+from app.services import highlights
 from app.services import replay_progress as progress
 from app.services import replay_upload as uploads
 from app.services import upload_tokens
@@ -347,6 +349,42 @@ def replay_util_json(request: Request, match_uuid: str, db: Session = Depends(ge
     return _json_with_etag(request, body, etag_of(canonical))
 
 
+def moment_url(uuid, item):
+    """Python twin of replay.js momentLink, including its optional end time."""
+    # JS toFixed chooses the larger magnitude at an exact half; Python's format chooses even.
+    def fixed(value):
+        return str(Decimal.from_float(float(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+    url = f"/replays/{uuid}?round={item['round']}&t={fixed(item['t_start'])}"
+    if item.get('t_end') is not None:
+        url += f"&until={fixed(item['t_end'])}"
+    return url
+
+
+@router.get("/replays/{match_uuid}/highlights.json")
+def replay_highlights_json(request: Request, match_uuid: str, db: Session = Depends(get_db)):
+    replay = _replay_or_404(db, match_uuid)
+    if not replay_db.is_linked(replay):
+        raise HTTPException(status_code=404)
+    body = highlights.payload(db, replay)
+    canonical = json.dumps(body, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return _json_with_etag(request, body, etag_of(canonical))
+
+
+@router.get("/replays/{match_uuid}/potg")
+def replay_potg(request: Request, match_uuid: str, db: Session = Depends(get_db)):
+    replay = _replay_or_404(db, match_uuid)
+    if not replay_db.is_linked(replay):
+        raise HTTPException(status_code=404)
+    item = highlights.payload(db, replay)['potg']
+    if item is None:
+        return Response(content='', media_type='text/html')
+    url = moment_url(str(replay.match_uuid).lower(), item)
+    return templates.TemplateResponse(request, 'replays/_potg.html',
+                                      {'item': item, 'viewer_url': url,
+                                       'export_url': url + '&export=1&hl=' + item['id']})
+
+
 @router.get("/replays/{match_uuid}/{round_number}.json")
 def replay_round(request: Request, match_uuid: str, round_number: int, db: Session = Depends(get_db)):
     replay = _replay_or_404(db, match_uuid)
@@ -469,6 +507,11 @@ def viewer_context(request: Request, db: Session, replay) -> dict:
     if start not in context["match"]["rounds"]:
         start = 1
     linked = context["match"]["linked"]
+    if linked:
+        friends = highlights.friend_ids(db, context['players'])
+        home = replay_moments.home_team(context['players'], friends)
+        context['clip_names'] = highlights.clip_labels(context['players'], home)
+        context['round_scores'] = highlights.round_scores(context['rounds'], home)
     viewer = get_current_player(request, db) if "session" in request.scope else None
     viewer_slot = next((p["slot"] for p in context["players"].values()
                         if viewer is not None and p.get("player_id") == viewer.id), None)

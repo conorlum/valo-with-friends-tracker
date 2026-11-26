@@ -84,6 +84,8 @@ PAGE_ROUTES = {
     "/replays/{match_uuid}/control/heatmap.json": "not_page",
     "/replays/{match_uuid}/control/players.json": "not_page",
     "/replays/{match_uuid}/moments.json": "not_page",
+    "/replays/{match_uuid}/highlights.json": "not_page",
+    "/replays/{match_uuid}/potg": "not_page",
     "/replays/{match_uuid}/util.json": "not_page",
     "/replays/{match_uuid}/{round_number}.json": "not_page",
     "/replays/{match_uuid}/{round_number}/control.bin": "not_page",

@@ -1,4 +1,4 @@
-"""Pure highlight selection over replay-clock inputs; no database access.
+"""Highlight selection over replay-clock inputs, with read-only DB input loaders.
 
 Round helpers accept the round blob plus an optional ``round`` number (``find`` supplies it).
 ``win_chance`` returns every friend kill's gain, including nonpositive gains for best-play
@@ -302,3 +302,98 @@ def find(inputs):
     items = order(dedupe(items))
     return {"potg": items[0] if items else None,
             "players": best_plays(items, gains, util, players), "highlights": items, "missing": missing}
+
+
+def friend_ids(db, page_players):
+    """Players in either end of any friendship, as in the moments tab."""
+    from sqlalchemy import or_
+    from app.models.friendship import Friendship
+
+    ids = [p['player_id'] for p in page_players.values() if p.get('player_id') is not None]
+    return {pid for pair in db.query(Friendship.owner_player_id, Friendship.friend_player_id)
+            .filter(or_(Friendship.owner_player_id.in_(ids), Friendship.friend_player_id.in_(ids)))
+            for pid in pair} if ids else set()
+
+
+def clip_labels(page_players, home_team):
+    """Clip-safe names: home names without tags, opponent agents, agents alone on a tie."""
+    from app.services import enemy_names
+
+    return {str(slot): (p['agent'] if home_team is None else
+                       p['name'].split('#', 1)[0] if p['team'] == home_team else enemy_names.label(p['agent']))
+            for slot, p in page_players.items()}
+
+
+def round_scores(rounds, home_team):
+    """Scores before each round, oriented to the friends (team-1 when tied)."""
+    home = home_team or 'team-1'
+    away = 'team-2' if home == 'team-1' else 'team-1'
+    score, out = {'team-1': 0, 'team-2': 0}, {}
+    for n, row in sorted(rounds.items(), key=lambda pair: int(pair[0])):
+        out[str(n)] = [score[home], score[away]]
+        winner = row['db']['winner']
+        if winner in score:
+            score[winner] += 1
+    return out
+
+
+def load_inputs(db, replay):
+    """Read every round once here, using only current control, util and estimator inputs."""
+    from app.models.replay import ReplayRound
+    from app.replays import format as fmt
+    from app.services import enemy_names, replay_control_views, replay_moments, replay_util, replay_view, util_model
+    from app.services import replays as replay_service
+    from app.services.state_replay import attacking_team_for_round
+
+    page = replay_service.page_context(db, replay)
+    friends = friend_ids(db, page['players'])
+    home = replay_moments.home_team(page['players'], friends)
+    players = {int(slot): {'team': p['team'], 'group': p['side'], 'agent': p['agent'],
+                          'friend': p['player_id'] in friends,
+                          'name': (p['name'].split('#', 1)[0] if p['player_id'] in friends
+                                   else enemy_names.label(p['agent']))}
+               for slot, p in page['players'].items()}
+    offset = replay.clock_offset or 0.0
+    scores = round_scores(page['rounds'], None)
+    rounds = {}
+    for row in db.query(ReplayRound).filter(ReplayRound.replay_id == replay.id):
+        n = row.round_number
+        info = page['rounds'].get(str(n))
+        if info is None:
+            continue
+        blob = fmt.decode_blob(row.data)
+        attack = attacking_team_for_round(n)
+        rounds[n] = {'t_decided': blob['t_decided'], 't_end': blob['t_end'],
+                     'winner': info['db']['winner'], 'attack': attack.value if attack is not None else None,
+                     'kills': blob['kills'], 'alive_steps': info['alive_steps'],
+                     'alive': replay_view.corrected_lives(blob, info.get('db_deaths', []), offset),
+                     'plant': info['db']['plant'],
+                     'score': dict(zip(('team-1', 'team-2'), scores[str(n)]))}
+    loaded = replay_control_views.load_round_summaries(db, replay)
+    stale = set(loaded.stale)
+    fights = {int(n): s.get('fights') or [] for n, s in loaded.summaries.items() if n not in stale}
+    util_payload = replay_util.match_payload(db, replay, read_only=True)
+    util = None if util_payload.get('updating') else [dict(cast, slot=int(cast['slot']), round=int(n))
+           for n, row in util_payload.get('rounds', {}).items() for cast in row.get('casts', [])]
+    model = util_model.load(db)
+    if not util_model.covers(model, {replay.match_id}):
+        model = None
+    return {'players': players, 'rounds': rounds, 'clock_offset': offset, 'team_fights': fights or None,
+            'util': util, 'model': model, 'home_team': home,
+            'clip_names': clip_labels(page['players'], home), 'uuid': str(replay.match_uuid).lower()}
+
+
+def payload(db, replay):
+    """The public payload; every clip score uses the home team's orientation."""
+    inputs = load_inputs(db, replay)
+    result = find(inputs)
+    home = inputs['home_team'] or 'team-1'
+    away = 'team-2' if home == 'team-1' else 'team-1'
+    items = [*result['highlights'], result['potg']]
+    for player in result['players'].values():
+        items.extend([player['best'], *player['more']])
+    for item in items:
+        if item is not None:
+            score = inputs['rounds'][item['round']]['score']
+            item['score'] = [score[home], score[away]]
+    return {**result, **{k: inputs[k] for k in ('clip_names', 'home_team', 'uuid')}}
