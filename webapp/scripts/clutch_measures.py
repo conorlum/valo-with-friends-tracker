@@ -8,6 +8,8 @@ and exclude their end; each team enters each situation kind only once per round.
 from __future__ import annotations
 
 import ast
+from bisect import bisect_right
+import gzip
 import math
 from pathlib import Path
 import sys
@@ -21,9 +23,203 @@ from app.coach.fights import _gun_at, _tier  # noqa: E402
 from app.coach.roundview import RoundView, SPIKE_TIMER_S  # noqa: E402
 from app.control import engine as ce, stance as st_mod  # noqa: E402
 from app.control.utility import _sees_point  # noqa: E402
+from app.critutil.extract import _ult_at, _ult_cap, build_casts  # noqa: E402
 from app.moments.constants import FIGHT_GAP_S, MOVING_MPS, SIGHT_STEP_S  # noqa: E402
 from app.moments.fights import _events, _first_sight, _speed, _split  # noqa: E402
 from app.replays import player_state  # noqa: E402
+from app.replays import control_format as cf  # noqa: E402
+from app.replays.control_reasons import classify  # noqa: E402
+
+
+class ControlRound:
+    """Read a stored control payload; decode each side's unknown masks on demand.
+
+    Stored ticks are grid units, while sightings and knowledge events already use
+    seconds. Checkpoint entries name frame indices, not times.
+    """
+
+    def __init__(self, raw_bytes: bytes):
+        packed = raw_bytes if raw_bytes.startswith(b"\x1f\x8b") else gzip.compress(raw_bytes)
+        self.header, self._streams = cf.unpack_data(packed)
+        self.ticks = [t / self.header["hz"] for t in self.header["ticks"]]
+        self.knew = self.header.get("knew") or {}
+        self.knowledge_events = self.header.get("knowledge_events") or {}
+        self._unknown = {}
+        self._walk_cells = None
+
+    @property
+    def has_unknown(self) -> bool:
+        return any("unknown_" + group in self._streams for group in ("a", "b"))
+
+    def _mask(self, group, t):
+        i = bisect_right(self.ticks, t) - 1
+        name = "unknown_" + group.lower()
+        if i < 0 or name not in self._streams:
+            return None
+        if name not in self._unknown:
+            checkpoints = [row[0] for row in self.header["unknown_checkpoints"]]
+            self._unknown[name] = np.asarray(cf.decode_unknown(
+                self._streams[name], len(self.ticks), self.header["cells"], checkpoints), dtype=bool)
+        return self._unknown[name][i]
+
+    def unknown_share(self, group, t) -> float | None:
+        mask = self._mask(group, t)
+        return float(np.mean(mask)) if mask is not None and len(mask) else None
+
+    def nearest_unknown_m(self, group, x_px, y_px, t, geo) -> float | None:
+        mask = self._mask(group, t)
+        if mask is None or not np.any(mask):
+            return None
+        if self._walk_cells is None:
+            self._walk_cells = np.asarray(cf.walk_bitmap(self.header), dtype=int)
+        cells = self._walk_cells[mask]
+        if geo.cell_of_px(x_px, y_px) in cells:
+            return 0.0
+        centres = geo.centres[cells]
+        return float(np.min(np.hypot(centres[:, 0] - x_px, centres[:, 1] - y_px))) * geo.m_per_px
+
+    def located(self, group, enemy, t0, t1) -> str | None:
+        for start, stop, *_ in self.knew.get(group, {}).get(str(enemy), []):
+            if start <= t1 and stop >= t0:
+                return "seen"
+        for t, slot, reason, kind in self.knowledge_events.get(group, []):
+            if slot == enemy and t0 <= t <= t1 and reason != "seen" and classify(reason, kind) == "found":
+                return "heard"
+        return None
+
+
+def unknown(rnd, ctl: ControlRound, row: dict) -> dict:
+    """Unknown shares and approach on consecutive moving track ticks (R7).
+
+    No movement or no usable distance pairs gives a null approach share. Missing
+    tracks, gaps, or an empty unknown mask never imply movement toward unknown.
+    """
+    out = dict.fromkeys(("unknown_share_start", "unknown_share_end", "into_unknown_share"))
+    if not ctl.has_unknown:
+        return out
+    slot, start, end = row["slot"], row["t_s"], row["t_end_window"]
+    group = rnd.team[slot]
+    out["unknown_share_start"] = ctl.unknown_share(group, start)
+    out["unknown_share_end"] = ctl.unknown_share(group, end)
+    track = rnd.tracks.get(slot)
+    approaches = []
+    if track is not None:
+        for a, b in zip(track[0], track[0][1:]):
+            if not start <= a < b < end or not (rnd.alive(slot, a) and rnd.alive(slot, b)):
+                continue
+            speed = _speed(rnd, slot, b)
+            if speed is None or speed < MOVING_MPS:
+                continue
+            pa, pb = rnd.pos(slot, a), rnd.pos(slot, b)
+            if pa is None or pb is None:
+                continue
+            before = ctl.nearest_unknown_m(group, *pa[:2], a, rnd.geo)
+            after = ctl.nearest_unknown_m(group, *pb[:2], b, rnd.geo)
+            if before is not None and after is not None:
+                approaches.append(before - after > 0.5)
+    out["into_unknown_share"] = sum(approaches) / len(approaches) if approaches else None
+    return out
+
+
+def backshots(rnd, blob: dict, slot: int, t0: float, t1: float) -> int:
+    """Count incoming enemy damage rows outside the yaw cone, once per damage run.
+
+    Aggregated runs have no individual hit positions; classify their recorded start.
+    Walls, smoke and blinds do not change this bearing-only measurement (R7).
+    """
+    count = 0
+    for row in blob.get("util") or []:
+        if row.get("k") != "damage" or row.get("target") != slot or not t0 <= row["t"] <= t1:
+            continue
+        enemy = row.get("by")
+        if rnd.team.get(enemy) in (None, rnd.team.get(slot)):
+            continue
+        p, q = rnd.pos(slot, row["t"]), rnd.pos(enemy, row["t"])
+        if p is None or q is None:
+            continue
+        bearing = math.degrees(math.atan2(q[1] - p[1], q[0] - p[0]))
+        count += abs((bearing - p[2] + 180) % 360 - 180) > ce.FOV_HALF
+    return count
+
+
+def information(ctl: ControlRound, group, engagements: list[dict]) -> dict:
+    """Share of engagements with every involved enemy located in the preceding 5 s.
+
+    A multi-enemy fight is known only if each enemy was located; one known enemy
+    cannot establish that the others were known (R8). Sight takes precedence.
+    """
+    known = [bool(e["enemies"]) and all(ctl.located(group, s, e["t"] - 5, e["t"]) is not None
+                                      for s in e["enemies"]) for e in engagements]
+    return {"located_share": sum(known) / len(known) if known else None}
+
+
+def fakes(view, rnd, blob: dict, row: dict, engagements: list[dict]) -> dict:
+    """Defuse taps and proven unfinished plants, and engagements after release (R8).
+
+    Attempts must start in the player's window, have a known stop, and begin while
+    an enemy lives. A plant is finished only at a matching planted transition,
+    as in clock(). A fake is followed at most once in the 5 s after its stop.
+    """
+    slot, start, end = row["slot"], row["t_s"], row["t_end_window"]
+    attempts = [(r["t"], r["t1"]) for r in view.defuse_attempts()
+                if r["by"] == view.names.get(slot) and r["result"] == "tap" and "until" not in r]
+    ps = blob.get("player_state") or {}
+    for t, stop, planter in ps.get("plants") or []:
+        if planter != slot or stop is None:
+            continue
+        finished = any(e["s"] == "planted" and abs(e["t"] - stop) <= 0.001
+                       and e.get("slot", slot) == slot for e in ps.get("spike") or [])
+        if not finished:
+            attempts.append((t, stop))
+    stops = [stop for t, stop in attempts if start <= t < end and t <= stop <= end
+             and rnd.alive(slot, t) and any(view.alive(s, t) for s in view.enemies(slot))]
+    followed = sum(any(stop <= e["t"] <= min(stop + 5, end) and e["enemies"]
+                       for e in engagements) for stop in stops)
+    return {"fakes": len(stops), "fake_followed": followed if stops else None}
+
+
+def ult_caps(blobs_by_round: dict, agents: dict) -> dict[int, int]:
+    """DB-free match cap pass from app/services/replay_util.py:unused_ults.
+
+    extract._ults records cap_seen via _ult_cap. Use that same proof directly
+    from the blobs, then take its match maximum, without importing the service.
+    Agents identify match slots; no agent-table cost is assumed without a use.
+    """
+    caps = {}
+    for blob in blobs_by_round.values():
+        ps = blob.get("player_state") or {}
+        for slot in agents:
+            cap = _ult_cap(ps, slot)
+            if cap:
+                key = int(slot)
+                caps[key] = max(caps.get(key, 0), int(cap))
+    return caps
+
+
+def util(rnd, blob: dict, slot: int, t_s: float, t_death: float | None, cap: int | None) -> dict:
+    """Held non-ult charges, one use per built cast, and proven ult readiness (R9)."""
+    ps = blob.get("player_state") or {}
+    charges = {key: line for key, line in ((ps.get("charges") or {}).get(str(slot)) or {}).items()
+               if key != "X"}
+
+    def held(t):
+        # Like extract._held, but preserve missing evidence instead of reading it
+        # as zero (player_state.py's charges contract: nothing before first point).
+        if not charges:
+            return None
+        total = 0
+        for line in charges.values():
+            points = [p for p in line if p["t"] <= t]
+            if not points or points[-1].get("n") is None:
+                return None
+            total += points[-1]["n"]
+        return total
+
+    stop = min(t_death, rnd.t_decided) if t_death is not None else rnd.t_decided
+    points = _ult_at(ps, slot, t_s)
+    return {"held_start": held(t_s), "held_at_death": held(t_death) if t_death is not None else None,
+            "used": sum(c.by == slot and t_s <= c.t <= stop for c in build_casts(rnd, blob)),
+            "ult_ready": points >= cap if cap is not None and points is not None else None}
 
 
 def sides(ctx: dict, n: int) -> dict:
