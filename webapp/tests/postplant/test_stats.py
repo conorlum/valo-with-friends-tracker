@@ -149,7 +149,8 @@ def test_calculation_version_invalidates_cached_team_kill_figures():
 def paint(key, name="Paint", cell_id=1, bands=None):
     names = {1: {"name": name, "super": "A"}, 2: {"name": "Upper", "super": "A"}}
     return {key: areas.Painted(names, (cell_id,) * (areas.GRID ** 2), (),
-                               bands or {}, {1: (name,), 2: ("Upper",)}, b"")}
+                               bands or {}, {1: (name,), 2: ("Upper",)}, b"",
+                               {1: frozenset({1}), 2: frozenset({2})})}   # no parents: each is its own only ancestor
 
 
 def test_area_lookup_fallback_zero_height_and_layout(monkeypatch):
