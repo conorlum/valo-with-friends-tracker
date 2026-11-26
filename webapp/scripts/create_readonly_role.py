@@ -41,7 +41,9 @@ def role_url(owner_url: str, password: str) -> str:
 def setup_sql(database: str) -> list[str]:
     q = '"' + database.replace('"', '""') + '"'
     return [
-        f"ALTER ROLE {ROLE} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 3",
+        # Only LOGIN and the limit: naming NOSUPERUSER/NOREPLICATION/NOBYPASSRLS needs a superuser (Render's login
+        # isn't one), and a new role has none of them anyway; WRITE_CHECKS confirms it after logging in as the role.
+        f"ALTER ROLE {ROLE} LOGIN CONNECTION LIMIT 3",
         f"ALTER ROLE {ROLE} SET default_transaction_read_only = on",
         f"ALTER ROLE {ROLE} SET statement_timeout = '60s'",
         f"ALTER ROLE {ROLE} SET idle_in_transaction_session_timeout = '60s'",
