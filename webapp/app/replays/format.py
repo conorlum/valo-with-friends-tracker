@@ -146,7 +146,8 @@ from app.replays import player_state as _player_state
 
 FORMAT_VERSION = 1
 SUPPORTED_VERSIONS = frozenset({1})
-CONDENSE_REVISION = 33
+CONDENSE_REVISION = 34
+# 34: `yq`, native 16-bit yaw beside whole-degree yaw
 # 33: the parser's missing hit rows (2026-11-23): Prowler's nearsight, Wingman's concuss, Thrash's detain and Seekers'
 #     nearsight as `status` rows, Hunter's Fury as `blast` rows (hits, origin, aim), a Fakeout's `flash` (hits, facing);
 #     `src` (the source's `ability` id) on every status source a map-control or Critical Util reader tells apart by cast;
@@ -202,8 +203,9 @@ ARENA_Z_UNITS = ARENA_Z_M * 100  # world units (cm)
 # rounds. The per-round p95 was 60 KB at the Stage 1b freeze (D7) and 70 KB once rounds stored
 # abilities and shots (R2, approved D9): the six competitive matches are 46.7-63.0 KB per round
 # (Sunset over 60) and 0.65-1.03 MB per match (approved D7).
-ROUND_BUDGET_P95_BYTES = 70_000
-MATCH_BUDGET_BYTES = 1_500_000
+# Revision 34's `yq` yaw channel adds about 45% (D2, measured): 105 KB and 2.25 MB.
+ROUND_BUDGET_P95_BYTES = 105_000
+MATCH_BUDGET_BYTES = 2_250_000
 
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 ASSET_FILES = ("data/maps.json", "data/agents.json")
@@ -242,8 +244,36 @@ def decode_yaw_deltas(values: list[int]) -> list[int]:
     return [yaw % 360 for yaw in delta_decode(values)]
 
 
-def encode_segment(t0: float, u: list[int], v: list[int], yaw: list[int], z: list[int] | None = None) -> dict:
-    """`z` (decimetres of world z) is all of the segment's samples or None: a segment never mixes."""
+YAW_UNITS = 65536  # fine yaw: units of 360/65536 degrees
+
+
+def encode_yaw_units(units: list[int]) -> list[int]:
+    """Delta-encodes fine yaw along the shortest arc modulo YAW_UNITS: 65530 -> 4 is +10."""
+    if not units:
+        return []
+    half = YAW_UNITS // 2
+    out = [units[0] % YAW_UNITS]
+    for a, b in zip(units, units[1:]):
+        out.append((b - a + half) % YAW_UNITS - half)
+    return out
+
+
+def decode_yaw_units(values: list[int]) -> list[int]:
+    return [unit % YAW_UNITS for unit in delta_decode(values)]
+
+
+def fine_yaw_deg(segment: dict) -> list[float] | None:
+    """A segment's fine yaw in degrees, or None when it has no `yq` or its length differs from `u`'s."""
+    yq = segment.get("yq")
+    if yq is None or len(yq) != len(segment["u"]):
+        return None
+    return [unit * 360 / YAW_UNITS for unit in decode_yaw_units(yq)]
+
+
+def encode_segment(t0: float, u: list[int], v: list[int], yaw: list[int], z: list[int] | None = None,
+                   yq: list[int] | None = None) -> dict:
+    """`z` (decimetres of world z) is all of the segment's samples or None: a segment never mixes.
+    `yq` is the fine yaw in YAW_UNITS, one per sample, or None."""
     if not (len(u) == len(v) == len(yaw)) or not u:
         raise FormatError("a segment needs equal, non-empty u/v/yaw arrays")
     segment = {"t0": round(t0, 3), "u": delta_encode(u), "v": delta_encode(v), "yaw": encode_yaw_deltas(yaw)}
@@ -251,6 +281,10 @@ def encode_segment(t0: float, u: list[int], v: list[int], yaw: list[int], z: lis
         if len(z) != len(u):
             raise FormatError("a segment's z needs one value per sample")
         segment["z"] = delta_encode(z)
+    if yq is not None:
+        if len(yq) != len(u):
+            raise FormatError("a segment's yq needs one value per sample")
+        segment["yq"] = encode_yaw_units(yq)
     return segment
 
 
