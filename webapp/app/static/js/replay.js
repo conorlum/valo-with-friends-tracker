@@ -2745,10 +2745,12 @@
           exportClip: function (item) {
             var scores = (self.options.replayData || {}).round_scores || {};
             var score = scores[String(item.round)];
+            var names = (self.options.replayData || {}).clip_names || {};
+            var name = names[item.slot] || item.player;
             var prefill = {
               round: item.round, t_in: item.t_start, t_out: item.t_end,
               segments: (item.segments || []).map(function (s) { return s.slice(); }),
-              caption: (item.player ? item.player + " · " : "") + (item.summary || "")
+              caption: (name ? name + " · " : "") + (item.summary || "")
             };
             if (score) prefill.score = score.slice();
             return self.openExport(prefill);

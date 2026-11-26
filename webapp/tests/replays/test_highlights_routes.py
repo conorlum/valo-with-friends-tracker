@@ -70,6 +70,84 @@ def test_quiet_replay_keeps_every_friend(site, tmp_path):
     assert client.get(f'/replays/{uuid}/potg').text == ''
 
 
+@pytest.mark.parametrize('away_slots', [[3], list(range(5))], ids=['away-friend', 'tie'])
+def test_only_home_team_friends_get_highlights(site, linked, away_slots):
+    client, factory = site
+    with factory() as db:
+        replay = db.get(Replay, linked[1])
+        page = replays.page_context(db, replay)
+        db.add_all(Friendship(owner_player_id=page['players']['5']['player_id'],
+                              friend_player_id=page['players'][str(slot)]['player_id'])
+                   for slot in away_slots)
+        db.commit()
+        loaded = highlights.load_inputs(db, replay)
+        assert all(not loaded['players'][slot]['friend'] for slot in away_slots)
+    response = client.get(f'/replays/{linked[0]}/highlights.json')
+    assert response.status_code == 200
+    body = response.json()
+    if len(away_slots) == 5:
+        assert body['home_team'] is None
+        assert body['potg'] is None and body['players'] == {} and body['highlights'] == []
+        assert body['clip_names'] == {s: p['agent'] for s, p in page['players'].items()}
+    else:
+        assert body['home_team'] == 'team-2'
+        assert set(body['players']) == {str(s) for s in range(5, 10)}
+        assert body['clip_names']['3'] == 'the enemy ' + page['players']['3']['agent']
+        items = [body['potg'], *body['highlights']]
+        for slot, player in body['players'].items():
+            assert player['name'] == body['clip_names'][slot]
+            items.extend([player['best'], *player['more']])
+        for item in filter(None, items):
+            assert item['slot'] >= 5
+            assert item['player'] == body['clip_names'][str(item['slot'])]
+
+
+@pytest.mark.parametrize('suffix', ['potg', 'highlights.json'])
+def test_each_request_loads_page_context_once(site, linked, monkeypatch, suffix):
+    calls = []
+    original = replays.page_context
+    def counted(*args, **kwargs):
+        calls.append(args[1].id)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(replays, 'page_context', counted)
+    response = site[0].get(f'/replays/{linked[0]}/{suffix}')
+    assert response.status_code == 200
+    # match_payload shares the page too; Critical Util's calculations are unchanged.
+    assert calls == [linked[1]]
+
+
+@pytest.mark.parametrize('suffix', ['potg', 'highlights.json'])
+@pytest.mark.parametrize('owner', [{'slot': None}, {'slot': 'unknown'}, {'slot': []}, {}],
+                         ids=['null', 'invalid-string', 'invalid-type', 'missing'])
+def test_unowned_util_casts_do_not_hide_owned_casts(site, linked, monkeypatch, suffix, owner):
+    client, factory = site
+    cast = {'i': 0, 'slot': '5', 't': 11., 'value': 8.25, 'ability': 'Q', 'scored': True}
+    unowned = {k: v for k, v in cast.items() if k != 'slot'} | owner
+    monkeypatch.setattr(replay_util, 'match_payload', lambda *a, **kw: {
+        'updating': False, 'rounds': {'5': {'casts': [unowned, cast]}}})
+    response = client.get(f'/replays/{linked[0]}/{suffix}')
+    assert response.status_code == 200
+    with factory() as db:
+        replay = db.get(Replay, linked[1])
+        inputs = highlights.load_inputs(db, replay)
+        assert inputs['util'] == [dict(cast, slot=5, round=5)]
+        assert any(i['kind'] == 'util' and i['slot'] == 5 and i['metric'] == 8.25
+                   for i in highlights.find(inputs)['highlights'])
+
+
+def test_loader_and_payload_accept_precomputed_page(site, linked, monkeypatch):
+    with site[1]() as db:
+        replay = db.get(Replay, linked[1])
+        page = replays.page_context(db, replay)
+        expected_util = replay_util.match_payload(db, replay, read_only=True)
+        def unexpected(*a, **kw):
+            raise AssertionError('A supplied page must be reused, including in match_payload')
+        monkeypatch.setattr(replays, 'page_context', unexpected)
+        assert replay_util.match_payload(db, replay, read_only=True, page=page) == expected_util
+        assert highlights.load_inputs(db, replay, page=page)['home_team'] == 'team-2'
+        assert highlights.payload(db, replay, page=page)['potg'] is not None
+
+
 def test_viewer_labels_scores_and_tie(site, linked, monkeypatch):
     def no_highlights(*args):
         raise AssertionError('The viewer must not compute highlights')
@@ -127,7 +205,7 @@ def test_loader_freshness_and_cast_shape(site, linked, monkeypatch):
         assert inputs['team_fights'] == {5: [current]}
         assert inputs['model'] is None
         assert inputs['util'] == [dict(cast, round=5)]
-        assert calls == [{'read_only': True}]
+        assert calls == [{'read_only': True, 'page': page}]
         assert inputs['rounds'][3]['score'] == {'team-1': 1, 'team-2': 1}
         assert 'winchance' in highlights.find(inputs)['missing']
         assert all(i['kind'] != 'util' for i in highlights.find(inputs)['highlights'])
@@ -140,21 +218,17 @@ def test_loader_freshness_and_cast_shape(site, linked, monkeypatch):
 
 def test_loader_normalizes_string_util_slot(site, linked, monkeypatch):
     _, factory = site
-    cast = {'slot': '3', 't': 11., 'value': 8.25, 'scored': True, 'ability': 'Q'}
+    cast = {'slot': '6', 't': 11., 'value': 8.25, 'scored': True, 'ability': 'Q'}
     monkeypatch.setattr(replay_util, 'match_payload', lambda *a, **kw: {
         'updating': False, 'rounds': {'5': {'casts': [cast]}}})
     with factory() as db:
         replay = db.get(Replay, linked[1])
-        players = replays.page_context(db, replay)['players']
-        db.add(Friendship(owner_player_id=players['3']['player_id'],
-                          friend_player_id=players['5']['player_id']))
-        db.commit()
         inputs = highlights.load_inputs(db, replay)
         result = highlights.find(inputs)
-        assert any(i['kind'] == 'util' and i['slot'] == 3 for i in result['highlights'])
+        assert any(i['kind'] == 'util' and i['slot'] == 6 for i in result['highlights'])
         assert 'util' not in result['missing']
-        assert inputs['util'] == [dict(cast, slot=3, round=5)]
-        assert cast['slot'] == '3'
+        assert inputs['util'] == [dict(cast, slot=6, round=5)]
+        assert cast['slot'] == '6'
 
 
 def test_corrected_lives_keep_db_deaths_and_revives():

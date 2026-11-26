@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 
 from app.config import settings
-from app.models import Match
+from app.models import Friendship, Match
+from app.models.replay import Replay
+from app.services import replays
 from app.templates import templates
 from tests.support.highlights import highlight_replay
 from tests.support.site import site  # noqa: F401
@@ -86,6 +88,29 @@ def test_fragment_json_block_and_privacy(site, linked):
                    '<canvas', 'width="512"', 'height="512"', '/static/img/agents/'):
         assert needle in text
     assert re.search(r'Round \d+ · \d+:\d\d', html.unescape(text))
+
+
+@pytest.mark.parametrize('away_slots', [[3], list(range(5))], ids=['away-friend', 'tie'])
+def test_card_names_only_home_team_friends(site, linked, away_slots):
+    client, factory = site
+    with factory() as db:
+        page = replays.page_context(db, db.get(Replay, linked[1]))
+        db.add_all(Friendship(owner_player_id=page['players']['5']['player_id'],
+                              friend_player_id=page['players'][str(slot)]['player_id'])
+                   for slot in away_slots)
+        db.commit()
+    fragment = client.get(f'/replays/{linked[0]}/potg')
+    assert fragment.status_code == 200
+    if len(away_slots) == 5:
+        assert fragment.text == ''
+    else:
+        block = re.search(r'<script type="application/json" data-potg>(.*?)</script>', fragment.text, re.S)
+        data = json.loads(html.unescape(block[1]))
+        item = data['item']
+        assert page['players'][str(item['slot'])]['team'] == 'team-2'
+        assert item['player'] == data['clip_names'][str(item['slot'])]
+        for name in linked[4]:
+            assert name.split('#')[0] not in fragment.text
 
 
 PRELUDE = 'const P = require(%s);\n' % json.dumps(str(POTG_JS))

@@ -366,7 +366,8 @@ def replay_highlights_json(request: Request, match_uuid: str, db: Session = Depe
     replay = _replay_or_404(db, match_uuid)
     if not replay_db.is_linked(replay):
         raise HTTPException(status_code=404)
-    body = highlights.payload(db, replay)
+    page = replay_service.page_context(db, replay)
+    body = highlights.payload(db, replay, page=page)
     canonical = json.dumps(body, sort_keys=True, separators=(',', ':')).encode('utf-8')
     return _json_with_etag(request, body, etag_of(canonical))
 
@@ -376,7 +377,8 @@ def replay_potg(request: Request, match_uuid: str, db: Session = Depends(get_db)
     replay = _replay_or_404(db, match_uuid)
     if not replay_db.is_linked(replay):
         raise HTTPException(status_code=404)
-    body = highlights.payload(db, replay)
+    page = replay_service.page_context(db, replay)
+    body = highlights.payload(db, replay, page=page)
     item = body['potg']
     if item is None:
         return Response(content='', media_type='text/html')
@@ -384,7 +386,7 @@ def replay_potg(request: Request, match_uuid: str, db: Session = Depends(get_db)
     return templates.TemplateResponse(request, 'replays/_potg.html',
                                       {'item': item, 'viewer_url': url,
                                        'export_url': url + '&export=1&hl=' + item['id'],
-                                       'potg_data': _potg_data(replay_service.page_context(db, replay), body, item)})
+                                       'potg_data': _potg_data(page, body, item)})
 
 
 def _potg_data(context: dict, body: dict, item: dict) -> dict:

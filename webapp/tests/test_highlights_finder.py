@@ -161,6 +161,19 @@ def test_util_top_three_scored_positive_friend_casts_and_tail():
     assert (items[0]["t_start"], items[0]["t_end"], items[0]["events"]) == (10, 19, [13, 17])
 
 
+@pytest.mark.parametrize('top_casts', [[], [
+    {'round': 1, 'i': i, 'slot': 0, 't': 10. + i, 'kind': 'smoke', 'ability': 'Q',
+     'scored': True, 'value': 10. + i} for i in range(3)]], ids=['highlight', 'fallback'])
+def test_heal_is_eligible_for_util_highlight_and_fallback(top_casts):
+    heal = {'round': 1, 'i': None, 'slot': 1, 't': 25., 'kind': 'heal', 'ability': 'E',
+            'scored': True, 'value': 5., 'heal': {'hp': 50}}
+    result = h.find(inputs(util=[*top_casts, heal], model=None))
+    player = result['players']['1']
+    assert player['best']['kind'] == 'util' and player['best']['metric'] == 5
+    assert player['fallback'] == ('util' if top_casts else None)
+    assert any(i['slot'] == 1 and i['kind'] == 'util' for i in result['highlights']) == (not top_casts)
+
+
 def test_win_chance_largest_positive_and_nonpositive(monkeypatch):
     monkeypatch.setattr(util_model, "p_attack", lambda model, a, d, planted, t, tp: {5: .1, 4: .2, 3: .6, 2: .65}[d])
     r = round_([kill(10), kill(20, victim=6), kill(30, victim=7)],

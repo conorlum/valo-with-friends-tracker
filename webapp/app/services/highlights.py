@@ -337,21 +337,22 @@ def round_scores(rounds, home_team):
     return out
 
 
-def load_inputs(db, replay):
+def load_inputs(db, replay, page=None):
     """Read every round once here, using only current control, util and estimator inputs."""
     from app.models.replay import ReplayRound
     from app.replays import format as fmt
-    from app.services import enemy_names, replay_control_views, replay_moments, replay_util, replay_view, util_model
+    from app.services import replay_control_views, replay_moments, replay_util, replay_view, util_model
     from app.services import replays as replay_service
     from app.services.state_replay import attacking_team_for_round
 
-    page = replay_service.page_context(db, replay)
+    if page is None:
+        page = replay_service.page_context(db, replay)
     friends = friend_ids(db, page['players'])
     home = replay_moments.home_team(page['players'], friends)
+    clip_names = clip_labels(page['players'], home)
     players = {int(slot): {'team': p['team'], 'group': p['side'], 'agent': p['agent'],
-                          'friend': p['player_id'] in friends,
-                          'name': (p['name'].split('#', 1)[0] if p['player_id'] in friends
-                                   else enemy_names.label(p['agent']))}
+                          'friend': home is not None and p['team'] == home and p['player_id'] in friends,
+                          'name': clip_names[str(slot)]}
                for slot, p in page['players'].items()}
     offset = replay.clock_offset or 0.0
     scores = round_scores(page['rounds'], None)
@@ -372,20 +373,30 @@ def load_inputs(db, replay):
     loaded = replay_control_views.load_round_summaries(db, replay)
     stale = set(loaded.stale)
     fights = {int(n): s.get('fights') or [] for n, s in loaded.summaries.items() if n not in stale}
-    util_payload = replay_util.match_payload(db, replay, read_only=True)
-    util = None if util_payload.get('updating') else [dict(cast, slot=int(cast['slot']), round=int(n))
-           for n, row in util_payload.get('rounds', {}).items() for cast in row.get('casts', [])]
+    util_payload = replay_util.match_payload(db, replay, read_only=True, page=page)
+    util = None
+    if not util_payload.get('updating'):
+        util = []
+        for n, row in util_payload.get('rounds', {}).items():
+            for cast in row.get('casts', []):
+                if cast.get('slot') is None:
+                    continue
+                try:
+                    slot = int(cast['slot'])
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                util.append(dict(cast, slot=slot, round=int(n)))
     model = util_model.load(db)
     if not util_model.covers(model, {replay.match_id}):
         model = None
     return {'players': players, 'rounds': rounds, 'clock_offset': offset, 'team_fights': fights or None,
             'util': util, 'model': model, 'home_team': home,
-            'clip_names': clip_labels(page['players'], home), 'uuid': str(replay.match_uuid).lower()}
+            'clip_names': clip_names, 'uuid': str(replay.match_uuid).lower()}
 
 
-def payload(db, replay):
+def payload(db, replay, page=None):
     """The public payload; every clip score uses the home team's orientation."""
-    inputs = load_inputs(db, replay)
+    inputs = load_inputs(db, replay, page=page)
     result = find(inputs)
     home = inputs['home_team'] or 'team-1'
     away = 'team-2' if home == 'team-1' else 'team-1'

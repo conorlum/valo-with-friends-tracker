@@ -274,24 +274,25 @@ def test_play_from_stays_paused_when_paused_while_loading():
 
 
 @needs_node
-def test_the_tabs_export_clip_passes_the_item_and_its_round_score():
+@pytest.mark.parametrize('names', [None, {}, {'5': 'Home'}], ids=['no-names', 'missing-slot', 'clip-name'])
+def test_the_tabs_export_clip_passes_the_item_and_its_round_score(names):
     got = run_viewer("""async function run() {
       let handlers = null, opened = [];
       const panel = {textContent: ""};
       const v = viewer({loadHighlights: () => Promise.resolve({potg: null, players: {}}),
-        replayData: {round_scores: {"2": [5, 7]}}});
+        replayData: {round_scores: {"2": [5, 7]}, clip_names: %s}});
       v.root = {querySelectorAll: () => [], querySelector: sel => sel === '[data-replay-panel="highlights"]' ? panel : null};
       v.openExport = prefill => { opened.push(prefill); return Promise.resolve(null); };
       v.playRound = () => Promise.resolve(null);
       global.Highlights = {render: (p, payload, h) => { handlers = h; }};
       v.showTab("highlights"); await tick();
       handlers.exportClip({id: "x", round: 2, t_start: 30, t_end: 42, segments: [[30, 36], [38, 42]],
-        summary: "won a clutch", player: "Alpha"});
+        slot: 5, summary: "won a clutch", player: "Alpha"});
       return opened;
-    }""")
+    }""" % json.dumps(names))
     assert len(got) == 1
     prefill = got[0]
     assert prefill["round"] == 2 and prefill["t_in"] == 30 and prefill["t_out"] == 42
     assert prefill["segments"] == [[30, 36], [38, 42]]
-    assert "Alpha" in prefill["caption"] and "won a clutch" in prefill["caption"]
+    assert prefill["caption"] == ("Home" if names else "Alpha") + " · won a clutch"
     assert prefill["score"] == [5, 7]
