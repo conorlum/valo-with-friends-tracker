@@ -207,10 +207,40 @@ def player_summary(slot, moments, deaths) -> dict:
             "medians": {k: _bucket(v) for k, v in buckets.items()}}
 
 
+def attach_aim(fights: list, aim: dict | None, n) -> list:
+    """Each fight's aim events (`aim`: (round, slot, fight i) -> events) as `fight["aim"]`; a fight with none is
+    left as it was."""
+    if not aim:
+        return fights
+    out = []
+    for f in fights:
+        found = aim.get((_as_int(n), f.get("slot"), f.get("i")))
+        out.append({**f, "aim": found} if found else f)
+    return out
+
+
+def aim_by_fight(events) -> dict:
+    """Stored aim events -> (round, slot, fight i) -> [{opponent, cls, err, d_m, t, on_s}], `on_s` the time the
+    crosshair first got within `aim_stats.on_threshold(d_m)` (None when never, or without a distance)."""
+    from app.moments.constants import AIM_LADDER_DEG
+    from app.services import aim_stats
+
+    out: dict = {}
+    for e in events:
+        on_s = None
+        if e.d_m is not None and e.on_times:
+            k = list(AIM_LADDER_DEG).index(aim_stats.on_threshold(e.d_m))
+            on_s = e.on_times[k] if k < len(e.on_times) else None
+        out.setdefault((e.round_number, e.slot, e.fight_i), []).append(
+            {"opponent": e.opponent, "cls": e.cls, "err": e.err, "d_m": e.d_m, "t": e.t, "on_s": on_s})
+    return out
+
+
 def build_payload(*, players, attack_round1, moments, deaths, events, stale, failed=(), team_fights=None,
-                  destroyed=None) -> dict:
+                  destroyed=None, aim=None) -> dict:
     """`failed`: rounds whose current moments row failed (the tab says so, rather than showing no fights).
-    `team_fights`: round -> the control summary's team fights (app/control/fight_swing.py), when stored."""
+    `team_fights`: round -> the control summary's team fights (app/control/fight_swing.py), when stored.
+    `aim`: `aim_by_fight`'s map, attached to each fight as `aim`."""
     rounds = {}
     for n, m in (moments or {}).items():
         ok = m.get("status") == "ok"
@@ -218,7 +248,8 @@ def build_payload(*, players, attack_round1, moments, deaths, events, stale, fai
         tf = (team_fights or {}).get(n, (team_fights or {}).get(_as_int(n)))
         rounds[str(n)] = {
             "status": m.get("status"),
-            "fights": attach_team_fights(attach_deaths(m.get("fights") or [], rd), tf) if ok else [],
+            "fights": attach_aim(attach_team_fights(attach_deaths(m.get("fights") or [], rd), tf), aim, n)
+            if ok else [],
         }
     summary = {}
     for slot in players:
@@ -258,7 +289,7 @@ def load_moments_payload(db, replay) -> dict:
     from app.models.friendship import Friendship
     from app.models.replay import ReplayRoundControl, ReplayRoundMoments
     from app.replays import control_format
-    from app.services import replay_control, replay_control_views, replay_gaps
+    from app.services import replay_aim, replay_control, replay_control_views, replay_gaps
     from app.services import replays as replay_service
 
     moments = {}
@@ -312,5 +343,7 @@ def load_moments_payload(db, replay) -> dict:
     players = tab_players(page, friends)
     link = replay_control.round_link(replay, groups, 1)
     attack_round1 = sorted(int(s) for s, side in link["sides"].items() if side == "attack")
+    aim = aim_by_fight(replay_aim.current_events(db, [replay.id]))
     return build_payload(players=players, attack_round1=attack_round1, moments=moments, deaths=deaths,
-                         events=events, stale=stale, failed=failed, team_fights=team_fights, destroyed=destroyed)
+                         events=events, stale=stale, failed=failed, team_fights=team_fights, destroyed=destroyed,
+                         aim=aim)
