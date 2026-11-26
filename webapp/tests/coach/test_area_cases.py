@@ -10,4 +10,4 @@ def test_owner_confirmed_area_cases():
         assert set(case) == {"map", "u", "v", "z", "area"}
         if areas.is_painted(case["map"]):
             result = areas.area_at(case["map"], case["u"], case["v"], case["z"])
-            assert result is not None and case["area"] in result["path"], case
+            assert result is not None and case["area"] in result["path"] + result.get("also", []), case

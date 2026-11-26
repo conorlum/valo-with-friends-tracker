@@ -1,5 +1,11 @@
+import ast
 import json
+import re
+import subprocess
+import sys
 from copy import deepcopy
+from importlib.util import resolve_name
+from pathlib import Path
 
 import pytest
 
@@ -51,6 +57,120 @@ def write_paint(tmp_path, obj, map_name="Sunset"):
     path = tmp_path / f"{map_name}.areas.json"
     path.write_text(json.dumps(obj), encoding="utf-8")
     return path
+
+
+WEBAPP = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture
+def complete_areas_dir(tmp_path):
+    maps = json.loads((WEBAPP / "app/static/data/layouts.json").read_text(encoding="utf-8"))["maps"]
+    for name in maps:
+        obj = painted_object({0: 1})
+        obj["map"] = name
+        write_paint(tmp_path, obj, name)
+    return tmp_path, list(maps)
+
+
+@pytest.mark.parametrize("problem", [None, "missing", "not reviewed", "wrong map name", "invalid",
+                                     "invalid before review", "invalid before map", "bad json"])
+def test_areas_files_check(complete_areas_dir, problem):
+    directory, maps = complete_areas_dir
+    name = maps[0]
+    path = directory / f"{name}.areas.json"
+    obj = json.loads(path.read_text(encoding="utf-8"))
+    expected = problem
+    if problem == "missing":
+        path.unlink()
+    elif problem == "bad json":
+        path.write_text("{", encoding="utf-8")
+        expected = "invalid JSON"
+    elif problem:
+        if problem == "not reviewed" or problem == "invalid before review":
+            obj["reviewed"] = False
+        if problem == "wrong map name" or problem == "invalid before map":
+            obj["map"] = maps[1]
+        if problem.startswith("invalid"):
+            obj["version"] = 2
+            obj["names"] = None  # report only the first validation error
+            expected = areas.validate(obj)[0]
+        write_paint(directory, obj, name)
+    result = subprocess.run([sys.executable, "scripts/areas_files.py", "check", "--dir", str(directory)],
+                            cwd=WEBAPP, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == (1 if problem else 0), result.stderr
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith(f"{name}: {expected or 'ok'}")
+    assert lines[1:-1] == [f"{other}: ok" for other in maps[1:]]
+    assert lines[-1] == f"{len(maps) - bool(problem)}/{len(maps)} maps ok"
+    if problem and problem.startswith("invalid"):
+        assert lines[0] == f"{name}: {expected}"
+
+
+AREA_MODULES = {f"app.coach.{name}" for name in ("areas", "areas_draft", "control_areas")}
+
+
+def area_imports(source, package):
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                module = resolve_name("." * node.level + module, package)
+            modules = [module, *(f"{module}.{alias.name}" for alias in node.names)]
+            if module == "app.coach" and any(alias.name == "*" for alias in node.names):
+                modules.extend(AREA_MODULES)
+        else:
+            continue
+        found.extend(module for module in modules
+                     if any(module == banned or module.startswith(banned + ".") for banned in AREA_MODULES))
+    return found
+
+
+@pytest.mark.parametrize("source,package", [
+    ("import app.coach.areas as a", "app.control"),
+    ("import os, app.coach.areas_draft", "app.control"),
+    ("from app.coach.control_areas import value", "app.control"),
+    ("from app.coach import areas as a", "app.control"),
+    ("from app.coach import areas_draft", "app.control"),
+    ("from app.coach import control_areas", "app.control"),
+    ("from app.coach import *", "app.control"),
+    ("from ..coach import areas", "app.control"),
+    ("from ...coach.areas import value", "app.control.nested"),
+])
+def test_area_import_guard_recognizes_import_forms(source, package):
+    assert area_imports(source, package)
+
+
+def test_control_and_heights_never_import_area_code():
+    paths = sorted((WEBAPP / "app/control").rglob("*.py"))
+    assert paths, "app/control must contain Python modules"
+    paths += [WEBAPP / name for name in (
+        "app/replays/control_format.py", "app/replays/choke_assets.py", "app/replays/height_inputs.py",
+        "scripts/build_control_heights.py", "scripts/build_control_geometry.py", "scripts/compute_control.py",
+        "scripts/control_heights.py", "../replay_worker/control_job.py", "../replay_worker/height_job.py",
+    )]
+    violations = []
+    for path in paths:
+        assert path.is_file(), f"required control/heights module missing: {path}"
+        relative = path.resolve().relative_to(WEBAPP.parent)
+        package = ".".join(relative.parts[1:-1] if relative.parts[0] == "webapp" else relative.parts[:-1])
+        imports = area_imports(path.read_text(encoding="utf-8"), package)
+        if imports:
+            violations.append(f"{relative}: {imports}")
+    assert not violations, "\n".join(violations)
+
+
+def test_areas_panel_downloads_only_area_files():
+    source = (WEBAPP / "scripts/control_tagger_areas.js").read_text(encoding="utf-8")
+    calls = []
+    for match in re.finditer(r"\bdownload\s*\(\s*([^,]+),", source):
+        if re.search(r"\bfunction\s*$", source[:match.start()]):
+            continue  # the helper declaration is not a call
+        calls.append(re.sub(r"\s+", "", match[1]))
+    assert calls
+    assert set(calls) == {'model.map+".areas.json"', '"area_cases.json"'}
 
 
 def test_same_size_same_mtime_replacement_reads_new_bytes(tmp_path):
@@ -128,6 +248,128 @@ def test_export_is_deterministic():
     shuffled["bands"] = dict(reversed(list(obj["bands"].items())))
     assert areas.dumps(obj) == areas.dumps(shuffled)
     assert json.loads(areas.dumps(obj)) == obj
+
+
+def test_also_parents_validate_and_round_trip():
+    obj = painted_object({0: 2})
+    obj["names"][1]["also_parents"] = [3]
+    assert areas.validate(obj) == []
+    encoded = areas.dumps(obj)
+    assert json.loads(encoded) == obj
+    child = json.loads(encoded)["names"][1]
+    assert list(child) == ["id", "name", "parent", "also_parents", "super", "super_source"]
+    assert areas.validate(json.loads(encoded)) == []
+
+
+@pytest.mark.parametrize("parents", [[3, 3], [1], [2], [99], [], ["3"], [True], [0], [-1], [3.0], None, 3])
+def test_invalid_also_parents_are_refused(parents):
+    obj = painted_object({0: 2})
+    obj["names"][1]["also_parents"] = parents
+    assert any("also_parents" in problem for problem in areas.validate(obj))
+
+
+def test_also_parents_on_root_are_refused():
+    obj = painted_object({})
+    obj["names"][0]["also_parents"] = [3]
+    assert any("also_parents" in problem for problem in areas.validate(obj))
+
+
+def test_cycle_through_also_parents_is_refused():
+    obj = painted_object({})
+    obj["names"].append({"id": 4, "name": "Lower Mid", "parent": 1,
+                         "also_parents": [2], "super": "Mid", "super_source": "auto"})
+    obj["names"][1]["also_parents"] = [4]
+    assert any("cycle" in problem for problem in areas.validate(obj))
+
+
+def test_fourth_level_only_through_also_parents_is_refused():
+    obj = painted_object({})
+    obj["names"].extend([
+        {"id": 4, "name": "A Upper", "parent": 3, "super": "A", "super_source": "auto"},
+        {"id": 5, "name": "A Ledge", "parent": 4, "super": "A", "super_source": "auto"},
+    ])
+    obj["names"][1]["also_parents"] = [5]
+    assert any("more than three levels" in problem for problem in areas.validate(obj))
+    obj["names"][1]["also_parents"] = [4]
+    assert areas.validate(obj) == []
+
+
+def test_export_without_also_parents_preserves_literal_bytes():
+    obj = painted_object({}, names=[NAMES[0]])
+    assert areas.validate(obj) == []
+    assert areas.dumps(obj) == '''{
+ "version": 1,
+ "map": "Sunset",
+ "reviewed": true,
+ "names": [
+  {
+   "id": 1,
+   "name": "Mid",
+   "parent": null,
+   "super": "Mid",
+   "super_source": "auto"
+  }
+ ],
+ "cells": [
+  [
+   0,
+   16384
+  ]
+ ],
+ "bands": {}
+}
+'''
+
+
+def test_area_and_tree_expose_also_parents(tmp_path):
+    obj = painted_object({0: 2, 1: 4})
+    obj["names"][1]["also_parents"] = [3]
+    obj["names"].append({"id": 4, "name": "Lower Mid", "parent": 1,
+                         "super": "Mid", "super_source": "auto"})
+    write_paint(tmp_path, obj)
+    painted = areas.load_painted("Sunset", tmp_path)
+    assert painted.ancestors == {1: frozenset({1}), 2: frozenset({1, 2, 3}),
+                                 3: frozenset({3}), 4: frozenset({1, 4})}
+    assert areas.area_at("Sunset", 0, 0, areas_dir=tmp_path) == {
+        "name": "Top Mid", "super": "Mid", "path": ["Mid", "Top Mid"],
+        "approximate": False, "also": ["A Site"],
+    }
+    assert "also" not in areas.area_at("Sunset", fmt.UV_SCALE / cf.GRID, 0, areas_dir=tmp_path)
+    assert areas.tree("Sunset", tmp_path) == [
+        {"name": "Mid", "parent": None, "super": "Mid"},
+        {"name": "Top Mid", "parent": "Mid", "also_parents": ["A Site"], "super": "Mid"},
+        {"name": "A Site", "parent": None, "super": "A"},
+        {"name": "Lower Mid", "parent": "Mid", "super": "Mid"},
+    ]
+
+
+def test_all_ancestors_are_inherited_and_sorted_by_name(tmp_path):
+    obj = painted_object({0: 5})
+    obj["names"][1]["also_parents"] = [3]
+    obj["names"].extend([
+        {"id": 4, "name": "B Site", "parent": None, "super": "B", "super_source": "set"},
+        {"id": 5, "name": "Mid Ledge", "parent": 1, "also_parents": [4, 2],
+         "super": "Mid", "super_source": "auto"},
+    ])
+    assert areas.validate(obj) == []
+    assert json.loads(areas.dumps(obj))["names"][4]["also_parents"] == [2, 4]
+    assert obj["names"][4]["also_parents"] == [4, 2]
+    write_paint(tmp_path, obj)
+    assert areas.load_painted("Sunset", tmp_path).ancestors[5] == frozenset({1, 2, 3, 4, 5})
+    assert areas.area_at("Sunset", 0, 0, areas_dir=tmp_path) == {
+        "name": "Mid Ledge", "super": "Mid", "path": ["Mid", "Mid Ledge"],
+        "approximate": False, "also": ["A Site", "B Site", "Top Mid"],
+    }
+    assert areas.tree("Sunset", tmp_path)[4]["also_parents"] == ["B Site", "Top Mid"]
+
+
+def test_parent_already_in_first_path_adds_no_also_key(tmp_path):
+    obj = painted_object({0: 4})
+    obj["names"].append({"id": 4, "name": "Mid Ledge", "parent": 2, "also_parents": [1],
+                         "super": "Mid", "super_source": "auto"})
+    assert areas.validate(obj) == []
+    write_paint(tmp_path, obj)
+    assert "also" not in areas.area_at("Sunset", 0, 0, areas_dir=tmp_path)
 
 
 @pytest.mark.parametrize("upper_lo", [19, 20])

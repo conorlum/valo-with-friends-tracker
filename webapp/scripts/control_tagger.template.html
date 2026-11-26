@@ -155,22 +155,37 @@
           <button data-area-tool="fill">Fill</button>
           <button data-area-tool="erase">Erase</button>
           <button data-area-tool="pick">Pick area</button>
+          <button data-area-tool="place">Place</button>
+          <button data-area-tool="shrink">Shrink</button>
+          <button id="areasUndo">Undo</button>
         </div>
         <p><label>Brush size <input type="range" id="areasBrushSize" min="1" max="17" step="2" value="5">
           <output id="areasBrushSizeText" for="areasBrushSize">5 cells</output></label></p>
         <p id="areasFloorRow" hidden><label>Floor <select id="areasFloor"></select></label>
           <span id="areasFloorHint" class="note"></span></p>
         <p class="note" id="areasMessage" role="status"></p>
+        <div id="areasRestoreRow" class="row" hidden>
+          Saved draft available. <button id="areasRestore">Restore</button><button id="areasDiscard">Discard</button>
+        </div>
       </section>
       <section>
         <h3>Names and regions</h3>
+        <label for="areasPaste">Paste names, one per line</label>
+        <textarea id="areasPaste" rows="4"></textarea><button id="areasPasteAdd">Queue names</button>
+        <div id="areasQueue" role="status"></div>
+        <p>
+          <label><input type="radio" name="areasPlaceMode" id="areasPlaceNew" checked> New area</label>
+          <label><input type="radio" name="areasPlaceMode" id="areasPlaceChild"> Child of selected area</label>
+        </p>
         <div id="areasTree" aria-label="Area names"></div>
         <div class="area-editor">
           <input type="text" id="areasName" aria-label="Selected area name"><button id="areasRename">Rename</button>
           <label for="areasParent">Parent</label><select id="areasParent"></select>
+          <label for="areasAlsoParents">Extra parents</label><select id="areasAlsoParents" multiple></select>
           <label for="areasRegion">Region</label><select id="areasRegion"></select>
           <span id="areasRegionStatus" class="note"></span><button id="areasConfirmRegion">Confirm region</button>
           <select id="areasMergeTarget" aria-label="Merge into"></select><button id="areasMerge">Merge</button>
+          <button id="areasDelete">Delete selected area</button>
           <input type="text" id="areasNewName" placeholder="New area name" aria-label="New area name"><button id="areasAdd">Add name</button>
         </div>
         <p><label><input type="checkbox" id="areasAddChild"> Add as child of selected area</label></p>
@@ -202,7 +217,7 @@
           <button id="areasExportFixture" disabled>Export fixture</button>
         </div>
         <p id="areasAuto" class="note"></p>
-        <p class="note">Export reviewed paint before closing the page. Copy <code>&lt;Map&gt;.areas.json</code> to
+        <p class="note">Work autosaves in this browser. Export is still what publishes: copy <code>&lt;Map&gt;.areas.json</code> to
           <code>app/static/data/control/</code> when the map is ready.
           Critical Util builds read reviewed paint from origin/main; merge it to publish.</p>
       </section>
@@ -894,6 +909,9 @@
       return;
     }
     if (state.mode === "areas") {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault(); window.taggerAreas.undo(); return;
+      }
       if (e.key === "Escape" && !window.taggerAreas.cancelAlignment()) setMode("select");
       else if (modeKey) setMode(modeKey);
       return;
