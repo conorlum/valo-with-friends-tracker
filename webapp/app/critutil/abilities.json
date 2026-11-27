@@ -91,6 +91,7 @@
    "ability": "Cosmic Divide",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "wall",
@@ -219,6 +220,7 @@
    "ability": "Rolling Thunder",
    "slot": "X",
    "type": "ult",
+   "ult_window": 6,
    "kinds": [
     "ult",
     "status"
@@ -332,6 +334,7 @@
    "ability": "Orbital Strike",
    "slot": "X",
    "type": "ult",
+   "ult_window": "total:10",
    "kinds": [
     "ult",
     "damaging"
@@ -422,6 +425,7 @@
    "ability": "Tour De Force",
    "slot": "X",
    "type": "ult",
+   "ult_window": "round",
    "kinds": [
     "ult"
    ],
@@ -538,6 +542,7 @@
    "ability": "Not Dead Yet",
    "slot": "X",
    "type": "ult",
+   "ult_window": "round",
    "kinds": [
     "ult",
     "heal"
@@ -680,6 +685,7 @@
    "ability": "Neural Theft",
    "slot": "X",
    "type": "ult",
+   "ult_window": 10,
    "kinds": [
     "ult",
     "info"
@@ -785,6 +791,7 @@
    "ability": "Annihilation",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "status"
@@ -912,6 +919,7 @@
    "ability": "Nightfall",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "status"
@@ -1031,6 +1039,7 @@
    "ability": "Thrash",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "status"
@@ -1171,6 +1180,7 @@
    "ability": "Reckoning",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "smoke",
@@ -1280,6 +1290,7 @@
    "ability": "Suspension",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "status"
@@ -1396,6 +1407,7 @@
    "ability": "Kill Contract",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult"
    ],
@@ -1520,6 +1532,7 @@
    "ability": "Blade Storm",
    "slot": "X",
    "type": "ult",
+   "ult_window": "round",
    "kinds": [
     "ult"
    ],
@@ -1625,6 +1638,7 @@
    "ability": "NULL/cmd",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "status"
@@ -1757,6 +1771,7 @@
    "ability": "Lockdown",
    "slot": "X",
    "type": "ult",
+   "ult_window": 10,
    "kinds": [
     "ult",
     "status"
@@ -1787,6 +1802,7 @@
    "ability": "Bassquake",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "status"
@@ -2022,6 +2038,7 @@
    "ability": "Overdrive",
    "slot": "X",
    "type": "ult",
+   "ult_window": "round",
    "kinds": [
     "ult"
    ],
@@ -2125,6 +2142,7 @@
    "ability": "From the Shadows",
    "slot": "X",
    "type": "ult",
+   "ult_window": 0,
    "kinds": [
     "ult",
     "teleport"
@@ -2239,6 +2257,7 @@
    "ability": "Run it Back",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult"
    ],
@@ -2351,6 +2370,7 @@
    "ability": "Showstopper",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "damaging"
@@ -2468,6 +2488,7 @@
    "ability": "Empress",
    "slot": "X",
    "type": "ult",
+   "ult_window": "round",
    "kinds": [
     "ult"
    ],
@@ -2572,6 +2593,7 @@
    "ability": "Resurrection",
    "slot": "X",
    "type": "ult",
+   "ult_window": "round",
    "kinds": [
     "ult",
     "heal"
@@ -2689,6 +2711,7 @@
    "ability": "Seekers",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "status"
@@ -2804,6 +2827,7 @@
    "ability": "Hunter's Fury",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "damaging",
@@ -2925,6 +2949,7 @@
    "ability": "Armageddon",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "damaging"
@@ -3034,6 +3059,7 @@
    "ability": "Evolution",
    "slot": "X",
    "type": "ult",
+   "ult_window": "round",
    "kinds": [
     "ult"
    ],
@@ -3131,6 +3157,7 @@
    "ability": "Viper's Pit",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "smoke"
@@ -3251,6 +3278,7 @@
    "ability": "Steel Garden",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "status"
@@ -3371,6 +3399,7 @@
    "ability": "Convergent Paths",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult",
     "status"
@@ -3499,6 +3528,7 @@
    "ability": "Dimensional Drift",
    "slot": "X",
    "type": "ult",
+   "ult_window": 5,
    "kinds": [
     "ult"
    ],
