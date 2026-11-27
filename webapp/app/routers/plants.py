@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.replays import layouts
-from app.services import map_rotation, plant_page, plant_spots, postplant_page, postplant_stats
+from app.services import map_rotation, plant_map_view, plant_page, plant_spots, postplant_page, postplant_stats
 from app.services import replays as replay_service
 from app.services.auth import get_current_player
 from app.templates import templates
@@ -24,9 +24,9 @@ from app.templates import templates
 router = APIRouter(prefix="/plants", tags=["plants"])
 
 LOGIN_NOTE = "Friends shows the rounds you and the players on your Friends page attacked in, so it needs a login. Showing Everyone."
-THIN_NOTE = "A spot shows a win rate only from {n} plants; below that it shows its count. Every figure shows its n."
+THIN_NOTE = ("Counts include only plants whose round has a usable result. "
+             "A spot shows a win rate from {n} plants; below that it shows its count.")
 STATIC = Path(__file__).resolve().parents[1] / "static"
-SCALE_POINTS = 15.0  # adjusted points at which the colour is at full strength
 
 
 def _enabled_or_404() -> None:
@@ -53,28 +53,67 @@ def _map_image(asset_key: str, map_name: str) -> str:
     return f"/static/img/maps/{quote(asset_key)}.png"
 
 
-def _spot_view(spot: dict, min_n: int) -> dict:
+def _n(value):
+    """A number as the SVG writes it: an integer when it is one, else two decimals at most."""
+    value = round(float(value), 2)
+    return int(value) if value == int(value) else value
+
+
+def _spot_view(spot: dict, min_n: int, index: int = 0) -> dict:
     adjusted = spot["adjusted_pct"]
-    if adjusted is None:
-        style = None
-    else:
-        strength = min(abs(adjusted) / SCALE_POINTS, 1.0)
-        colour = "--good" if adjusted >= 0 else "--critical"
-        style = f"color-mix(in srgb, var({colour}) {20 + 60 * strength:.0f}%, transparent)"
     interval = spot["adjusted_ci_display"]
-    rectangle = "w" in spot
+    if "w" in spot:
+        shape = {"kind": "rect", "x": _n(spot["u"] - spot["w"] / 2), "y": _n(spot["v"] - spot["h"] / 2),
+                 "w": _n(spot["w"]), "h": _n(spot["h"]), "angle": _n(spot["angle"]),
+                 "u": _n(spot["u"]), "v": _n(spot["v"])}
+    else:
+        shape = {"kind": "circle", "cx": _n(spot["u"]), "cy": _n(spot["v"]), "r": _n(spot["radius"])}
+
+    def number(value):
+        return "" if value is None else value
+
     return {
         **spot,
-        "left": spot["u"] / 100, "top": spot["v"] / 100,
-        "width": (spot["w"] if rectangle else 2 * spot["radius"]) / 100,
-        "height": (spot["h"] if rectangle else 2 * spot["radius"]) / 100,
-        "rectangle": rectangle, "turn": spot["angle"] if rectangle else 0,
-        "grey": adjusted is None, "fill": style, "enough": spot["n"] >= min_n,
+        "colour": plant_map_view.colour(index), "shape": shape, "muted": adjusted is None,
+        "sort": {"name": spot["name"], "n": spot["usable_n"], "adjusted": number(adjusted),
+                 "ci_low": number(spot["adjusted_ci"][0] if spot["adjusted_ci"] else None),
+                 "raw": number(spot["raw_pct"]), "shrunk": number(spot["shrunk_pct"]),
+                 "median": number(spot["median_plant_time"])},
         "interval": f"{interval[0]} to {interval[1]}" if interval else None,
         "raw": None if spot["raw_pct"] is None else f"{spot['raw_pct']:.1f}%",
         "shrunk": None if spot["shrunk_pct"] is None else f"{spot['shrunk_pct']:.1f}%",
-        "defused": None if spot["defused_pct"] is None else f"{spot['defused_pct']:.1f}%",
         "median": None if spot["median_plant_time"] is None else f"{spot['median_plant_time']:.1f}",
+    }
+
+
+def _view_box(values) -> str:
+    return " ".join(str(_n(value)) for value in values)
+
+
+def _site_view(data, site, turns):
+    """The zoomed map of one site: viewBox, narrow viewBox, crop square and labels; None without a crop."""
+    block = data["sites"][site]
+    if block.get("crop") is None:
+        return None
+    cx, cy, side = block["crop"]
+    rcx, rcy = plant_map_view.rotate_uv(cx, cy, turns)
+    gutter = 0.45 * side
+    origin = rcx - side / 2
+    anchors = []
+    for index, spot in enumerate(block["spots"]):
+        ax, ay = plant_map_view.rotate_uv(*spot["anchor"], turns)
+        anchors.append((spot["id"], ax, ay))
+    placed = plant_map_view.layout_labels(anchors, (origin, rcy - side / 2, side), 0.06 * side)
+    by_id = {a[0]: a for a in anchors}
+    names = {s["id"]: (s["name"], plant_map_view.colour(i)) for i, s in enumerate(block["spots"])}
+    labels = [{"id": ident, "name": names[ident][0], "colour": names[ident][1], "side": where,
+               "x": _n(x), "y": _n(y), "ax": _n(by_id[ident][1]), "ay": _n(by_id[ident][2])}
+              for ident, where, x, y in placed]
+    return {
+        "view_box": _view_box((origin - gutter, rcy - side / 2, side + 2 * gutter, side)),
+        "narrow_viewbox": _view_box((origin, rcy - side / 2, side, side)),
+        "crop": {"x": _n(cx - side / 2), "y": _n(cy - side / 2), "side": _n(side)},
+        "labels": labels, "font": _n(0.035 * side), "dot": _n(0.008 * side),
     }
 
 
@@ -253,8 +292,13 @@ def plants_map(request: Request, map_name: str, db: Session = Depends(get_db)):
     for name, block in sorted(data["sites"].items()):
         if site is not None and name != site:
             continue
-        sites.append({**block, "name": name, "spots": [_spot_view(s, data["min_n"]) for s in block["spots"]]})
+        sites.append({**block, "name": name,
+                      "spots": [_spot_view(s, data["min_n"], i) for i, s in enumerate(block["spots"])]})
     turns = map_rotation.quarter_turns(map_name)
+    zone = [{"x": _n(x), "y": _n(y), "w": _n(w), "h": _n(h)}
+            for x, y, w, h in plant_map_view.zone_rects(asset_key)]
+    zoom = _site_view(data, site, turns) if site is not None else None
+    view_box = zoom["view_box"] if zoom else "0 0 10000 10000"
     base = f"/plants/{map_name}"
 
     def link(**params):
@@ -264,6 +308,7 @@ def plants_map(request: Request, map_name: str, db: Session = Depends(get_db)):
 
     return templates.TemplateResponse(request, "plants/map.html", {
         "map_name": map_name, "asset_key": asset_key, "image": _map_image(asset_key, map_name), "sites": sites, "site": site, "friends": friends,
+        "zone": zone, "zoom": zoom, "view_box": view_box,
         "login_note": login_note, "turns": turns, "degrees": turns * 90, "min_n": data["min_n"],
         "all_sites": sorted(data["sites"]), "thin_note": THIN_NOTE.format(n=data["min_n"]),
         "view_links": {"everyone": link(view=None), "friends": link(view="friends")},

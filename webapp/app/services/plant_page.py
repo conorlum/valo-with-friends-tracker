@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import math
+from statistics import median
 import zlib
 
 from sqlalchemy import and_, false, func, not_, or_, select
@@ -26,14 +28,13 @@ from app.models.replay import Replay
 from app.models.round_plant import PlantStatsCache
 from app.replays import layouts
 from app.scoring.plant_window import attacking_team
-from app.services import circle, plant_site_changes, plant_spots, plant_stats
+from app.services import circle, plant_map_view, plant_site_changes, plant_spots, plant_stats
 from app.services.round_plants import asset_key_for
 
 logger = logging.getLogger(__name__)
 
-CALCULATION_VERSION = 2   # 2: MIN_N 100 -> 50
+CALCULATION_VERSION = 3   # 3: usable plants only; no examples; site crop and spot anchors
 MIN_N = 50                # plants a spot needs before it shows a win rate (the owner's gate, 2026-11-25)
-EXAMPLES = 3
 
 
 def _registry_digest() -> str:
@@ -45,7 +46,7 @@ def fingerprint(db) -> str:
     count, newest = db.execute(select(func.count(), func.max(RoundPlant.updated_at))
                                .select_from(RoundPlant)).one()
     # Which replay is linked to which match, and its branch and clock, decide each row's
-    # layout and example link: a relink can leave the count unchanged.
+    # layout and position: a relink can leave the count unchanged.
     links = hashlib.sha256()
     for match_id, branch, offset in db.execute(
             select(Replay.match_id, Replay.game_branch, Replay.clock_offset)
@@ -58,13 +59,16 @@ def fingerprint(db) -> str:
 
 
 def _joined(query):
+    """Usable plants only (D3): those whose round has attackers_alive, defenders_alive and attackers_won."""
     return (query.select_from(RoundPlant)
             .join(Match, Match.id == RoundPlant.match_id)
-            .outerjoin(Replay, (Replay.match_id == RoundPlant.match_id) & (Replay.link_status == "linked")))
+            .outerjoin(Replay, (Replay.match_id == RoundPlant.match_id) & (Replay.link_status == "linked"))
+            .where(RoundPlant.attackers_alive.is_not(None), RoundPlant.defenders_alive.is_not(None),
+                   RoundPlant.attackers_won.is_not(None)))
 
 
 def read_rows(db) -> list[dict]:
-    """Every stored plant whose layout is known now, with `asset_key` decided from the replay."""
+    """Every usable stored plant whose layout is known now, with `asset_key` decided from the replay."""
     query = _joined(select(
         RoundPlant.match_id, RoundPlant.round_number, RoundPlant.site, RoundPlant.u, RoundPlant.v,
         RoundPlant.plant_time, RoundPlant.attackers_alive, RoundPlant.defenders_alive,
@@ -100,7 +104,7 @@ def _before_move():
 
 
 def counts_by_asset(db) -> Counter:
-    """Plants per layout from one grouped query; the same answer as counting `read_rows`."""
+    """Usable plants per layout from one grouped query; the same answer as counting `read_rows`."""
     query = _joined(select(Match.map_name, Replay.game_branch, func.count())
                     .where(not_(_before_move()))).group_by(Match.map_name, Replay.game_branch)
     counts = Counter()
@@ -125,16 +129,46 @@ def _flat_spots(asset_key):
             for site, spots in sites.items() for spot in spots]
 
 
-def _example_link(row):
-    if row["uuid"] is None or row["plant_time"] is None or row["clock_offset"] is None:
-        return None
-    return f"/replays/{row['uuid']}?round={row['round_number']}&t={row['plant_time'] - row['clock_offset']:.1f}"
+def _box(spot):
+    """(x0, y0, x1, y1) of a spot's shape, a rotated rectangle's by its corners."""
+    if "radius" in spot:
+        r = spot["radius"]
+        return spot["u"] - r, spot["v"] - r, spot["u"] + r, spot["v"] + r
+    turn = math.radians(spot["angle"])
+    half_u = (abs(math.cos(turn)) * spot["w"] + abs(math.sin(turn)) * spot["h"]) / 2
+    half_v = (abs(math.sin(turn)) * spot["w"] + abs(math.cos(turn)) * spot["h"]) / 2
+    return spot["u"] - half_u, spot["v"] - half_v, spot["u"] + half_u, spot["v"] + half_v
+
+
+def _crops_and_anchors(rows, spots):
+    """Per site the zoom crop [cx, cy, side] (or None), and per (site, spot id) the anchor [u, v]:
+    the median position of the plants in the spot (all players), else the shape's centre."""
+    assigned = plant_stats.assign_spots(rows, spots)
+    inside = defaultdict(list)
+    for row, spot_id in zip(rows, assigned):
+        if spot_id != "outside":
+            inside[row["site"], spot_id].append(row)
+    anchors = {}
+    for spot in spots:
+        found = inside.get((spot["site"], spot["id"]))
+        anchors[spot["site"], spot["id"]] = (
+            [median(r["u"] for r in found), median(r["v"] for r in found)] if found
+            else [spot["u"], spot["v"]])
+    crops = {}
+    for site in {spot["site"] for spot in spots} | {row["site"] for row in rows}:
+        points = [(row["u"], row["v"]) for row in rows if row["site"] == site]
+        boxes = [_box(spot) for spot in spots if spot["site"] == site]
+        crop = plant_map_view.site_crop(points, boxes)
+        crops[site] = None if crop is None else list(crop)
+    return crops, anchors
 
 
 def _compute(db, asset_key, ids):
     rows = read_rows(db)
     expected = plant_stats.expected_oof(rows)          # fitted once, on every layout
     picked = [(row, value) for row, value in zip(rows, expected) if row["asset_key"] == asset_key]
+    spots = _flat_spots(asset_key)
+    crops, anchors = _crops_and_anchors([row for row, _ in picked], spots)   # all players, before Friends
     if ids is not None:
         teams = defaultdict(set)
         for match_id, team in db.execute(select(MatchPlayer.match_id, MatchPlayer.team)
@@ -143,23 +177,11 @@ def _compute(db, asset_key, ids):
         picked = [(row, value) for row, value in picked
                   if attacking_team(row["round_number"]) in teams[row["match_id"]]]
     subset = [row for row, _ in picked]
-    spots = _flat_spots(asset_key)
     sites = plant_stats.spot_rows(subset, spots, min_n=MIN_N, expectations=[value for _, value in picked])
-    assigned = plant_stats.assign_spots(subset, spots)
-    by_spot = defaultdict(list)
-    for row, spot_id in zip(subset, assigned):
-        if spot_id != "outside":
-            by_spot[row["site"], spot_id].append(row)
-    for site, block in sites.items():
+    for name, block in sites.items():
+        block["crop"] = crops.get(name)
         for spot in block["spots"]:
-            links = []
-            for row in sorted(by_spot[site, spot["id"]], key=lambda r: (-r["match_id"], r["round_number"])):
-                link = _example_link(row)
-                if link is not None:
-                    links.append(link)
-                if len(links) == EXAMPLES:
-                    break
-            spot["examples"] = links
+            spot["anchor"] = anchors[name, spot["id"]]
     data = {"asset_key": asset_key, "population": "friends" if ids is not None else "all",
             "min_n": MIN_N, "sites": sites}
     return json.loads(json.dumps(data))                # what a cache hit returns, tuples included
