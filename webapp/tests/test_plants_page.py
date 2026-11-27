@@ -232,6 +232,40 @@ def test_49_is_muted_without_a_percentage_and_50_has_a_signed_adjusted_value(db)
     assert re.search(r'data-adjusted="[+-]\d+\.\d%"', page)
 
 
+def test_every_table_row_has_one_cell_per_sortable_header(db, monkeypatch):
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
+        {"id": "big", "name": "Heaven", "u": 500, "v": 500, "r": 100},
+        {"id": "small", "name": "Market", "u": 5000, "v": 5000, "r": 100}]}})
+    _plants(db, plant_page.MIN_N)
+    _plants(db, plant_page.MIN_N - 1, start=1000, u=5000, v=5000)
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    table = re.search(r"<table.*?</table>", page, re.S).group(0)
+    keys = re.findall(r'<th data-sort-key="(\w+)"', table)
+    assert keys[:2] == ["name", "n"]
+    rows = re.findall(r"<tr data-row-spot=.*?</tr>", table, re.S)
+    assert len(rows) == 2
+    muted = [r for r in rows if 'data-muted="1"' in r]
+    unmuted = [r for r in rows if 'data-muted="1"' not in r]
+    assert len(muted) == 1 and len(unmuted) == 1
+    for row in rows:
+        assert len(re.findall(r"<td\b", row)) == len(keys)
+    cells = dict(zip(keys, re.findall(r'<td data-sort-value="([^"]*)"', unmuted[0])))
+    assert cells["name"] == "Heaven" and cells["n"] == str(plant_page.MIN_N)
+    assert all(cells[k] != "" for k in ("adjusted", "ci_low", "raw", "shrunk", "median"))
+    cells = dict(zip(keys, re.findall(r'<td data-sort-value="([^"]*)"', muted[0])))
+    assert cells["name"] == "Market" and cells["n"] == str(plant_page.MIN_N - 1)
+    assert all(cells[k] == "" for k in ("adjusted", "ci_low", "raw", "shrunk"))
+
+
+def test_the_removed_hover_leftovers_are_gone(db, monkeypatch):
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
+        {"id": "s1", "name": "Heaven", "u": 500, "v": 500, "r": 100}]}})
+    _plants(db, 3)
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    assert "plant-detail" not in page and "data-detail" not in page
+    assert "enough" not in plants_router._spot_view(_spot(db), plant_page.MIN_N)
+
+
 # --- friends --------------------------------------------------------------------
 
 

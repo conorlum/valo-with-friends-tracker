@@ -46,7 +46,7 @@ def fingerprint(db) -> str:
     count, newest = db.execute(select(func.count(), func.max(RoundPlant.updated_at))
                                .select_from(RoundPlant)).one()
     # Which replay is linked to which match, and its branch and clock, decide each row's
-    # layout and example link: a relink can leave the count unchanged.
+    # layout and position: a relink can leave the count unchanged.
     links = hashlib.sha256()
     for match_id, branch, offset in db.execute(
             select(Replay.match_id, Replay.game_branch, Replay.clock_offset)

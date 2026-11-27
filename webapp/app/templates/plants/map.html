@@ -19,7 +19,6 @@
   .plants-table th[aria-sort="descending"]::after { content: " \25BC"; }
   .plants-table th[aria-sort="ascending"]::after { content: " \25B2"; }
   .plant-grey { color: var(--ink-muted); }
-  .plant-detail { min-height: 1.5rem; color: var(--ink-secondary); }
   @media (max-width: 640px) { .plants-table { display: block; overflow-x: auto; } [data-label-spot] { display: none; } }
 </style>
 <h1>Plants on {{ map_name }}</h1>
@@ -50,8 +49,8 @@
     <image href="{{ image }}" x="0" y="0" width="10000" height="10000"/>
     <g class="plant-shapes"{% if zone %} clip-path="url(#plant-zone)"{% endif %}>
       {% for s in sites %}{% for spot in s.spots %}{% set sh = spot.shape %}
-      {% if sh.kind == "rect" %}<rect data-spot="{{ spot.id }}" data-site="{{ s.name }}" data-colour="{{ spot.colour }}" data-detail="{{ spot.name }}: n={{ spot.usable_n }}{% if spot.adjusted_display %}, adjusted {{ spot.adjusted_display }}{% endif %}" x="{{ sh.x }}" y="{{ sh.y }}" width="{{ sh.w }}" height="{{ sh.h }}" transform="rotate({{ sh.angle }} {{ sh.u }} {{ sh.v }})" fill="{{ spot.colour }}" fill-opacity="0.45" stroke="{{ spot.colour }}" stroke-width="2" vector-effect="non-scaling-stroke"/>
-      {% else %}<circle data-spot="{{ spot.id }}" data-site="{{ s.name }}" data-colour="{{ spot.colour }}" data-detail="{{ spot.name }}: n={{ spot.usable_n }}{% if spot.adjusted_display %}, adjusted {{ spot.adjusted_display }}{% endif %}" cx="{{ sh.cx }}" cy="{{ sh.cy }}" r="{{ sh.r }}" fill="{{ spot.colour }}" fill-opacity="0.45" stroke="{{ spot.colour }}" stroke-width="2" vector-effect="non-scaling-stroke"/>
+      {% if sh.kind == "rect" %}<rect data-spot="{{ spot.id }}" data-site="{{ s.name }}" data-colour="{{ spot.colour }}" x="{{ sh.x }}" y="{{ sh.y }}" width="{{ sh.w }}" height="{{ sh.h }}" transform="rotate({{ sh.angle }} {{ sh.u }} {{ sh.v }})" fill="{{ spot.colour }}" fill-opacity="0.45" stroke="{{ spot.colour }}" stroke-width="2" vector-effect="non-scaling-stroke"/>
+      {% else %}<circle data-spot="{{ spot.id }}" data-site="{{ s.name }}" data-colour="{{ spot.colour }}" cx="{{ sh.cx }}" cy="{{ sh.cy }}" r="{{ sh.r }}" fill="{{ spot.colour }}" fill-opacity="0.45" stroke="{{ spot.colour }}" stroke-width="2" vector-effect="non-scaling-stroke"/>
       {% endif %}
       {% endfor %}{% endfor %}
     </g>
@@ -64,7 +63,6 @@
   </g>
   {% endfor %}{% endif %}
 </svg>
-<p class="plant-detail" id="plant-detail" aria-live="polite"></p>
 
 {% for s in sites %}{% if loop.first %}<ul class="plant-key" aria-label="Key">{% endif %}{% if s.spots %}
   <li class="plant-key-site">Site {{ s.name }}</li>

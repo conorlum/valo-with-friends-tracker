@@ -52,6 +52,35 @@ def test_zone_rects_committed_file():
         assert 0 <= x and 0 <= y and x + w <= 10000 + 1e-6 and y + h <= 10000 + 1e-6
 
 
+def test_zone_rects_reads_the_file_once_and_memoises_per_asset_key(monkeypatch):
+    from app.services import plant_position
+    pmv._cached_rects.cache_clear()
+    reads = []
+    real = plant_position._zones_file
+    monkeypatch.setattr(plant_position, "_zones_file", lambda: reads.append(1) or real())
+    first = pmv.zone_rects("Sunset")
+    second = pmv.zone_rects("Sunset")
+    assert first and first == second
+    assert len(reads) == 1
+    assert pmv.zone_rects("Nope") == [] and pmv.zone_rects("Nope") == []
+    assert len(reads) == 2                      # one more read for the other key, none for repeats
+
+
+def test_zone_rects_returns_a_copy_the_caller_may_mutate():
+    pmv._cached_rects.cache_clear()
+    first = pmv.zone_rects("Sunset")
+    expected = list(first)
+    first.clear()
+    assert pmv.zone_rects("Sunset") == expected
+
+
+def test_a_passed_grid_is_never_cached():
+    pmv._cached_rects.cache_clear()
+    one = pmv.zone_rects("X", _fake([[1] * 4] * 4))
+    two = pmv.zone_rects("X", _fake([[0] * 4] * 4))
+    assert one and two == []
+
+
 def test_site_crop_minimum_side():
     cx, cy, side = pmv.site_crop([], [(4000, 4000, 4500, 4400)])
     assert (cx, cy) == (4250, 4200)

@@ -79,7 +79,6 @@ def _spot_view(spot: dict, min_n: int, index: int = 0) -> dict:
                  "ci_low": number(spot["adjusted_ci"][0] if spot["adjusted_ci"] else None),
                  "raw": number(spot["raw_pct"]), "shrunk": number(spot["shrunk_pct"]),
                  "median": number(spot["median_plant_time"])},
-        "enough": spot["n"] >= min_n,
         "interval": f"{interval[0]} to {interval[1]}" if interval else None,
         "raw": None if spot["raw_pct"] is None else f"{spot['raw_pct']:.1f}%",
         "shrunk": None if spot["shrunk_pct"] is None else f"{spot['shrunk_pct']:.1f}%",

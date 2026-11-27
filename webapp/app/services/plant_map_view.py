@@ -2,9 +2,10 @@
 
 Standard library only, no database. All coordinates are map UV units (0..10000, y down).
 """
-import json
+from functools import lru_cache
 
-from app.services.plant_position import GRID_SIZE, UV_SCALE, ZONES_PATH, decode_runs
+from app.services import plant_position
+from app.services.plant_position import GRID_SIZE, UV_SCALE, decode_runs
 
 PALETTE = ("#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7",
            "#9c755f", "#17becf")
@@ -25,15 +26,22 @@ def rotate_uv(u, v, turns):
     return u, v
 
 
-def _zones():
-    with open(ZONES_PATH, encoding="utf-8") as handle:
-        return json.load(handle)
+@lru_cache(maxsize=32)
+def _cached_rects(asset_key):
+    return tuple(_rects(asset_key, plant_position._zones_file()))
 
 
 def zone_rects(asset_key, zones=None):
-    """The plant zone of `asset_key` as (x, y, w, h) rectangles in UV units; [] when it has none."""
+    """The plant zone of `asset_key` as (x, y, w, h) rectangles in UV units; [] when it has none.
+
+    Without `zones` the committed file is used and the decoded rectangles are memoised per key.
+    """
     if zones is None:
-        zones = _zones()
+        return list(_cached_rects(asset_key))
+    return _rects(asset_key, zones)
+
+
+def _rects(asset_key, zones):
     entry = (zones.get("maps") or {}).get(asset_key)
     if not entry:
         return []
