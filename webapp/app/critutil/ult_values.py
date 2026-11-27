@@ -1,8 +1,18 @@
-"""An ult's lift window: its active time (windows.window, with Gekko's detain) plus a per-ult tail.
+"""The ult value block (`build`), in parts:
 
-`ult_segments(round_data, item, entry)` returns `(segments, mode)`, mode "round" or "window". The entry's
-`ult_window` (abilities.json, a site-side field the extractor never reads) is a number (tail seconds after the
-active time), "total:N" (N seconds from the start) or "round" (the use to the round's end). Never capped at 45 s.
+- Windows: an ult's lift window is its active time (windows.window, with Gekko's detain) plus a per-ult tail.
+  `ult_segments(round_data, item, entry)` returns `(segments, mode)`, mode "round" or "window". The entry's
+  `ult_window` (abilities.json, a site-side field the extractor never reads) is a number (tail seconds after the
+  active time), "total:N" (N seconds from the start) or "round" (the use to the round's end). Never capped at 45 s.
+- The ult table and lifts: `use_items`, `ult_moments` (moments with no ult of that side up) and `ult_lift`, the
+  change in the side's round-win chance against that table.
+- Charges and the ranking: `charges` (one per use, plus a wasted charge held to the match's last round), `aggregate`
+  and `rank` (value = mean lift, a wasted charge counting 0).
+- Friend rows: `friend_rows`, a circle member's value per agent, shrunk toward the agent's.
+- The orb chart: `gain_pmf`, `rounds_left`, `extra_ults` and `orb_chart` (what one more orb point is worth).
+- Held ults: `held_ults`, the round-win change per extra ready ult held at a round's start.
+- Orb risk: `orb_risk`, what a capturer's death near an orb try costs.
+- The build: `build` puts all of it into one JSON-ready block.
 """
 
 from __future__ import annotations
@@ -180,11 +190,18 @@ def proven_costs(rounds: dict) -> dict:
     return caps
 
 
+def _used(u: dict) -> bool:
+    """Whether a slot's ult was used that round: the extractor's flag, or a `use` with a time. An until_end agent's
+    `use` is a dict in every round, t None when nothing was cast, so the dict alone says nothing."""
+    return bool(u.get("used")) or (u.get("use") or {}).get("t") is not None
+
+
 def charges(rounds: dict, lifts: dict, ctx: dict) -> list:
     """One match's charges: [agent, player_id, match, lift|None, cost, used]. `lifts` is {(round, slot): lift};
-    `ctx` is {"match", "agents": {slot: agent}, "players": {slot: player id}}. A use is one charge (used 1, its
-    lift, None when uncompared). A full ult held at the match's last round and never used since it became full is
-    one wasted charge (lift 0, used 0). A slot with no proven cost has none."""
+    `ctx` is {"match", "agents": {slot: agent}, "players": {slot: player id}, "last_round": the match's last round
+    number}. A use is one charge (used 1, its lift, None when uncompared). A full ult held at the match's last round
+    (which must have util rows) and never used since it became full is one wasted charge (lift 0, used 0). A slot
+    with no proven cost has none."""
     costs = proven_costs(rounds)
     out: list = []
     order = sorted(rounds, key=int)
@@ -195,14 +212,16 @@ def charges(rounds: dict, lifts: dict, ctx: dict) -> list:
                 continue
             out.append([ctx["agents"].get(slot), ctx["players"].get(slot), ctx["match"],
                         lifts.get((int(n), slot)), costs[slot], 1])
-    if order:
+    # the walk-back starts only when the last stored round is the match's last one: if its util rows are missing, a
+    # full ult may have been used there, so the slot's final state stays uncounted
+    if order and ctx.get("last_round") is not None and int(order[-1]) == int(ctx["last_round"]):
         for slot, cost in costs.items():
             held = False
             for n in reversed(order):
                 u = ((rounds[n].get("ults") or {}).get(slot)) or {}
                 if u.get("end") is None or u["end"] < cost:
                     break
-                if u.get("used") or u.get("use"):
+                if _used(u):
                     held = False
                     break
                 held = True
@@ -326,9 +345,9 @@ def gain_pmf(rounds_by_match: dict) -> dict:
                 agent = agents.get(slot)
                 if agent is None or slot not in costs or u.get("start") is None or u["start"] >= costs[slot]:
                     continue
-                if u.get("used") or u.get("use"):
+                if _used(u):
                     continue
-                g = int(u.get("gained") or 0)
+                g =int(u.get("gained") or 0)
                 d = counts.setdefault(agent, {})
                 d[g] = d.get(g, 0) + 1
     return {a: {g: n / sum(d.values()) for g, n in sorted(d.items())} for a, d in counts.items()}
@@ -417,7 +436,7 @@ def _held_row(row: dict, m_ctx: dict, costs: dict, n: int, full_buy: float):
         if u["start"] >= costs[slot]:
             t = p["team"]
             ready[t] += 1
-            used[t] += 1 if (u.get("used") or u.get("use")) else 0
+            used[t] += 1 if _used(u) else 0
     loads = [(m_ctx.get("loadout") or {}).get((n, t)) for t in teams]
     if any(v is None for v in loads):
         return None
@@ -513,11 +532,14 @@ def orb_risk(rounds_by_match: dict, ctx: dict, model) -> dict:
             sw = util_values.swings(row, model)
             td = row.get("t_decided")
             kills = sorted((k for k in row.get("kills") or () if td is None or k["t"] <= td), key=lambda k: k["t"])
-            for slot, a, b in tries:
-                hit = next((k for k in kills if str(k["victim"]) == slot and a <= k["t"] <= b + ORB_RISK_S), None)
+            taken: set = set()      # each death counts on one try only: tries in time order, a kill goes to the first
+            for slot, a, b in sorted(tries, key=lambda t: (t[1], t[2])):
+                hit = next((k for k in kills if id(k) not in taken and str(k["victim"]) == slot
+                            and a <= k["t"] <= b + ORB_RISK_S), None)
                 if hit is None:
                     costs.append(0.0)
                 else:
+                    taken.add(id(hit))
                     deaths += 1
                     costs.append(-sw.get(util_values._kill_key(hit["t"], hit["killer"], hit["victim"]), 0.0))
         if costs:
@@ -623,7 +645,9 @@ def build(stored: dict, ctx: dict, model, full_buy: float) -> dict:
             won = _winner(m["ctx"], n)
             for item in use_items(row):
                 lifts[(int(n), str(item.get("by")))] = ult_lift(row, model, item, total, per_match[key], won)["lift"]
-        all_charges += charges(m["rounds"], lifts, {"match": key, "agents": m["agents"], "players": m["players"]})
+        context_rounds = [int(n) for n in (m["ctx"].get("rounds") or {})]
+        all_charges += charges(m["rounds"], lifts, {"match": key, "agents": m["agents"], "players": m["players"],
+                                                    "last_round": max(context_rounds, default=None)})
     ranked = rank(all_charges)
     by_match = {k: {"rounds": m["rounds"], "agents": m["agents"]} for k, m in matches.items()}
     ctx_by_match = {k: m["ctx"] for k, m in matches.items()}

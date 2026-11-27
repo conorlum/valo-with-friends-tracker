@@ -207,9 +207,12 @@ def ult_lines(block: dict) -> list[str]:
     """The stored build's ult block as text lines (pure: no DB). Agent rows only: no player ids or names."""
     lines = ["Ranking (mean lift in round-win chance per ult charge; difference is from the average of agents with 5+ uses)"]
     ranking = block.get("ranking") or {}
-    lines.append(f"  {'agent':12s} {'uses':>5s} {'charges':>8s} {'wasted':>7s} {'mean lift':>10s} {'95% CI':>22s} {'vs avg':>10s}")
+    lines.append("  compared = charges with a lift (compared uses plus wasted); uncompared = uses with no lift; "
+                 "a wasted charge counts as 0")
+    lines.append(f"  {'agent':12s} {'uses':>5s} {'compared':>9s} {'uncompared':>11s} {'wasted':>7s} {'mean lift':>10s} "
+                 f"{'95% CI':>22s} {'vs avg':>10s}")
     for r in ranking.get("rows") or ():
-        lines.append(f"  {str(r['agent']):12s} {r['n_uses']:5d} {r['n_charges']:8d} {r['wasted']:7d} "
+        lines.append(f"  {str(r['agent']):12s} {r['n_uses']:5d} {r['n_charges']:9d} {r.get('n_uncompared', 0):11d} {r['wasted']:7d} "
                      f"{_pp(r.get('value')):>10s} {_ci(r.get('lo'), r.get('hi')):>22s} {_pp(r.get('diff')):>10s}")
     lines.append(f"  average over agents with 5+ uses: {_pp(ranking.get('cast_mean'))}")
 
@@ -251,6 +254,8 @@ def cmd_ults(db) -> int:
     if not block:
         print(ULTS_MISSING, file=sys.stderr)
         return 2
+    current = replay_util.values_current(db, row)        # reads only: never builds
+    print("Stored build: current" if current else "Stored build: stale (a newer build is pending; these are the last build's figures)")
     for line in ult_lines(block):
         print(line)
     return 0

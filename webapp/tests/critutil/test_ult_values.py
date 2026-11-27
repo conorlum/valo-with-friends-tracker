@@ -263,12 +263,38 @@ def test_a_non_ult_window_is_unchanged():
 
 
 def _u(end=None, cap=None, used=False, t=30.0):
+    # the real shape: an until_end agent's unused round still carries a `use` dict, with t None (extract._use)
     return {"cap_seen": cap, "end": end, "t": t, "used": used,
-            "use": {"t": t, "ability_id": "X/Ult", "type": "ult", "signals": {}} if used else None}
+            "use": {"t": t if used else None, "ability_id": "X/Ult", "type": "ult", "signals": {}}}
 
 
-def _ctx(match="m1", agent="Jett", pid=7):
-    return {"match": match, "agents": {"1": agent}, "players": {"1": pid}}
+def _ctx(match="m1", agent="Jett", pid=7, last_round=20):
+    return {"match": match, "agents": {"1": agent}, "players": {"1": pid}, "last_round": last_round}
+
+
+def test_used_reads_the_flag_or_a_use_with_a_time_and_never_an_empty_use_dict():
+    f = ult_values._used
+    assert f({"used": True, "use": None}) and f({"use": {"t": 3.0}}) and f({"use": {"t": 0.0}})
+    assert not f({"use": {"t": None, "ability_id": "X/Ult"}}) and not f({"use": None}) and not f({}) and not f({"used": False})
+
+
+def test_a_full_jett_with_the_real_use_shape_held_to_the_end_is_wasted_and_has_a_pmf():
+    rounds = {1: _round(ults={"1": _u(cap=8, used=True)})}
+    for n in range(2, 8):
+        rounds[n] = _round(ults={"1": {**_u(end=8), "start": 2, "gained": 1}})
+    out = ult_values.charges(rounds, {}, _ctx(last_round=7))
+    assert [c[5] for c in out] == [1, 0]
+    rounds[7] = _round(ults={"1": {**_u(end=3), "start": 2, "gained": 1}})
+    assert ult_values.gain_pmf({"m": {"rounds": rounds, "agents": {"1": "Jett"}}}) == {"Jett": {1: 1.0}}
+
+
+def test_a_final_round_missing_from_the_util_rows_leaves_the_last_state_uncounted():
+    rounds = {1: _round(ults={"1": _u(cap=7, used=True)})}
+    for n in range(10, 20):
+        rounds[n] = _round(ults={"1": _u(end=7)})
+    assert [c[5] for c in ult_values.charges(rounds, {}, _ctx(last_round=20))] == [1]
+    assert [c[5] for c in ult_values.charges(rounds, {}, _ctx(last_round=19))] == [1, 0]
+    assert [c[5] for c in ult_values.charges(rounds, {}, _ctx(last_round=None))] == [1]
 
 
 def _ch(agent, pid, match, lift, used=1, cost=7):
@@ -444,7 +470,7 @@ def test_the_recursion_matches_a_seeded_simulation():
 
 def test_gain_pmf_uses_rounds_that_started_below_cost_without_a_use():
     def u(start, gained, used=False):
-        return {"cap_seen": 7, "start": start, "gained": gained, "used": used, "use": None}
+        return {"cap_seen": 7, "start": start, "gained": gained, "used": used, "use": {"t": None, "ability_id": "X/Ult"}}
 
     rounds = {1: _round(ults={"1": u(2, 1)}), 2: _round(ults={"1": u(3, 3)}), 3: _round(ults={"1": u(7, 2, True)}),
               4: _round(ults={"1": u(None, 2)}), 5: _round(ults={"1": u(4, 1)})}
@@ -500,7 +526,8 @@ def _held_round(red_ready, blue_ready, red_won, n, red_used=0, blue_used=0, drop
     for team, ready, used in ((_RED, red_ready, red_used), (_BLUE, blue_ready, blue_used)):
         for i, s in enumerate(team):
             r = i < ready
-            ults[s] = {"cap_seen": 8, "start": 8 if r else 0, "used": r and i < used, "use": None}
+            ults[s] = {"cap_seen": 8, "start": 8 if r else 0, "used": r and i < used,
+                       "use": {"t": None, "ability_id": "X/Ult", "type": "ult", "signals": {}}}
     if drop_start:
         ults[drop_start].pop("start")
     row = _round(ults=ults)
@@ -662,6 +689,33 @@ def test_two_deaths_cannot_count_on_one_try_and_a_teammates_death_does_not(monke
     assert _risk(monkeypatch, [mate])["overall"]["deaths"] == 0
 
 
+def test_a_let_go_then_a_capture_and_one_death_count_one_death(monkeypatch):
+    orb = {"t0": 5.0, "t1": 13.0, "end": 40.0, "slot": "0", "tries": [[10.0, 10.5, "0"]]}
+    out = _risk(monkeypatch, [_orb_row([orb], [_kill(13.2, 5, 0, [5, 5])])])
+    assert out["overall"]["tries"] == 2 and out["overall"]["deaths"] == 1
+    assert out["overall"]["cost_pp"] == pytest.approx(-10.0)      # -20 once, over two tries
+
+
+def test_two_let_go_tries_close_together_and_one_death_count_one_death(monkeypatch):
+    orb = {"t0": 5.0, "t1": None, "end": None, "slot": "0", "tries": [[10.0, 10.5, "0"], [11.0, 11.5, "0"]]}
+    out = _risk(monkeypatch, [_orb_row([orb], [_kill(12.0, 5, 0, [5, 5])])])
+    assert out["overall"]["tries"] == 2 and out["overall"]["deaths"] == 1
+    assert out["overall"]["cost_pp"] == pytest.approx(-10.0)
+
+
+def test_two_orbs_close_in_time_and_one_death_count_one_death(monkeypatch):
+    a = {"t0": 5.0, "t1": 20.0, "end": 40.0, "slot": "0", "tries": []}
+    b = {"t0": 6.0, "t1": 21.0, "end": 40.0, "slot": "0", "tries": []}
+    out = _risk(monkeypatch, [_orb_row([b, a], [_kill(22.0, 5, 0, [5, 5])])])
+    assert out["overall"]["tries"] == 2 and out["overall"]["deaths"] == 1
+
+
+def test_two_deaths_by_one_player_go_to_two_tries_in_time_order(monkeypatch):
+    orb = {"t0": 5.0, "t1": None, "end": None, "slot": "0", "tries": [[10.0, 10.5, "0"], [11.0, 11.5, "0"]]}
+    kills = [_kill(10.2, 5, 0, [5, 5]), _kill(11.2, 6, 0, [4, 5])]
+    assert _risk(monkeypatch, [_orb_row([orb], kills)])["overall"]["deaths"] == 2
+
+
 def test_the_cost_is_the_mean_per_try_and_maps_are_split(monkeypatch):
     died, safe = _let_go(10.0, 12.0), _let_go(30.0, 32.0)
     row = _orb_row([died, safe], [_kill(11.0, 5, 0, [5, 5])])
@@ -691,8 +745,11 @@ def ult_fixture():
             js, jg, je, ju = _JETT[n]
             ss, sg, se = _SAGE[n]
             casts = [_ult_cast(10.0, by=1, signals={"seen_end": 15.0})] if ju else []
+            # Jett is an until_end agent: its `use` is a dict in every round, t None when unused (extract._use)
+            no_use = {"t": None, "ability_id": "Jett/Ult", "type": "ult", "signals": {}}
             ults = {"0": {"cap_seen": 6, "start": 2, "gained": 1, "end": 3, "used": False, "use": None},
-                    "1": {"cap_seen": 8 if ju else None, "start": js, "gained": jg, "end": je, "used": ju, "use": None},
+                    "1": {"cap_seen": 8 if ju else None, "start": js, "gained": jg, "end": je, "used": ju,
+                          "use": {**no_use, "t": 10.0} if ju else dict(no_use)},
                     "5": {"cap_seen": 8, "start": ss, "gained": sg, "end": se, "used": False, "use": None},
                     "6": {"cap_seen": 7, "start": 1, "gained": 1, "end": 2, "used": False, "use": None}}
             row = _round(casts=casts, kills=[_kill(21.0, 5, 0, [5, 5])], ults=ults)
@@ -760,6 +817,16 @@ def test_build_on_the_synthetic_corpus_fills_every_part(with_model):
     assert out["held"]["rounds"] > 0 and out["held"]["matches"] == _N_MATCHES and out["held"]["any"]["pp"] is not None
     assert out["risk"]["overall"]["tries"] == 7 * _N_MATCHES and out["risk"]["overall"]["deaths"] == 7 * _N_MATCHES
     assert [m["map"] for m in out["risk"]["maps"]] == ["Ascent"]
+
+
+def test_build_counts_a_wasted_charge_only_when_the_matchs_last_round_has_util_rows():
+    stored, ctx = ult_fixture()
+    for rid in (1, 2, 3):
+        del stored[rid][7]                    # the context still knows round 7
+    out = ult_values.build(_prepared(stored, ctx), ctx, MODEL, 4200)
+    rows = {r["agent"]: r for r in out["ranking"]["rows"]}
+    assert rows["Sage"]["wasted"] == _N_MATCHES - 3
+    assert rows["Jett"]["wasted"] == 0
 
 
 def test_build_figures_have_at_most_four_places():

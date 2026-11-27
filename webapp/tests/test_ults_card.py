@@ -122,6 +122,16 @@ def test_friends_rows_sit_beneath_their_agent(monkeypatch, block):
     assert html.index("Jett") < html.index("Bravo") < html.index("Sage")
 
 
+@pytest.mark.parametrize("group,viewer", [("all", True), ("friends", True), ("friends", False)])
+def test_the_ranking_caption_says_what_the_agent_rows_are(monkeypatch, block, group, viewer):
+    html, _ = _fragment(monkeypatch, block, group=group, viewer=viewer, circle=(101,))
+    caption = " ".join(html[html.index("Ult value by agent"):html.index("<svg")].split())
+    assert "every uploaded replay" in caption and "viewer's circle" not in caption
+    assert "no ult of that side up" in caption and "of that kind" not in caption
+    assert "wasted" in caption and "counts as 0" in caption
+    assert ("you and your friends" in " ".join(html.split())) is (group == "friends" and viewer)
+
+
 def test_a_missing_build_says_it_is_being_built(monkeypatch):
     html, _ = _fragment(monkeypatch, None, current=False)
     assert "being built" in html

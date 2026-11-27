@@ -24,6 +24,30 @@ def test_ult_lines_has_each_section(block):
     assert "not cause and effect" in text
 
 
+def test_the_ranking_prints_compared_and_uncompared_columns_not_charges(block):
+    head = next(line for line in critical_util.ult_lines(block) if line.lstrip().startswith("agent "))
+    assert "compared" in head and "uncompared" in head and "charges" not in head
+    rows = {"Jett": {"agent": "Jett", "n_uses": 9, "n_charges": 7, "n_uncompared": 2, "wasted": 1, "value": 0.01,
+                     "lo": None, "hi": None, "diff": None}}
+    text = "\n".join(critical_util.ult_lines({"ranking": {"rows": list(rows.values()), "cast_mean": None}}))
+    jett = next(line for line in text.splitlines() if line.lstrip().startswith("Jett"))
+    assert jett.split()[1:5] == ["9", "7", "2", "1"]        # uses, compared, uncompared, wasted
+
+
+@pytest.mark.parametrize("current,word", [(True, "current"), (False, "stale")])
+def test_the_report_says_whether_the_stored_build_is_current(monkeypatch, capsys, block, current, word):
+    import app.db
+    from app.services import replay_util
+
+    monkeypatch.setattr(critical_util.settings, "demo_mode", False)
+    monkeypatch.setattr(app.db, "SessionLocal", lambda: _Db())
+    monkeypatch.setattr(replay_util, "_values_row", lambda db: ("k", {"ults": block}))
+    monkeypatch.setattr(replay_util, "values_current", lambda db, row: current)
+    assert critical_util.main(["ults"]) == 0
+    first = capsys.readouterr().out.splitlines()[0]
+    assert word in first and ("stale" in first) is (not current)
+
+
 def test_every_signed_figure_has_a_sign_and_pp(block):
     lines = critical_util.ult_lines(block)
     figures = [m for line in lines for m in re.findall(r"[-+−]?\d+\.\d+ pp", line)]
@@ -104,5 +128,6 @@ def test_a_stored_block_prints_and_exits_0(monkeypatch, capsys, block):
     monkeypatch.setattr(critical_util.settings, "demo_mode", False)
     monkeypatch.setattr(app.db, "SessionLocal", lambda: _Db())
     monkeypatch.setattr(replay_util, "_values_row", lambda db: ("k", {"ults": block}))
+    monkeypatch.setattr(replay_util, "values_current", lambda db, row: True)
     assert critical_util.main(["ults"]) == 0
     assert "Ranking" in capsys.readouterr().out

@@ -35,7 +35,8 @@
 
 <h3>Ult value by agent</h3>
 <p class="page-meta">Mean change in the round-win chance over the ult's use, against moments with no ult of that
-  kind up ({{ label }}). The dot is the mean, the whisker its 95% range, and the dashed line the average over every agent
+  side up. Agent rows pool every uploaded replay; a charge that was never used (wasted) counts as 0 in the mean. The dot
+  is the mean, the whisker its 95% range, and the dashed line the average over every agent
   with {{ min_uses }}+ uses{% if cast is not none %} ({{ pp(cast) }}){% endif %}. Under {{ min_uses }} uses a row shows
   — and its count.</p>
 <div class="table-scroll">
@@ -56,7 +57,7 @@
   {% endfor %}
 </svg>
 </div>
-{% if friend_rows %}<p class="page-meta">Names under an agent are players in your circle, their value pulled toward the agent's.</p>{% endif %}
+{% if friend_rows %}<p class="page-meta">Names under an agent are you and your friends, their value pulled toward the agent's.</p>{% endif %}
 
 <h3 id="ults-orbs">Who should take the orb</h3>
 <p class="page-meta">Find each teammate's agent and the points they hold; the higher cell takes the orb. A cell is the
