@@ -552,9 +552,8 @@ def player_aim_fragment(
         agents = filter_agents(key, agents_played) if key else None
     events = aim_stats.events_for(db, player_ids or [player.id], agents, one_per_match=combined)
     summary = aim_stats.summary(events)
-    trend = sorted(aim_stats.per_match(events).values(), key=lambda m: (m["date"] is None, m["date"]))
     return templates.TemplateResponse(request, "players/_aim_section.html", {
-        "aim": summary, "aim_everyone": aim_stats.everyone_summary(db), "aim_trend": trend,
+        "aim": summary, "aim_everyone": aim_stats.everyone_summary(db), "aim_trend": aim_stats.trend(events),
         "aim_bands": aim_stats.BANDS, "aim_near_deg": mc.CROSSHAIR_NEAR_DEG,
     })
 

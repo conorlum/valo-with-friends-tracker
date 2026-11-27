@@ -138,6 +138,45 @@ def test_a_band_under_ten_events_is_too_few():
     assert b["close"]["n"] == 10
 
 
+def _matches(counts, cls="ok"):
+    from datetime import datetime, timedelta
+    out = []
+    for i, k in enumerate(counts, start=1):
+        out += [ev(cls=cls, err=float(i), match_id=i, played_at=datetime(2026, 1, 1) + timedelta(days=i)) for _ in range(k)]
+    return out
+
+
+def test_trend_window_closes_at_exactly_min_n():
+    out = aim_stats.trend(_matches([5, 5, 5, 5]))
+    assert [(w["matches"], w["n"]) for w in out] == [(2, 10), (2, 10)]
+    assert out[0]["from"].day == 2 and out[0]["to"].day == 3 and out[1]["from"].day == 4
+
+
+def test_trend_leftover_joins_the_last_window():
+    out = aim_stats.trend(_matches([4, 6, 4, 4, 4, 3]))        # 25 ok over six matches; the last 3 are leftover
+    assert [(w["matches"], w["n"]) for w in out] == [(2, 10), (4, 15)]
+    assert sum(w["n"] for w in out) == 25 and sum(w["matches"] for w in out) == 6
+    assert out[-1]["to"].day == 7
+    assert all(w["n"] >= aim_stats.MIN_N for w in out)
+    assert set(out[0]) == {"from", "to", "matches", "n", "median", "q1", "q3"}
+
+
+def test_trend_under_min_n_total_is_empty():
+    assert aim_stats.trend(_matches([4, 5])) == []
+    assert aim_stats.trend([]) == []
+
+
+def test_trend_ignores_non_ok_events():
+    events = _matches([6, 6], cls="ok") + _matches([30], cls="miss")
+    assert aim_stats.trend(events)[0]["n"] == 12 and len(aim_stats.trend(events)) == 1
+    assert aim_stats.trend(_matches([30], cls="miss")) == []
+
+
+def test_trend_orders_oldest_first_whatever_the_input_order():
+    out = aim_stats.trend(list(reversed(_matches([10, 10]))))
+    assert [w["from"].day for w in out] == [2, 3]
+
+
 def test_per_match_gives_date_n_and_median():
     from datetime import datetime
     d1, d2 = datetime(2026, 1, 1), datetime(2026, 1, 5)

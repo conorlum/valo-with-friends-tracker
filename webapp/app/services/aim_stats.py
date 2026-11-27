@@ -117,6 +117,32 @@ def per_match(events) -> dict:
             for m, es in groups.items()}
 
 
+def trend(events, min_n: int = MIN_N) -> list[dict]:
+    """The trend: consecutive matches (oldest first, by played date then match id; undated last) pooled into windows
+    of at least `min_n` ok events, one point per window. Leftover matches short of `min_n` join the last window. A
+    history under `min_n` ok events gives no window at all."""
+    groups: dict = {}
+    for e in _usable(events):
+        groups.setdefault(e.match_id, []).append(e)
+    ordered = sorted(groups.items(), key=lambda kv: (kv[1][0].played_at is None, kv[1][0].played_at, kv[0]))
+    windows: list[list] = []
+    current: list = []
+    for _, es in ordered:
+        current.append(es)
+        if sum(len(g) for g in current) >= min_n:
+            windows.append(current)
+            current = []
+    if current and windows:
+        windows[-1].extend(current)
+    out = []
+    for w in windows:
+        errs = np.array([float(e.err) for g in w for e in g])
+        out.append({"from": w[0][0].played_at, "to": w[-1][0].played_at, "matches": len(w), "n": len(errs),
+                    "median": float(np.median(errs)), "q1": float(np.percentile(errs, 25)),
+                    "q3": float(np.percentile(errs, 75))})
+    return out
+
+
 class _Event:
     """A stored aim event with its player, agent and match."""
 

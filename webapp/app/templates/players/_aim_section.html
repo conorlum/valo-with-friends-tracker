@@ -14,6 +14,11 @@
 {%- else -%}{{ "%.2f"|format(cell.median) }} s (IQR {{ "%.2f"|format(cell.q1) if cell.q1 is not none else "not reached" }} to {{ "%.2f"|format(cell.q3) if cell.q3 is not none else "not reached" }}, n={{ cell.n }})
 {%- endif -%}
 {%- endmacro %}
+{% macro span(w) -%}
+{%- set a = w["from"].strftime("%Y-%m-%d") if w["from"] else "undated" -%}
+{%- set b = w["to"].strftime("%Y-%m-%d") if w["to"] else "undated" -%}
+{{- a if a == b else a ~ " to " ~ b -}}
+{%- endmacro %}
 {% macro shares(p) -%}
 {%- if p is none or p.too_few -%}&ndash;
 {%- else -%}on {{ "%.0f"|format(p.on * 100) }}% / near {{ "%.0f"|format(p.near * 100) }}% / off {{ "%.0f"|format(p.off * 100) }}% (n={{ p.n }})
@@ -67,15 +72,18 @@
     </table>
   </div>
 
-  {% if aim_trend %}
-  <h3>Crosshair error by match</h3>
+  <h3>Crosshair error over time</h3>
+  <p class="page-meta">Each point pools matches to at least 10 events, oldest first.</p>
+  {% if not aim_trend %}
+  <p data-trend-too-few>too few (n={{ aim.n_ok }})</p>
+  {% else %}
   {% if aim_trend | length < 3 %}
   <div class="table-scroll">
     <table class="plants-table" data-trend-table>
-      <thead><tr><th>Match</th><th>Median error</th></tr></thead>
+      <thead><tr><th>Matches</th><th>Median error</th><th>n</th></tr></thead>
       <tbody>
         {% for m in aim_trend %}
-        <tr><td>{{ m.date.strftime("%Y-%m-%d") if m.date else "undated" }}</td><td>{{ "%.2f"|format(m.median) }}&deg; (n={{ m.n }})</td></tr>
+        <tr><td>{{ span(m) }} ({{ m.matches }} matches)</td><td>{{ "%.2f"|format(m.median) }}&deg; (IQR {{ "%.2f"|format(m.q1) }} to {{ "%.2f"|format(m.q3) }})</td><td>n={{ m.n }}</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -88,13 +96,15 @@
     if (!canvas || !window.Chart) return;
     var points = {{ aim_trend | map(attribute="median") | list | tojson }};
     var counts = {{ aim_trend | map(attribute="n") | list | tojson }};
-    var labels = {{ aim_trend | map(attribute="date") | map("string") | map("truncate", 10, True, "") | list | tojson }};
+    var q1 = {{ aim_trend | map(attribute="q1") | list | tojson }};
+    var q3 = {{ aim_trend | map(attribute="q3") | list | tojson }};
+    var labels = [{% for w in aim_trend %}{{ span(w) | trim | tojson }}{{ "," if not loop.last }}{% endfor %}];
     new Chart(canvas, {
       type: "line",
       data: {labels: labels, datasets: [{label: "Median crosshair error (degrees)", data: points, tension: 0.2}]},
       options: {
         plugins: {tooltip: {callbacks: {label: function (c) {
-          return c.parsed.y.toFixed(2) + " deg, n=" + counts[c.dataIndex];
+          return c.parsed.y.toFixed(2) + " deg (IQR " + q1[c.dataIndex].toFixed(2) + " to " + q3[c.dataIndex].toFixed(2) + "), n=" + counts[c.dataIndex];
         }}}},
         scales: {y: {title: {display: true, text: "degrees"}}}
       }

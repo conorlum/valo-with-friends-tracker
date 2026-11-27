@@ -241,6 +241,33 @@ def test_stats_aim_demo_404s_and_the_stats_page_has_no_aim_card(site, monkeypatc
     assert "/stats/aim" not in client.get("/stats/all").text
 
 
+def test_trend_table_shows_n_and_date_range_and_pools_small_matches(site):
+    client, factory = site
+    with factory() as db:
+        me, other = _player(db, "Aimer"), _player(db, STRANGER)
+        for day in range(4):
+            _match(db, day, [(me, "Jett", 5, 1.5)], stranger=other, events=0)
+        db.commit()
+    html = _fragment(client).text
+    table = re.search(r"data-trend-table.*?</table>", html, re.S).group(0)
+    assert table.count("<tr>") == 3        # header and two windows of 10
+    assert "2026-11-01" in table and "2026-11-02" in table and "2026-11-03" in table and "2026-11-04" in table
+    assert "n=10" in table and "IQR" in table
+    assert "pools matches to at least 10 events" in html
+
+
+def test_trend_with_under_ten_events_says_too_few_and_shows_no_figure(site):
+    client, factory = site
+    with factory() as db:
+        me, other = _player(db, "Aimer"), _player(db, STRANGER)
+        _match(db, 0, [(me, "Jett", 4, 1.77)], stranger=other, events=0)
+        _match(db, 1, [(me, "Jett", 4, 1.77)], stranger=other, events=0)
+        db.commit()
+    html = _fragment(client).text
+    assert "data-trend-too-few" in html and "too few (n=8)" in html
+    assert "1.77" not in html and "<canvas" not in html and "data-trend-table" not in html
+
+
 def test_trend_is_a_table_under_three_matches_and_a_chart_from_three(site):
     client, factory = site
     with factory() as db:
