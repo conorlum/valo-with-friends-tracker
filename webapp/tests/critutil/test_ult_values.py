@@ -478,6 +478,44 @@ def test_gain_pmf_uses_rounds_that_started_below_cost_without_a_use():
     assert out == {"Jett": {1: pytest.approx(2 / 3), 3: pytest.approx(1 / 3)}}
 
 
+def _pmf_of(pairs, cost=7):
+    """gain_pmf over rounds given as (start, gained) pairs, all unused, cost 7."""
+    rounds = {i + 1: _round(ults={"1": {"cap_seen": cost, "start": s, "gained": g, "used": False,
+                                        "use": {"t": None, "ability_id": "X/Ult"}}})
+              for i, (s, g) in enumerate(pairs)}
+    return ult_values.gain_pmf({"m": {"rounds": rounds, "agents": {"1": "Jett"}}}).get("Jett")
+
+
+def test_gain_pmf_without_a_filled_bar_is_the_plain_shares():
+    out = _pmf_of([(0, 1), (0, 1), (2, 3), (1, 0)])
+    assert out == {0: pytest.approx(0.25), 1: pytest.approx(0.5), 3: pytest.approx(0.25)}
+
+
+def test_gain_pmf_counts_a_round_that_filled_the_bar_as_at_least():
+    # cost 7: starts at 6 with gained 1 (filled: censored at 1); exact gains 1, 1, 3
+    out = _pmf_of([(6, 1), (0, 1), (0, 1), (0, 3)])
+    # h(1) = 2 exact / 3 at risk (the censored one is at risk for v < 1 only); S(2) = 1/3; h(3) = 1
+    assert out == {1: pytest.approx(2 / 3), 3: pytest.approx(1 / 3)}
+    assert sum(out.values()) == pytest.approx(1.0)
+
+
+def test_a_censored_observation_is_not_an_event_at_its_own_value():
+    # exact 0 and 2, censored at 1 (start 6, gained 1): plain shares would give 1 a third
+    out = _pmf_of([(0, 0), (0, 2), (6, 1)])
+    assert out == {0: pytest.approx(1 / 3), 2: pytest.approx(2 / 3)}
+
+
+def test_all_censored_at_one_value_puts_all_mass_there():
+    assert _pmf_of([(6, 1), (6, 1), (6, 1)]) == {1: 1.0}
+
+
+def test_orb_chart_on_a_censored_pmf_is_finite():
+    pmf = _pmf_of([(6, 1), (0, 1), (0, 1), (0, 3)])
+    ranked = {"rows": [_rk("Jett", 0.05, 0.01, 0.09)]}
+    out = ult_values.orb_chart(ranked, {"Jett": pmf}, {"Jett": 7}, {8: 1.0})
+    assert out["rows"][0]["cells"] and all(np.isfinite(c) for c in out["rows"][0]["cells"])
+
+
 def _rk(agent, value, lo, hi, n=10):
     return {"agent": agent, "n_uses": n, "value": value, "lo": lo, "hi": hi}
 

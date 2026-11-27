@@ -347,10 +347,32 @@ def gain_pmf(rounds_by_match: dict) -> dict:
                     continue
                 if _used(u):
                     continue
-                g =int(u.get("gained") or 0)
-                d = counts.setdefault(agent, {})
-                d[g] = d.get(g, 0) + 1
-    return {a: {g: n / sum(d.values()) for g, n in sorted(d.items())} for a, d in counts.items()}
+                g = int(u.get("gained") or 0)
+                # a bar that filled stops rising: the true gain was at least g (censored), not exactly g
+                censored = u["start"] + g >= costs[slot]
+                counts.setdefault(agent, []).append((g, censored))
+    return {a: _km_pmf(obs) for a, obs in counts.items()}
+
+
+def _km_pmf(obs: list) -> dict:
+    """Discrete Kaplan-Meier shares from [(value, censored)]. An exact x is at risk for v <= x; a censored c ("at
+    least c") only for v < c. Mass left after the largest exact value goes to the largest observed value, so the
+    shares sum to 1; that is a lower bound on the true gain there."""
+    top = max(v for v, _ in obs)
+    pmf: dict = {}
+    surv = 1.0
+    for v in range(top + 1):
+        at_risk = sum(1 for x, c in obs if (x > v if c else x >= v))
+        events = sum(1 for x, c in obs if not c and x == v)
+        if at_risk == 0:
+            break
+        h = events / at_risk
+        if h:
+            pmf[v] = surv * h
+        surv *= 1 - h
+    if surv > 1e-12:
+        pmf[top] = pmf.get(top, 0.0) + surv
+    return pmf
 
 
 def rounds_left(ctx: dict) -> dict:
