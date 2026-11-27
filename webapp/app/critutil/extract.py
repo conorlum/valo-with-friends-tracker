@@ -1376,9 +1376,36 @@ def _ults(rnd, blob, sides, agents=None) -> dict[str, dict]:
         # row): the same evidence the use is valued on (branch review B5)
         used = any(r.get("by") == slot and _ult_row(r) and r["t"] <= end for r in util
                    if r.get("k") == "ability") or (use is not None and use.get("t") is not None)
+        start, gained = _ult_start_gained(ps, slot)
         out[str(slot)] = {"cap_seen": _ult_cap(ps, slot), "end": _ult_at(ps, slot, end - _EPS), "t": _r2(end),
-                          "used": used, "use": use}
+                          "used": used, "use": use, "start": start, "gained": gained}
     return out
+
+
+def _ult_start_gained(ps, slot) -> tuple[int | None, int]:
+    """The points held at the round's start (the last entry at t <= 0; None without one) and the points gained
+    after it: the sum of every rise at t > 0 (a drop to 0 on a use is not subtracted)."""
+    line = ((ps or {}).get("ult") or {}).get(str(slot)) or []
+    start = None
+    for p in line:
+        if p["t"] <= 0:
+            start = p["n"]
+    prev = start if start is not None else 0
+    gained = 0
+    for p in line:
+        if p["t"] <= 0:
+            continue
+        if p["n"] > prev:
+            gained += p["n"] - prev
+        prev = p["n"]
+    return start, gained
+
+
+def round_orbs(ps) -> list[dict]:
+    """The round's ult orbs from the player state, each cut to the keys the site reads (`t0`, `t1`, `end`, `slot`,
+    `tries`); a key an orb lacks stays absent."""
+    keep = ("t0", "t1", "end", "slot", "tries")
+    return [{k: o[k] for k in keep if k in o} for o in (ps or {}).get("orbs") or () if isinstance(o, dict)]
 
 
 # --- the round
@@ -1811,6 +1838,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
         "heals": _heals(rnd, blob, sides),
         "unused": _unused(rnd, blob, sides, spike, agents),
         "ults": ults,
+        "orbs": round_orbs(ps),
         "avail": {"heals": "heal" in {r.get("k") for r in blob.get("util") or ()} or bool((ps or {}).get("charges")),
                   "causes": has_causes, "charges": bool((ps or {}).get("charges")),
                   "ult": bool((ps or {}).get("ult")),

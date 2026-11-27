@@ -399,9 +399,27 @@ def test_each_slot_s_ult_is_reported_for_the_match_to_judge():
     util = [toy_ability("Sarge", "X_Orbital", 300, 200, 1, t=12.0, t1=20.0)]
     ults = run(util, player_state=ps)["ults"]
     use = {"t": None, "ability_id": "Jett/Blade Storm", "type": "ult", "signals": {"ult_end": None, "death": None}}
-    assert ults["0"] == {"cap_seen": None, "end": 7, "t": 30.0, "used": False,
+    assert ults["0"] == {"cap_seen": None, "end": 7, "t": 30.0, "used": False, "start": 7, "gained": 0,
                          "use": use}, "held all round, no drop to prove 7 (the toy's slot 0 is a Jett)"
     assert ults["1"]["cap_seen"] == 6 and ults["1"]["used"] is True
+
+
+def test_a_slot_s_ult_reports_its_start_points_and_the_points_gained_in_the_round():
+    ps = {"version": 1, "ult": {"0": [{"t": -30.0, "n": 3}, {"t": 5.0, "n": 5}, {"t": 12.0, "n": 0},
+                                      {"t": 20.0, "n": 1}]}}
+    ult = run(player_state=ps)["ults"]["0"]
+    assert ult["start"] == 3 and ult["gained"] == 3
+    ps = {"version": 1, "ult": {"0": [{"t": 4.0, "n": 2}]}}
+    assert run(player_state=ps)["ults"]["0"]["start"] is None
+
+
+def test_the_orbs_are_kept_with_their_times_slot_and_tries_only():
+    orb = {"t0": 4.0, "t1": 20.0, "end": "picked", "slot": 1, "tries": [[8.0, 9.0, 5]], "u": 10.0, "v": 11.0}
+    out = run(player_state={"version": 1, "ult": {"0": [{"t": -30.0, "n": 3}]}, "orbs": [orb]})
+    assert out["orbs"] == [{"t0": 4.0, "t1": 20.0, "end": "picked", "slot": 1, "tries": [[8.0, 9.0, 5]]}]
+    assert run(player_state={"version": 1})["orbs"] == []
+    assert run()["orbs"] == []
+    assert extract.round_orbs({"orbs": [{"t0": 1.0, "u": 2}]}) == [{"t0": 1.0}]
 
 
 def ult_state(slot=0, drop=None):

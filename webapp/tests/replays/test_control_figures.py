@@ -109,7 +109,8 @@ def test_the_revisions_of_this_release():
     # status sources readers tell apart by cast, `hits_read` / `fired` on their source rows (W2).
     # Control 28: Thrash and Tejo's drone are flown drones; the footprint figures the info readers use (W3).
     assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (33, 28)
-    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 8, "mixed ground gap consumers"
+    # Gaps 9: Critical Util rows carry each ult's start and gained points and the round's orbs (critutil 10).
+    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 9,"mixed ground gap consumers"
 
 
 def test_the_incremental_counterfactual_matches_the_full_one_across_a_wall_and_a_reveal():
