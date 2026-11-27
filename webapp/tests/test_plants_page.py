@@ -356,6 +356,10 @@ def test_counts_by_asset_is_one_aggregate_equal_to_read_rows(db, monkeypatch):
     _plants(db, 3, start=10, branch="release-13.08")
     _plants(db, 4, start=20, branch="release-14.00", asset_key="Ascent_14_0")
     _plants(db, 1, start=30, map_name="Bind", asset_key="Bind")
+    _blank(db, _plants(db, 1, start=40), attackers_alive=None)
+    _blank(db, _plants(db, 1, start=41, branch="release-13.08"), attackers_won=None)
+    _blank(db, _plants(db, 1, start=42, branch="release-14.00", asset_key="Ascent_14_0"),
+           defenders_alive=None)
     from collections import Counter
     expected = Counter(row["asset_key"] for row in plant_page.read_rows(db))
     assert expected == {"Ascent": 3, "Ascent_14_0": 4, "Bind": 1}
@@ -390,13 +394,35 @@ def test_an_arbitrary_layout_value_is_never_echoed(db):
 # --- links ----------------------------------------------------------------------
 
 
-def test_example_links_are_replay_deep_links(db):
+def test_page_data_has_no_examples(db):
     _plants(db, 4, branch="release-13.08")
+    data = plant_page.page_data(db, "Ascent", None)
+    spots = [spot for block in data["sites"].values() for spot in block["spots"]]
+    assert spots
+    assert all("examples" not in spot for spot in spots)
     page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
-    links = re.findall(r'href="(/replays/[^"]+)"', page)
-    assert 1 <= len(links) <= 3
-    for link in links:
-        assert re.fullmatch(r"/replays/[0-9a-f-]{36}\?round=1&amp;t=38\.0|/replays/[0-9a-f-]{36}\?round=1&t=38\.0", link)
+    assert "Examples" not in page
+
+
+def _blank(db, matches, **fields):
+    for match in matches:
+        plant = db.query(RoundPlant).filter(RoundPlant.match_id == match.id).one()
+        for name, value in fields.items():
+            setattr(plant, name, value)
+    db.commit()
+
+
+def test_a_plant_without_a_usable_result_is_not_counted(db):
+    _plants(db, 3)
+    _blank(db, _plants(db, 2, start=10), attackers_won=None)
+    _blank(db, _plants(db, 1, start=20), defenders_alive=None)
+    data = plant_page.page_data(db, "Ascent", None)
+    assert data["sites"]["A"]["n"] == 3
+    spot = data["sites"]["A"]["spots"][0]
+    assert spot["n"] == 3 and spot["n"] == spot["usable_n"]
+    assert plant_page.counts_by_asset(db)["Ascent"] == 3
+    page = _body(plants_router.plants_index(_request(), db=db))
+    assert "n=3" in page
 
 
 def _moved_site(monkeypatch):

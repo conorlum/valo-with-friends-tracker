@@ -31,9 +31,8 @@ from app.services.round_plants import asset_key_for
 
 logger = logging.getLogger(__name__)
 
-CALCULATION_VERSION = 2   # 2: MIN_N 100 -> 50
+CALCULATION_VERSION = 3   # 3: usable plants only; no examples
 MIN_N = 50                # plants a spot needs before it shows a win rate (the owner's gate, 2026-11-25)
-EXAMPLES = 3
 
 
 def _registry_digest() -> str:
@@ -58,13 +57,16 @@ def fingerprint(db) -> str:
 
 
 def _joined(query):
+    """Usable plants only (D3): those whose round has attackers_alive, defenders_alive and attackers_won."""
     return (query.select_from(RoundPlant)
             .join(Match, Match.id == RoundPlant.match_id)
-            .outerjoin(Replay, (Replay.match_id == RoundPlant.match_id) & (Replay.link_status == "linked")))
+            .outerjoin(Replay, (Replay.match_id == RoundPlant.match_id) & (Replay.link_status == "linked"))
+            .where(RoundPlant.attackers_alive.is_not(None), RoundPlant.defenders_alive.is_not(None),
+                   RoundPlant.attackers_won.is_not(None)))
 
 
 def read_rows(db) -> list[dict]:
-    """Every stored plant whose layout is known now, with `asset_key` decided from the replay."""
+    """Every usable stored plant whose layout is known now, with `asset_key` decided from the replay."""
     query = _joined(select(
         RoundPlant.match_id, RoundPlant.round_number, RoundPlant.site, RoundPlant.u, RoundPlant.v,
         RoundPlant.plant_time, RoundPlant.attackers_alive, RoundPlant.defenders_alive,
@@ -100,7 +102,7 @@ def _before_move():
 
 
 def counts_by_asset(db) -> Counter:
-    """Plants per layout from one grouped query; the same answer as counting `read_rows`."""
+    """Usable plants per layout from one grouped query; the same answer as counting `read_rows`."""
     query = _joined(select(Match.map_name, Replay.game_branch, func.count())
                     .where(not_(_before_move()))).group_by(Match.map_name, Replay.game_branch)
     counts = Counter()
@@ -125,12 +127,6 @@ def _flat_spots(asset_key):
             for site, spots in sites.items() for spot in spots]
 
 
-def _example_link(row):
-    if row["uuid"] is None or row["plant_time"] is None or row["clock_offset"] is None:
-        return None
-    return f"/replays/{row['uuid']}?round={row['round_number']}&t={row['plant_time'] - row['clock_offset']:.1f}"
-
-
 def _compute(db, asset_key, ids):
     rows = read_rows(db)
     expected = plant_stats.expected_oof(rows)          # fitted once, on every layout
@@ -145,21 +141,6 @@ def _compute(db, asset_key, ids):
     subset = [row for row, _ in picked]
     spots = _flat_spots(asset_key)
     sites = plant_stats.spot_rows(subset, spots, min_n=MIN_N, expectations=[value for _, value in picked])
-    assigned = plant_stats.assign_spots(subset, spots)
-    by_spot = defaultdict(list)
-    for row, spot_id in zip(subset, assigned):
-        if spot_id != "outside":
-            by_spot[row["site"], spot_id].append(row)
-    for site, block in sites.items():
-        for spot in block["spots"]:
-            links = []
-            for row in sorted(by_spot[site, spot["id"]], key=lambda r: (-r["match_id"], r["round_number"])):
-                link = _example_link(row)
-                if link is not None:
-                    links.append(link)
-                if len(links) == EXAMPLES:
-                    break
-            spot["examples"] = links
     data = {"asset_key": asset_key, "population": "friends" if ids is not None else "all",
             "min_n": MIN_N, "sites": sites}
     return json.loads(json.dumps(data))                # what a cache hit returns, tuples included

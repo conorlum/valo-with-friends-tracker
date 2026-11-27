@@ -51,7 +51,7 @@
   <h2>Site {{ s.name }} <span class="plant-grey">n={{ s.n }}</span></h2>
   <p class="page-meta">{{ s.outside }} plants (n={{ s.outside }}) outside named spots.</p>
   <table class="plants-table">
-    <thead><tr><th>Spot</th><th>Plants (n)</th><th>Adjusted win</th><th>95% interval</th><th>Raw win</th><th>Shrunk win</th><th>Defused</th><th>Median plant time (s)</th><th>Examples</th></tr></thead>
+    <thead><tr><th>Spot</th><th>Plants (n)</th><th>Adjusted win</th><th>95% interval</th><th>Raw win</th><th>Shrunk win</th><th>Defused</th><th>Median plant time (s)</th></tr></thead>
     <tbody>
       {% for spot in s.spots %}
       <tr data-spot="{{ spot.id }}" data-n="{{ spot.n }}" data-adjusted="{{ spot.adjusted_display or '' }}"{% if spot.grey %} class="plant-grey"{% endif %}>
@@ -66,11 +66,9 @@
         <td>{% if spot.raw %}{{ spot.raw }} (n={{ spot.usable_n }}){% endif %}</td>
         <td>{% if spot.shrunk %}{{ spot.shrunk }} (n={{ spot.usable_n }}){% endif %}</td>
         <td>{% if spot.defused %}{{ spot.defused }} (n={{ spot.usable_n }}){% endif %}</td>
-        <td>{% if spot.median %}{{ spot.median }} (n={{ spot.plant_time_n }}){% endif %}</td>
-        <td>{% for url in spot.examples %}<a href="{{ url }}">replay {{ loop.index }}</a> {% endfor %}</td>
-      </tr>
+        <td>{% if spot.median %}{{ spot.median }} (n={{ spot.plant_time_n }}){% endif %}</td>      </tr>
       {% else %}
-      <tr><td colspan="9">No named spots on this site yet.</td></tr>
+      <tr><td colspan="8">No named spots on this site yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>

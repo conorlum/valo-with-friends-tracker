@@ -24,7 +24,8 @@ from app.templates import templates
 router = APIRouter(prefix="/plants", tags=["plants"])
 
 LOGIN_NOTE = "Friends shows the rounds you and the players on your Friends page attacked in, so it needs a login. Showing Everyone."
-THIN_NOTE = "A spot shows a win rate only from {n} plants; below that it shows its count. Every figure shows its n."
+THIN_NOTE = ("Counts include only plants whose round has a usable result. "
+             "A spot shows a win rate from {n} plants; below that it shows its count.")
 STATIC = Path(__file__).resolve().parents[1] / "static"
 SCALE_POINTS = 15.0  # adjusted points at which the colour is at full strength
 
