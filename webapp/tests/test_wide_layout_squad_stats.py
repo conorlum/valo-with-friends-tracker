@@ -151,6 +151,7 @@ PAIRS = [
 ]
 COMBO = "Match win rate by pistol/round outcome combo"
 CONTROL = "Map control by map"
+ULTS = "Ults"
 
 
 @DEMO
@@ -168,11 +169,11 @@ def test_stats_lone_cards_are_not_in_rows(demo_mode):
     cards = [n for n in root.walk() if "card" in n.classes]
     names = [c.h2() for c in cards]
     assert names.index(COMBO) == 4
-    lone = [COMBO] + ([] if demo_mode else [CONTROL])
+    lone = [COMBO] + ([] if demo_mode else [CONTROL, ULTS])
     for n in lone:
         assert "page-row" not in cards[names.index(n)].parent.classes
     if not demo_mode:
-        assert names[-1] == CONTROL
+        assert names[-1] == ULTS
 
 
 def test_stats_pistol_absent_leaves_eco_alone():

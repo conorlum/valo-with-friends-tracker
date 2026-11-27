@@ -269,7 +269,7 @@ TIMED_ULT_USES = [
     ("Reyna", {"k": "heal", "code": "Vampire", "name": "X_Frenzy", "amount": 10}),
     ("Chamber", {"k": "shot", "gun": "Tour de Force"}),
     ("Jett", {"k": "damage", "target": 7, "name": "X_Dagger_Production", "from": "equippable"}),
-    ("Neon", {"k": "shot", "gun": None}),
+    ("Neon", {"k": "hold", "name": "Overdrive"}),
     ("Veto", {"k": "buff", "code": "Pine", "name": "X_Evolution", "t1": 40}),
     ("Veto", {"k": "heal", "code": "Pine", "name": "X_SelfBuffVers_Engineering", "amount": 10}),
 ]
