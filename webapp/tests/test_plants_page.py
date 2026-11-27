@@ -24,7 +24,7 @@ from app.models.replay import Replay
 from app.models.round_plant import PlantStatsCache
 from app.replays import layouts
 from app.routers import plants as plants_router
-from app.services import plant_page, plant_spots
+from app.services import plant_map_view, plant_page, plant_spots
 from app.services.auth import SESSION_KEY, get_current_player
 from app.templates import templates
 
@@ -141,28 +141,88 @@ def test_only_named_spots_render_and_the_outside_count_shows(db):
     _plants(db, 3)                      # inside Heaven
     _plants(db, 2, start=10, u=9000, v=9000)   # outside every named spot
     page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
-    assert 'data-spot="s1"' in page and "Heaven" in page
-    assert len(re.findall(r'data-spot="', page)) == 2   # the circle and its table row, no others
+    assert "Heaven" in page
+    assert len(re.findall(r'data-spot="s1"', page)) == 1
+    assert len(re.findall(r'data-key-spot="s1"', page)) == 1
+    assert len(re.findall(r'data-row-spot="s1"', page)) == 1
+    colours = re.findall(r'data-(?:spot|key-spot|row-spot)="s1"[^>]*?data-colour="(#[0-9a-f]+)"', page)
+    assert len(colours) == 3 and len(set(colours)) == 1
     assert 'data-outside="2"' in page
+
+
+def _pairs(page, attr):
+    return re.findall(rf'<[^>]*{attr}="([^"]*)"[^>]*data-site="([^"]*)"|<[^>]*data-site="([^"]*)"[^>]*{attr}="([^"]*)"', page)
+
+
+def test_the_same_spot_id_on_two_sites_renders_once_per_site(db, monkeypatch):
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {
+        "A": [{"id": "s1", "name": "Heaven", "u": 500, "v": 500, "r": 300}],
+        "B": [{"id": "s1", "name": "Market", "u": 5000, "v": 5000, "r": 300}]}})
+    _plants(db, 3)
+    _plants(db, 3, start=10, site="B", u=5000, v=5000)
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    for attr in ("data-spot", "data-key-spot", "data-row-spot"):
+        found = sorted((a or d, b or c) for a, b, c, d in _pairs(page, attr))
+        assert found == [("s1", "A"), ("s1", "B")], attr
 
 
 def test_a_rotated_rectangle_spot_renders_and_counts_its_plants(db, monkeypatch):
     monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
         {"id": "s1", "name": "Heaven", "u": 500, "v": 500, "w": 400, "h": 200, "angle": 30}]}})
+    monkeypatch.setattr(plant_map_view, "zone_rects", lambda key, zones=None: [(0, 0, 10, 10)])
     _plants(db, 3)                             # inside the rectangle
     _plants(db, 2, start=10, u=500, v=690)     # past its short side
     page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
-    assert "width: 4.0%; height: 2.0%; border-radius: 0; transform: translate(-50%, -50%) rotate(30deg);" in page
-    assert 'data-outside="2"' in page and "n=3" in page
+    rect = re.search(r"<rect[^>]*data-spot=\"s1\"[^>]*>", page).group(0)
+    assert 'x="300"' in rect and 'y="400"' in rect and 'width="400"' in rect and 'height="200"' in rect
+    assert "rotate(30 500 500)" in rect
+    assert "clip-path" not in rect
+    assert '<g class="plant-shapes" clip-path="url(#plant-zone)">' in page
+    assert page.index('class="plant-shapes"') < page.index(rect)
+    assert 'data-outside="2"' in page
+    row = re.search(r'<tr[^>]*data-row-spot="s1".*?</tr>', page, re.S).group(0)
+    assert 'data-sort-value="3"' in row
 
 
-def test_49_is_grey_without_a_percentage_and_50_has_a_signed_adjusted_value(db):
+def test_a_circle_spot_renders_as_a_circle(db, monkeypatch):
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
+        {"id": "s1", "name": "Heaven", "u": 700, "v": 800, "r": 250}]}})
+    _plants(db, 3, u=700, v=800)
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    circle = re.search(r"<circle[^>]*data-spot=\"s1\"[^>]*>", page).group(0)
+    assert 'cx="700"' in circle and 'cy="800"' in circle and 'r="250"' in circle
+
+
+def test_site_view_on_a_rotated_map(db, monkeypatch):
+    from app.services import map_rotation
+    assert map_rotation.quarter_turns("Ascent") == 1
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
+        {"id": "s1", "name": "Heaven", "u": 3000, "v": 6000, "r": 300}]}})
+    _plants(db, 3, u=3000, v=6000)
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent", query=b"site=A"), "Ascent", db=db))
+    cx, cy, side = plant_page.page_data(db, "Ascent", None)["sites"]["A"]["crop"]
+    rcx, rcy = plant_map_view.rotate_uv(cx, cy, 1)
+    gutter = 0.45 * side
+    svg = re.search(r'<svg class="plant-map"[^>]*>', page).group(0)
+    box = [float(x) for x in re.search(r'viewBox="([^"]*)"', svg).group(1).split()]
+    assert box == pytest.approx([rcx - side / 2 - gutter, rcy - side / 2, side + 2 * gutter, side])
+    crop = re.search(r'<rect[^>]*id="plant-crop-rect"[^>]*>|<clipPath id="plant-crop">\s*<rect[^>]*>', page).group(0)
+    nums = [float(x) for x in re.findall(r'(?:x|y|width|height)="([\d.]+)"', crop)]
+    assert nums == pytest.approx([cx - side / 2, cy - side / 2, side, side])
+    narrow = [float(x) for x in re.search(r'data-viewbox-narrow="([^"]*)"', svg).group(1).split()]
+    assert narrow[2] == narrow[3] == pytest.approx(side)
+    assert narrow[0] == pytest.approx(rcx - side / 2)
+
+
+def test_49_is_muted_without_a_percentage_and_50_has_a_signed_adjusted_value(db):
     assert plant_page.MIN_N == 50          # the owner's gate (2026-11-25), was 100
     _plants(db, 49)
     small = _spot(db)
     assert small["n"] == 49 and small["adjusted_display"] is None
     page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
-    assert "spot-grey" in page and 'data-adjusted=""' in page and "n=49" in page
+    row = re.search(r'<tr[^>]*data-row-spot="s1".*?</tr>', page, re.S).group(0)
+    assert 'data-muted="1"' in row and "needs 50" in row and 'data-adjusted=""' in row
+    assert "spot-grey" not in page
 
     _plants(db, 1, start=49)
     big = _spot(db)
@@ -392,6 +452,63 @@ def test_an_arbitrary_layout_value_is_never_echoed(db):
 
 
 # --- links ----------------------------------------------------------------------
+
+
+def test_all_sites_has_no_text_on_the_map_and_site_view_labels_every_spot(db, monkeypatch):
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
+        {"id": "s1", "name": "Heaven", "u": 3000, "v": 3000, "r": 300},
+        {"id": "s2", "name": "Market", "u": 3600, "v": 3200, "r": 300}]}})
+    _plants(db, 3, u=3000, v=3000)
+    _plants(db, 3, start=10, u=3600, v=3200)
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    svg = page[page.index("<svg"):page.index("</svg>")]
+    assert "<text" not in svg and "data-label-spot" not in svg
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent", query=b"site=A"), "Ascent", db=db))
+    assert len(re.findall(r'data-label-spot="', page)) == 2
+    svg = re.search(r'<svg class="plant-map"[^>]*>', page).group(0)
+    box = [float(x) for x in re.search(r'viewBox="([^"]*)"', svg).group(1).split()]
+    assert box[2] > box[3]
+
+
+def test_zone_clip_is_used_when_the_layout_has_a_zone(db, monkeypatch):
+    _plants(db, 3)
+    monkeypatch.setattr(plant_map_view, "zone_rects", lambda key, zones=None: [(0, 0, 10, 10)])
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    assert 'clipPath id="plant-zone"' in page and 'clip-path="url(#plant-zone)"' in page
+    monkeypatch.setattr(plant_map_view, "zone_rects", lambda key, zones=None: [])
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    assert 'id="plant-zone"' not in page and "url(#plant-zone)" not in page
+
+
+def test_no_examples_or_defused(db):
+    _plants(db, 3, branch="release-13.08")
+    page = _body(plants_router.plants_map(_request(path="/plants/Ascent"), "Ascent", db=db))
+    main = page.split("<main>")[1]
+    assert "Defused" not in main and "Examples" not in main and 'href="/replays/' not in main
+
+
+def test_crop_and_anchor_are_in_page_data(db, monkeypatch):
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
+        {"id": "s1", "name": "Heaven", "u": 5000, "v": 5000, "r": 300}]}})
+    _plants(db, 3, u=5000, v=5000)
+    block = plant_page.page_data(db, "Ascent", None)["sites"]["A"]
+    assert block["crop"] == [5000, 5000, 1560]
+    assert block["spots"][0]["anchor"] == [5000, 5000]
+
+
+def test_crop_is_shifted_inside_the_map_and_anchor_is_the_median_of_plants(db):
+    _plants(db, 3, u=500, v=500)
+    block = plant_page.page_data(db, "Ascent", None)["sites"]["A"]
+    assert block["crop"] == [780, 780, 1560]
+    assert block["spots"][0]["anchor"] == [500, 500]
+
+
+def test_an_empty_spot_anchors_at_its_centre(db, monkeypatch):
+    monkeypatch.setattr(plant_spots, "load", lambda: {"Ascent": {"A": [
+        {"id": "s1", "name": "Heaven", "u": 900, "v": 1100, "r": 300}]}})
+    _plants(db, 3, u=9000, v=9000)
+    spot = plant_page.page_data(db, "Ascent", None)["sites"]["A"]["spots"][0]
+    assert spot["anchor"] == [900, 1100]
 
 
 def test_page_data_has_no_examples(db):
