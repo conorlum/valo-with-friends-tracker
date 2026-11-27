@@ -39,7 +39,8 @@ def on_threshold(d_m: float, rule: str = ON_RULE) -> float:
     fixed5: always 5."""
     if rule == "fixed5":
         return 5
-    body = math.degrees(math.atan(mc.AIM_BODY_HALF_M / d_m))
+    # d_m is stored to one decimal, so two players under 5 cm apart store 0.0: atan(half a body / 0) is 90 deg
+    body = 90.0 if d_m is None or d_m <= 0 else math.degrees(math.atan(mc.AIM_BODY_HALF_M / d_m))
     fit = [v for v in mc.AIM_LADDER_DEG if v <= body]
     fitted = max(fit) if fit else _FLOOR_DEG
     return max(5, fitted) if rule == "five" else fitted
@@ -149,29 +150,43 @@ def events_for(db, player_ids, agents=None, *, one_per_match: bool = False) -> l
         wanted = set(agents)
         owners = {k: v for k, v in owners.items() if v[0].agent in wanted}
     if ids is not None:
-        replay_ids = sorted({rid for rid, _ in owners})
-        if not replay_ids:
+        slots_by_replay: dict = {}
+        for rid, slot in owners:
+            slots_by_replay.setdefault(rid, set()).add(slot)
+        if not slots_by_replay:
             return []
+        rows = replay_aim.current_events(db, sorted(slots_by_replay), slots_by_replay=slots_by_replay)
     else:
-        replay_ids = None
-    rows = replay_aim.current_events(db, replay_ids)
+        rows = replay_aim.current_events(db, None)
     return [_Event(r, *owners[(r.replay_id, r.slot)]) for r in rows if (r.replay_id, r.slot) in owners]
 
 
 _EVERYONE: dict = {}
 _LOCK = threading.Lock()
+_COMPUTE_LOCK = threading.Lock()
+
+
+def _everyone_hit(key):
+    with _LOCK:
+        hit = _EVERYONE.get(key)
+        if hit and time.monotonic() - hit[0] < EVERYONE_TTL_S:
+            return hit[1]
+    return None
 
 
 def everyone_summary(db) -> dict:
-    """The all-players reference, cached in-process for ten minutes per GAPS_REVISION."""
+    """The all-players reference, cached in-process for ten minutes per GAPS_REVISION. One computation at a time:
+    callers arriving while one runs wait for its result."""
     key = replay_gaps.GAPS_REVISION
-    now = time.monotonic()
-    with _LOCK:
-        hit = _EVERYONE.get(key)
-        if hit and now - hit[0] < EVERYONE_TTL_S:
-            return hit[1]
-    value = summary(events_for(db, None))
-    with _LOCK:
-        _EVERYONE.clear()
-        _EVERYONE[key] = (time.monotonic(), value)
-    return value
+    value = _everyone_hit(key)
+    if value is not None:
+        return value
+    with _COMPUTE_LOCK:
+        value = _everyone_hit(key)
+        if value is not None:
+            return value
+        value = summary(events_for(db, None))
+        with _LOCK:
+            _EVERYONE.clear()
+            _EVERYONE[key] = (time.monotonic(), value)
+        return value

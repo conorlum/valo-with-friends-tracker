@@ -85,6 +85,10 @@ def test_rows_from_events_keeps_ok_won_lost_and_uses_window():
     i = aim_stats._ladder_index(aim_stats.on_threshold(10.0))
     times = [None] * (i + 1)
     times[i] = 0.4
+    zero = cr.rows_from_events([E(d_m=0.0, on_times=[None] * 13 + [0.6])])
+    assert zero[0]["tto"] == pytest.approx(0.6)
+    t = cr.times_to_on_target({"d_m": 0.0, "on": [None] * 13 + [0.6]})
+    assert t == {"body": pytest.approx(0.6), "five": pytest.approx(0.6), "fixed5": None}
     rows = cr.rows_from_events([E(), E(outcome="none"), E(cls="late"), E(on_times=times)])
     assert len(rows) == 2
     assert rows[0]["tto"] is None and rows[0]["window"] == pytest.approx(2.0)

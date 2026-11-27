@@ -50,6 +50,25 @@ def test_on_threshold_other_rules():
     assert aim_stats.on_threshold(60, "fixed5") == 5
 
 
+@pytest.mark.parametrize("rule, want", [("body", 20), ("five", 20), ("fixed5", 5)])
+@pytest.mark.parametrize("d", [0.0, 0, -1.0, None])
+def test_on_threshold_at_no_distance_is_the_widest_ladder_value(d, rule, want):
+    assert aim_stats.on_threshold(d, rule) == want
+
+
+def test_a_zero_distance_event_does_not_break_summary():
+    on = [None] * 13 + [0.4]
+    events = [ev(d_m=0.0, err=3.0, on=on)] * 8 + [ev(d_m=0.0, err=30.0, on=on), ev(d_m=0.0, err=25.0, on=on)]
+    p = aim_stats.summary(events)["placement"]
+    assert p["on"] == pytest.approx(.8) and p["off"] == pytest.approx(.2)
+    p = aim_stats.summary(events, "fixed5")["placement"]
+    assert p["on"] == pytest.approx(.8)
+    for rule in ("body", "five", "fixed5"):
+        aim_stats.summary(events, rule)
+    assert aim_stats._on_time(ev(d_m=0.0, on=on), "body") == pytest.approx(0.4)
+    assert aim_stats._on_time(ev(d_m=0.0, on=on), "fixed5") is None
+
+
 # ---------------------------------------------------------------------------------------------- summary
 
 def test_twelve_ok_events_give_exact_median_and_iqr():
@@ -202,7 +221,8 @@ def test_only_the_players_replays_are_read(session_factory, stored_round, monkey
     mps = _player_ids(db, replay_id)
     seen = []
     real = replay_aim.current_events
-    monkeypatch.setattr(replay_aim, "current_events", lambda d, ids=None: seen.append(ids) or real(d, ids))
+    monkeypatch.setattr(replay_aim, "current_events",
+                        lambda d, ids=None, **kw: seen.append(ids) or real(d, ids, **kw))
     aim_stats.events_for(db, [mps[0].player_id])
     assert [sorted(i) for i in seen] == [[replay_id]]
     seen.clear()
@@ -211,6 +231,70 @@ def test_only_the_players_replays_are_read(session_factory, stored_round, monkey
     seen.clear()
     aim_stats.events_for(db, None)
     assert seen == [None]
+
+
+def test_events_for_one_player_never_loads_other_slots_rows(session_factory, stored_round):
+    from sqlalchemy import event
+
+    from app.models.replay import ReplayAimEvent
+
+    replay_id, n = stored_round
+    _store(session_factory, replay_id, n, [_event(0), _event(1, 1), _event(1, 2), _event(2, 3)])
+    db = session_factory()
+    mps = _player_ids(db, replay_id)
+    loaded = []
+
+    def on_load(target, ctx):
+        loaded.append(target.slot)
+
+    event.listen(ReplayAimEvent, "load", on_load)
+    try:
+        out = aim_stats.events_for(db, [mps[1].player_id])
+        assert len(out) == 2 and loaded and set(loaded) == {1}
+        loaded.clear()
+        db.expunge_all()
+        assert len(aim_stats.events_for(db, None)) == 4      # everyone still reads every row
+        assert set(loaded) == {0, 1, 2}
+    finally:
+        event.remove(ReplayAimEvent, "load", on_load)
+
+
+def test_current_events_filters_slots_by_replay_in_sql(session_factory, stored_round):
+    replay_id, n = stored_round
+    _store(session_factory, replay_id, n, [_event(0), _event(1, 1), _event(2, 2)])
+    db = session_factory()
+    got = replay_aim.current_events(db, slots_by_replay={replay_id: {0, 2}})
+    assert sorted(r.slot for r in got) == [0, 2]
+    assert replay_aim.current_events(db, slots_by_replay={}) == []
+    assert replay_aim.current_events(db, slots_by_replay={replay_id: set()}) == []
+    assert replay_aim.current_events(db, slots_by_replay={replay_id + 100: {0}}) == []
+
+
+def test_everyone_summary_computes_once_under_concurrent_callers(monkeypatch):
+    import threading
+    import time
+
+    aim_stats._EVERYONE.clear()
+    calls = []
+
+    def slow(*a, **k):
+        calls.append(1)
+        time.sleep(0.2)
+        return []
+
+    monkeypatch.setattr(aim_stats, "events_for", slow)
+    results = []
+
+    def go():
+        results.append(aim_stats.everyone_summary(None))
+
+    threads = [threading.Thread(target=go) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls) == 1 and len(results) == 4 and all(r == results[0] for r in results)
+    aim_stats._EVERYONE.clear()
 
 
 def test_stale_rows_are_excluded(session_factory, stored_round):

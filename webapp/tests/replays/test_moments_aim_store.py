@@ -80,6 +80,26 @@ def test_failed_moments_or_no_aim_store_no_rows(session_factory, stored_round):
     assert session_factory().query(ReplayAimEvent).count() == 0
 
 
+def test_freshness_is_decided_once_per_round_not_per_row(session_factory, stored_round, monkeypatch):
+    replay_id, n = stored_round
+    store_gaps(session_factory, replay_id, n, _run(), [], moments=_moments(*[_event(i) for i in range(20)]))
+    calls = []
+    real = replay_gaps.Freshness.current
+
+    def spy(self, *a, **k):
+        calls.append(a[1:])
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(replay_gaps.Freshness, "current", spy)
+    assert len(replay_aim.current_events(session_factory())) == 20
+    assert len(calls) == 1
+    # a stale round: still checked once, every row of it dropped
+    store_gaps(session_factory, replay_id, n, _run(fingerprint="a" * 16), [],
+               moments=_moments(*[_event(i) for i in range(20)]))
+    calls.clear()
+    assert replay_aim.current_events(session_factory()) == [] and len(calls) == 1
+
+
 def test_current_events_drops_older_revisions_and_stale_rounds(session_factory, stored_round):
     replay_id, n = stored_round
     store_gaps(session_factory, replay_id, n, _run(), [], moments=_moments(_event(0)))

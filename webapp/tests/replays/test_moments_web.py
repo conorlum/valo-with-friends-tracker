@@ -156,6 +156,17 @@ def test_stored_aim_events_reach_their_fight_with_on_s_at_the_threshold(db, link
     assert [a["cls"] for a in f1["aim"]] == ["behind"]
 
 
+def test_a_zero_distance_aim_event_still_builds_the_payload(db, linked):
+    from app.moments.constants import AIM_LADDER_DEG
+
+    put_row(db, linked, 1)
+    put_moments(db, linked, 1)
+    put_aim(db, linked, 1, 0, d_m=0.0, on_times=[None] * 13 + [0.7])
+    [f] = body_of(call(db))["rounds"]["1"]["fights"]
+    [a] = f["aim"]
+    assert a["d_m"] == 0.0 and a["on_s"] == 0.7 and len(AIM_LADDER_DEG) == 14
+
+
 def test_a_stale_aim_row_does_not_reach_the_payload(db, linked):
     put_row(db, linked, 1)
     put_moments(db, linked, 1)
