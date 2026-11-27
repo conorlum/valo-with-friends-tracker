@@ -161,3 +161,149 @@ def ult_segments(round_data: dict, item: dict, entry: dict | None) -> tuple[list
         if b > a:
             out.append([a, b])
     return out, "window"
+
+
+# --- charges, the ranking and friend rows
+
+MIN_USES = 5
+_SHRINK_K = 5.0
+
+
+def proven_costs(rounds: dict) -> dict:
+    """{slot: cost}: the most points each slot held just before a use in any round of the match (as
+    replay_util.unused_ults). A slot that never proved a cost is absent."""
+    caps: dict = {}
+    for data in rounds.values():
+        for slot, u in (data.get("ults") or {}).items():
+            if (u or {}).get("cap_seen"):
+                caps[str(slot)] = max(caps.get(str(slot), 0), int(u["cap_seen"]))
+    return caps
+
+
+def charges(rounds: dict, lifts: dict, ctx: dict) -> list:
+    """One match's charges: [agent, player_id, match, lift|None, cost, used]. `lifts` is {(round, slot): lift};
+    `ctx` is {"match", "agents": {slot: agent}, "players": {slot: player id}}. A use is one charge (used 1, its
+    lift, None when uncompared). A full ult held at the match's last round and never used since it became full is
+    one wasted charge (lift 0, used 0). A slot with no proven cost has none."""
+    costs = proven_costs(rounds)
+    out: list = []
+    order = sorted(rounds, key=int)
+    for n in order:
+        for item in use_items(rounds[n]):
+            slot = str(item.get("by"))
+            if slot not in costs:
+                continue
+            out.append([ctx["agents"].get(slot), ctx["players"].get(slot), ctx["match"],
+                        lifts.get((int(n), slot)), costs[slot], 1])
+    if order:
+        for slot, cost in costs.items():
+            held = False
+            for n in reversed(order):
+                u = ((rounds[n].get("ults") or {}).get(slot)) or {}
+                if u.get("end") is None or u["end"] < cost:
+                    break
+                if u.get("used") or u.get("use"):
+                    held = False
+                    break
+                held = True
+            if held and (rounds[order[-1]].get("ults") or {}).get(slot):
+                out.append([ctx["agents"].get(slot), ctx["players"].get(slot), ctx["match"], 0, cost, 0])
+    return out
+
+
+def cluster_ci(groups: list, fn, draws: int = 1000, seed: int = 0) -> tuple:
+    """Percentile 95% CI of fn(rows) with whole groups (matches) resampled. A draw with no value is skipped; no usable
+    draw gives (None, None)."""
+    if not groups:
+        return None, None
+    rng = np.random.default_rng(seed)
+    vals = []
+    for _ in range(draws):
+        pick = rng.integers(0, len(groups), len(groups))
+        rows = [r for i in pick for r in groups[i]]
+        v = fn(rows)
+        if v is not None and not (isinstance(v, float) and math.isnan(v)):
+            vals.append(v)
+    if not vals:
+        return None, None
+    lo, hi = np.percentile(vals, [2.5, 97.5])
+    return float(lo), float(hi)
+
+
+def _lifts(rows: list) -> list:
+    return [float(c[3]) for c in rows if c[3] is not None]
+
+
+def _mean_lift(rows: list):
+    v = _lifts(rows)
+    return sum(v) / len(v) if v else None
+
+
+def _counts(rows: list) -> dict:
+    return {"n_uses": sum(1 for c in rows if c[5]), "n_charges": len(_lifts(rows)),
+            "n_uncompared": sum(1 for c in rows if c[3] is None), "wasted": sum(1 for c in rows if not c[5])}
+
+
+def _by_match(rows: list) -> list:
+    groups: dict = {}
+    for c in rows:
+        groups.setdefault(c[2], []).append(c)
+    return list(groups.values())
+
+
+def aggregate(chs: list) -> dict:
+    """{agent: {n_uses, n_charges, n_uncompared, wasted, value}}: raw. value is the mean lift of the compared charges
+    (a wasted charge counts as 0); None with none compared."""
+    by: dict = {}
+    for c in chs:
+        by.setdefault(c[0], []).append(c)
+    return {a: {**_counts(rows), "value": _mean_lift(rows)} for a, rows in by.items()}
+
+
+def rank(chs: list, agents=None) -> dict:
+    """The ranking: a row for every ult agent (zero uses included), best first, thin rows last, and the cast mean."""
+    if agents is None:
+        from app.critutil import abilities
+        agents = sorted({e["agent"] for e in abilities.load() if e.get("type") == "ult"})
+    by: dict = {}
+    for c in chs:
+        by.setdefault(c[0], []).append(c)
+    rows = []
+    for a in agents:
+        mine = by.get(a, [])
+        row = {"agent": a, **_counts(mine), "value": None, "lo": None, "hi": None, "diff": None}
+        if row["n_uses"] >= MIN_USES and row["n_charges"]:
+            row["value"] = _mean_lift(mine)
+            row["lo"], row["hi"] = cluster_ci(_by_match(mine), _mean_lift)
+        rows.append(row)
+    vals = [r["value"] for r in rows if r["value"] is not None]
+    cast_mean = sum(vals) / len(vals) if vals else None
+    if cast_mean is not None:
+        for r in rows:
+            if r["value"] is not None:
+                r["diff"] = r["value"] - cast_mean
+    rows.sort(key=lambda r: (r["value"] is None, -(r["value"] or 0.0), -r["n_uses"], str(r["agent"])))
+    return {"rows": rows, "cast_mean": cast_mean}
+
+
+def friend_rows(chs: list, circle) -> list:
+    """Per (player id, agent) of the circle: the value shrunk toward the agent's (util_values.shrunk, k = 5), raw
+    counts, a CI by match. None figures under 5 uses, with no compared lift, or with no agent value."""
+    circle = set(circle)
+    agent_value = {a: v["value"] for a, v in aggregate(chs).items()}
+    by: dict = {}
+    for c in chs:
+        if c[1] in circle:
+            by.setdefault((c[1], c[0]), []).append(c)
+    out = []
+    for (pid, agent), mine in sorted(by.items(), key=lambda kv: (str(kv[0][0]), str(kv[0][1]))):
+        row = {"player_id": pid, "agent": agent, **_counts(mine), "value": None, "lo": None, "hi": None}
+        prior = agent_value.get(agent)
+        if row["n_uses"] >= MIN_USES and row["n_charges"] and prior is not None:
+            def fn(rows, prior=prior):
+                v = _lifts(rows)
+                return util_values.shrunk(v, prior, _SHRINK_K) if v else None
+            row["value"] = fn(mine)
+            row["lo"], row["hi"] = cluster_ci(_by_match(mine), fn)
+        out.append(row)
+    return out

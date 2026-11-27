@@ -257,3 +257,128 @@ def test_a_non_ult_window_is_unchanged():
     entry = {"rule": "fixed:4", "type": "wall"}
     got = windows.window({"type": "wall", "t": 10.0, "signals": {}}, entry, 100.0)
     assert got == {"segments": [[10.0, 14.0]], "rule": "fixed:4", "fallback": False}
+
+
+# --- W5: charges, the ranking and friend rows
+
+
+def _u(end=None, cap=None, used=False, t=30.0):
+    return {"cap_seen": cap, "end": end, "t": t, "used": used,
+            "use": {"t": t, "ability_id": "X/Ult", "type": "ult", "signals": {}} if used else None}
+
+
+def _ctx(match="m1", agent="Jett", pid=7):
+    return {"match": match, "agents": {"1": agent}, "players": {"1": pid}}
+
+
+def _ch(agent, pid, match, lift, used=1, cost=7):
+    return [agent, pid, match, lift, cost, used]
+
+
+def test_proven_costs_is_the_most_cap_seen_per_slot():
+    rounds = {1: _round(ults={"1": _u(cap=6, used=True)}), 2: _round(ults={"1": _u(cap=8, used=True), "5": _u(end=3)})}
+    assert ult_values.proven_costs(rounds) == {"1": 8}
+
+
+def test_a_use_is_a_charge_with_its_lift_and_a_zero_lift_stays_used():
+    rounds = {3: _round(ults={"1": _u(cap=7, used=True)}), 4: _round(ults={"1": _u(cap=7, used=True)})}
+    out = ult_values.charges(rounds, {(3, "1"): 0.25, (4, "1"): 0.0}, _ctx())
+    assert out == [["Jett", 7, "m1", 0.25, 7, 1], ["Jett", 7, "m1", 0.0, 7, 1]]
+
+
+def test_an_uncompared_use_has_a_none_lift():
+    rounds = {3: _round(ults={"1": _u(cap=7, used=True)})}
+    assert ult_values.charges(rounds, {}, _ctx()) == [["Jett", 7, "m1", None, 7, 1]]
+
+
+def test_a_full_ult_held_to_the_last_round_is_one_wasted_charge():
+    rounds = {1: _round(ults={"1": _u(cap=7, used=True)})}
+    for n in range(10, 21):
+        rounds[n] = _round(ults={"1": _u(end=7)})
+    out = ult_values.charges(rounds, {(1, "1"): 0.1}, _ctx())
+    assert out == [["Jett", 7, "m1", 0.1, 7, 1], ["Jett", 7, "m1", 0, 7, 0]]
+
+
+def test_a_full_ult_used_in_round_15_is_not_wasted():
+    rounds = {1: _round(ults={"1": _u(cap=7, used=True)})}
+    for n in range(10, 21):
+        rounds[n] = _round(ults={"1": _u(end=7, used=(n == 15))})
+    out = ult_values.charges(rounds, {}, _ctx())
+    assert [c[5] for c in out] == [1, 1]
+
+
+def test_a_slot_that_never_proved_a_cost_has_no_charges():
+    rounds = {n: _round(ults={"1": _u(end=7)}) for n in range(1, 5)}
+    assert ult_values.charges(rounds, {}, _ctx()) == []
+
+
+def test_cluster_ci_is_repeatable_and_resamples_whole_matches():
+    groups = [[1.0, 1.0, 1.0], [-1.0, -1.0, -1.0]]
+    fn = lambda rows: sum(rows) / len(rows)  # noqa: E731
+    a = ult_values.cluster_ci(groups, fn, seed=0)
+    assert a == ult_values.cluster_ci(groups, fn, seed=0)
+    assert a[0] == -1.0 and a[1] == 1.0   # whole matches move together: only -1, 0 or 1 are possible
+
+
+def test_cluster_ci_skips_draws_with_no_value():
+    assert ult_values.cluster_ci([[None]], lambda rows: None) == (None, None)
+
+
+def test_aggregate_counts_uses_uncompared_and_wasted():
+    ch = [_ch("A", 1, "m", 0.3), _ch("A", 1, "m", 0.1), _ch("A", 1, "m", 0.0), _ch("A", 1, "m", None),
+          _ch("A", 1, "m", 0, used=0)]
+    agg = ult_values.aggregate(ch)["A"]
+    assert (agg["n_uses"], agg["n_uncompared"], agg["wasted"]) == (4, 1, 1)
+    assert agg["n_charges"] == 4
+    assert agg["value"] == pytest.approx(0.4 / 4)
+
+
+def _many(agent, n, lift, match="m"):
+    return [_ch(agent, 1, f"{match}{i}", lift) for i in range(n)]
+
+
+def test_ranking_is_best_first_and_small_agents_do_not_move_the_cast_mean():
+    ch = _many("A", 6, 0.2) + _many("B", 6, 0.4) + _many("C", 4, 0.9)
+    out = ult_values.rank(ch, agents=["A", "B", "C", "D"])
+    rows = {r["agent"]: r for r in out["rows"]}
+    assert [r["agent"] for r in out["rows"]][:2] == ["B", "A"]
+    assert out["cast_mean"] == pytest.approx(0.3)
+    assert rows["B"]["diff"] == pytest.approx(0.1)
+    assert rows["C"]["n_uses"] == 4 and rows["C"]["value"] is None and rows["C"]["lo"] is None
+    assert rows["D"]["n_uses"] == 0 and rows["D"]["value"] is None
+    assert {r["agent"] for r in out["rows"][2:]} == {"C", "D"}
+
+
+def test_six_uncompared_uses_keep_counts_and_have_no_figures():
+    ch = _many("A", 6, None) + _many("B", 6, 0.2)
+    out = ult_values.rank(ch, agents=["A", "B"])
+    a = next(r for r in out["rows"] if r["agent"] == "A")
+    assert a["n_uses"] == 6 and a["n_uncompared"] == 6
+    assert a["value"] is None and a["lo"] is None and a["hi"] is None and a["diff"] is None
+    assert out["cast_mean"] == pytest.approx(0.2)
+    fr = ult_values.friend_rows(ch[:6], [1])
+    assert fr[0]["n_uses"] == 6 and fr[0]["value"] is None
+
+
+def test_no_qualifying_agent_leaves_cast_mean_none():
+    out = ult_values.rank(_many("A", 3, 0.2), agents=["A"])
+    assert out["cast_mean"] is None
+
+
+def test_rank_defaults_to_every_ult_agent_in_the_abilities_table():
+    out = ult_values.rank([])
+    ults = {e["agent"] for e in abilities.load() if e.get("type") == "ult"}
+    assert {r["agent"] for r in out["rows"]} == ults
+
+
+def test_friend_rows_only_for_the_circle_and_shrunk_toward_the_agent():
+    ch = ([_ch("A", 1, f"m{i}", 0.5) for i in range(5)] + [_ch("A", 2, f"n{i}", 0.1) for i in range(5)]
+          + [_ch("A", 3, f"o{i}", 0.9) for i in range(4)] + [_ch("A", 9, "z", 0.2) for _ in range(6)])
+    rows = ult_values.friend_rows(ch, [1, 3])
+    assert {r["player_id"] for r in rows} == {1, 3}
+    agent_v = ult_values.aggregate(ch)["A"]["value"]
+    r1 = next(r for r in rows if r["player_id"] == 1)
+    assert r1["value"] == pytest.approx((5 * 0.5 + 5 * agent_v) / 10)
+    assert r1["n_uses"] == 5 and r1["lo"] is not None
+    r3 = next(r for r in rows if r["player_id"] == 3)
+    assert r3["n_uses"] == 4 and r3["value"] is None and r3["lo"] is None
