@@ -382,3 +382,106 @@ def test_friend_rows_only_for_the_circle_and_shrunk_toward_the_agent():
     assert r1["n_uses"] == 5 and r1["lo"] is not None
     r3 = next(r for r in rows if r["player_id"] == 3)
     assert r3["n_uses"] == 4 and r3["value"] is None and r3["lo"] is None
+
+
+# --- W6: the orb chart
+
+
+def test_extra_ults_with_a_constant_gain_of_one_and_cost_two():
+    pmf = {1: 1.0}
+    # E(l, p): p>=2 -> 1 + E(l-1, 1); else E(l-1, min(p+1, 2)). Extra = E(l, p+1) - E(l, p).
+    assert [ult_values.extra_ults(pmf, 2, 0, left) for left in (1, 2, 3, 4)] == [0.0, 1.0, 0.0, 1.0]
+    assert [ult_values.extra_ults(pmf, 2, 1, left) for left in (1, 2, 3, 4)] == [1.0, 0.0, 1.0, 0.0]
+
+
+def test_an_ult_that_fills_after_the_last_round_counts_nothing():
+    assert ult_values.extra_ults({1: 1.0}, 2, 0, 1) == 0.0
+
+
+def _match_ctx(n):
+    return {"rounds": {i: {"winner": "attack", "id": i} for i in range(1, n + 1)}}
+
+
+def test_rounds_left_on_a_two_round_match():
+    assert ult_values.rounds_left({"a": _match_ctx(2)}) == {1: 0.5, 0: 0.5}
+
+
+def test_rounds_left_counts_the_context_rounds_not_the_util_rows():
+    out = ult_values.rounds_left({"a": _match_ctx(20)})
+    assert sorted(out) == list(range(20))
+    assert out[0] == pytest.approx(1 / 20)
+
+
+def test_a_cells_mean_over_rounds_left_by_hand():
+    dist = ult_values.rounds_left({"a": _match_ctx(2)})
+    mean = sum(s * ult_values.extra_ults({1: 1.0}, 2, 1, left) for left, s in dist.items())
+    assert mean == pytest.approx(0.5)
+
+
+def test_the_recursion_matches_a_seeded_simulation():
+    pmf = {0: 0.3, 1: 0.4, 3: 0.2, 5: 0.1}
+    cost, left, p0 = 6, 9, 2
+    rng = np.random.default_rng(3)
+    gs, ws = list(pmf), list(pmf.values())
+
+    def run(p, draws):
+        points, n = p, 0
+        for g in draws:
+            if points >= cost:
+                n += 1
+                points = g
+            else:
+                points = min(points + g, cost)
+        return n
+
+    N = 40000
+    total = 0
+    for _ in range(N):
+        draws = [int(x) for x in rng.choice(gs, size=left, p=ws)]
+        total += run(p0 + 1, draws) - run(p0, draws)
+    assert ult_values.extra_ults(pmf, cost, p0, left) == pytest.approx(total / N, abs=0.01)
+
+
+def test_gain_pmf_uses_rounds_that_started_below_cost_without_a_use():
+    def u(start, gained, used=False):
+        return {"cap_seen": 7, "start": start, "gained": gained, "used": used, "use": None}
+
+    rounds = {1: _round(ults={"1": u(2, 1)}), 2: _round(ults={"1": u(3, 3)}), 3: _round(ults={"1": u(7, 2, True)}),
+              4: _round(ults={"1": u(None, 2)}), 5: _round(ults={"1": u(4, 1)})}
+    out = ult_values.gain_pmf({"m": {"rounds": rounds, "agents": {"1": "Jett"}}})
+    assert out == {"Jett": {1: pytest.approx(2 / 3), 3: pytest.approx(1 / 3)}}
+
+
+def _rk(agent, value, lo, hi, n=10):
+    return {"agent": agent, "n_uses": n, "value": value, "lo": lo, "hi": hi}
+
+
+def test_phoenix_two_points_beats_omen_six_when_eight_rounds_are_left():
+    pmf = {0: 0.3, 1: 0.5, 2: 0.2}
+    ranked = {"rows": [_rk("Phoenix", 0.07, 0.02, 0.1), _rk("Omen", 0.01, 0.0, 0.02)]}
+    out = ult_values.orb_chart(ranked, {"Phoenix": pmf, "Omen": pmf}, {"Phoenix": 7, "Omen": 7}, {8: 1.0})
+    rows = {r["agent"]: r for r in out["rows"]}
+    assert out["max_cost"] == 7
+    assert [r["agent"] for r in out["rows"]] == ["Phoenix", "Omen"]
+    assert len(rows["Phoenix"]["cells"]) == 7
+    assert rows["Phoenix"]["cells"][2] > rows["Omen"]["cells"][6]
+
+
+def test_omen_wins_where_its_extra_ults_are_far_higher():
+    ranked = [_rk("Phoenix", 0.07, 0.02, 0.1), _rk("Omen", 0.01, 0.0, 0.02)]
+    pmfs = {"Phoenix": {0: 1.0}, "Omen": {1: 1.0}}
+    out = ult_values.orb_chart(ranked, pmfs, {"Phoenix": 7, "Omen": 2}, {5: 1.0})
+    rows = {r["agent"]: r for r in out["rows"]}
+    assert rows["Phoenix"]["cells"][2] == 0.0
+    assert rows["Omen"]["cells"][1] > rows["Phoenix"]["cells"][2]
+
+
+def test_negative_value_negative_cells_muted_when_ci_spans_zero_and_thin_agents_dropped():
+    ranked = {"rows": [_rk("A", -0.05, -0.1, -0.01), _rk("B", 0.03, -0.01, 0.07), _rk("C", 0.2, 0.1, 0.3, n=4),
+                       _rk("D", None, None, None)]}
+    pmf = {1: 1.0}
+    out = ult_values.orb_chart(ranked, {a: pmf for a in "ABCD"}, {a: 2 for a in "ABCD"}, {5: 1.0})
+    assert [r["agent"] for r in out["rows"]] == ["A", "B"]
+    a, b = out["rows"]
+    assert min(a["cells"]) < 0 and not a["muted"]
+    assert b["muted"]

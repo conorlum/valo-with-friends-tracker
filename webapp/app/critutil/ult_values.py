@@ -307,3 +307,78 @@ def friend_rows(chs: list, circle) -> list:
             row["lo"], row["hi"] = cluster_ci(_by_match(mine), fn)
         out.append(row)
     return out
+
+
+# --- the orb chart
+
+
+def gain_pmf(rounds_by_match: dict) -> dict:
+    """{agent: {gain: share}}: points gained in a round, over the rounds where the slot started below its proven cost
+    and did not use its ult. `rounds_by_match` is {match: {"rounds": {round: data}, "agents": {slot: agent}}}."""
+    counts: dict = {}
+    for m in rounds_by_match.values():
+        rounds, agents = m.get("rounds") or {}, m.get("agents") or {}
+        costs = proven_costs(rounds)
+        for data in rounds.values():
+            for slot, u in (data.get("ults") or {}).items():
+                u = u or {}
+                slot = str(slot)
+                agent = agents.get(slot)
+                if agent is None or slot not in costs or u.get("start") is None or u["start"] >= costs[slot]:
+                    continue
+                if u.get("used") or u.get("use"):
+                    continue
+                g = int(u.get("gained") or 0)
+                d = counts.setdefault(agent, {})
+                d[g] = d.get(g, 0) + 1
+    return {a: {g: n / sum(d.values()) for g, n in sorted(d.items())} for a, d in counts.items()}
+
+
+def rounds_left(ctx: dict) -> dict:
+    """{left: share}: one count for each round n of each match, at left = R - n, R the match's full round count from
+    ctx[rid]["rounds"]. The final round's 0 stays in."""
+    counts: dict = {}
+    for m in ctx.values():
+        rounds = (m or {}).get("rounds") or {}
+        R = len(rounds)
+        for n in rounds:
+            left = R - int(n)
+            counts[left] = counts.get(left, 0) + 1
+    total = sum(counts.values())
+    return {left: c / total for left, c in counts.items()} if total else {}
+
+
+def extra_ults(pmf: dict, cost: int, points: int, left: int) -> float:
+    """Ults one more point buys by the match's end, exactly: E(left, points + 1) - E(left, points)."""
+    memo: dict = {}
+
+    def E(n: int, p: int) -> float:
+        if n == 0:
+            return 0.0
+        key = (n, p)
+        if key not in memo:
+            if p >= cost:
+                memo[key] = 1.0 + sum(s * E(n - 1, g) for g, s in pmf.items())
+            else:
+                memo[key] = sum(s * E(n - 1, min(p + g, cost)) for g, s in pmf.items())
+        return memo[key]
+
+    return E(left, points + 1) - E(left, points)
+
+
+def orb_chart(ranked, pmfs: dict, costs: dict, left_dist: dict) -> dict:
+    """{"max_cost", "rows": [{agent, cost, muted, cells}]}: rows in ranking order, a cell per points held 0..cost-1 =
+    value x the mean of extra_ults over left_dist. No row under 5 uses, without a value, a cost or a pmf."""
+    ranked_rows = ranked["rows"] if isinstance(ranked, dict) else ranked
+    rows = []
+    for r in ranked_rows:
+        agent = r["agent"]
+        cost, pmf = costs.get(agent), pmfs.get(agent)
+        if r.get("value") is None or r.get("n_uses", 0) < MIN_USES or not cost or not pmf:
+            continue
+        cells = [r["value"] * sum(s * extra_ults(pmf, cost, p, left) for left, s in left_dist.items())
+                 for p in range(cost)]
+        lo, hi = r.get("lo"), r.get("hi")
+        muted = lo is None or hi is None or lo <= 0 <= hi
+        rows.append({"agent": agent, "cost": cost, "muted": muted, "cells": cells})
+    return {"max_cost": max((r["cost"] for r in rows), default=0), "rows": rows}
