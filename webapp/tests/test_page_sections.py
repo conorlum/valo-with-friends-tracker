@@ -81,6 +81,7 @@ EXPECTED = {
         "Match win rate by pistol/round outcome combo": 2,
         "Match win rate by rounds reached": 2,
         "Round-win momentum": 2,
+        "Ults": 2,
         "{{ pistol_card_title }}": 2,
     },
 }

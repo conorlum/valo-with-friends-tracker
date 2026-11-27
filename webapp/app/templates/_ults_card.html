@@ -1,0 +1,14 @@
+{# Ults on /stats: how much each agent's ultimate changes the round-win chance against every cast, which
+   teammate should take an orb, and what holding ready ults is worth. From the stored Critical Util build,
+   loaded after the page. Replays are off on the demo site, so this card is too. #}
+{% if not demo_mode %}
+{% set ults_group = "all" if group == "all" else "friends" %}
+<div class="card ults-card">
+  <h2>Ults</h2>
+  <p class="page-meta">What each agent's ultimate is worth in round-win chance, from uploaded replays, against the
+    average over every agent's ult.</p>
+  <div hx-get="/stats/ults?group={{ ults_group }}" hx-trigger="load" hx-swap="innerHTML">
+    <p class="page-meta htmx-indicator">Loading ults&hellip;</p>
+  </div>
+</div>
+{% endif %}

@@ -437,7 +437,7 @@ def test_pages_and_payload_keep_the_cached_values_build_unchanged(db, linked):
     put_util(db, linked, 1)
     built = replay_util.build_corpus(db)
     assert set(built) == {"ability_prior", "estimator", "fingerprints", "fit", "gate", "info", "matches",
-                          "overlap", "prior_sums", "rows", "same_type_overlap", "spread", "spread_by_mode"}
+                          "overlap", "prior_sums", "rows", "same_type_overlap", "spread", "spread_by_mode", "ults"}
     key = replay_util.corpus_key(db, replay_util.current_rows(db, with_data=False), util_model.load(db))
     replay_util._store_values(db, key, built)
     first = replay_util._values_row(db)[1]
@@ -450,6 +450,16 @@ def test_pages_and_payload_keep_the_cached_values_build_unchanged(db, linked):
     assert replay_util._values_row(db)[1] == before
     assert replay_util._values_row(db)[1] is first
     assert db.get(UtilModel, "values").data is None
+
+
+def test_ensure_values_stores_a_build_holding_the_ult_block(db, linked):
+    from app.services import util_model
+
+    put_model(db, util_model.fit(ESTIMATOR_ROWS), {linked.match_id})
+    put_util(db, linked, 1)
+    assert "ults" in replay_util.ensure_values(db)
+    stored = replay_util._values_row(db)[1]
+    assert set(stored["ults"]) == {"ranking", "charges", "orbs", "held", "risk"}
 
 
 def test_a_cast_after_the_round_was_decided_is_shown_unscored(db, linked):

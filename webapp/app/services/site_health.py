@@ -102,6 +102,7 @@ PAGE_ROUTES = {
     "/stats/all": "not_page",
     "/stats/friends/career": "not_page",
     "/stats/map-control": "not_page",
+    "/stats/ults": "not_page",
     "/util": "page",
 }
 

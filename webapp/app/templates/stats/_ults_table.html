@@ -1,0 +1,101 @@
+{# The Ults card's tables (app/routers/site_stats.py ults_fragment). Context: ults (the stored build's `ults` block or
+   None), current (is the build current), friend_rows (the viewer's circle: name, agent, n_uses, value, lo, hi),
+   label, min_uses. Lifts are fractions of round-win chance and print as percentage points, always signed. #}
+{% macro pp(v) %}{% if v is none %}—{% else %}{{ '%+.1f'|format(v * 100) }} pp{% endif %}{% endmacro %}
+{% macro pp_already(v) %}{% if v is none %}—{% else %}{{ '%+.1f'|format(v) }} pp{% endif %}{% endmacro %}
+{% macro px(v, lim) %}{{ (130 + ((v * 100 + lim) / (2 * lim)) * 330) | round(1) }}{% endmacro %}
+{% macro ci(lo, hi) %}{% if lo is none or hi is none %}—{% else %}[{{ pp(lo) }}, {{ pp(hi) }}]{% endif %}{% endmacro %}
+<style>
+  .ults-svg text { fill: var(--ink-secondary); font-size: 12px; }
+  .ults-svg .ults-head text, .ults-svg text.ults-head { fill: var(--ink-muted); }
+  .ults-svg .ults-friend text { fill: var(--ink-muted); }
+  .ults-svg .ults-grid { stroke: var(--gridline); stroke-width: 1; }
+  .ults-svg .ults-whisker { stroke: var(--ink-muted); stroke-width: 1.5; }
+  .ults-svg .ults-dot { fill: var(--ink-secondary); }
+  .ults-svg .ults-dot.pos { fill: var(--good); }
+  .ults-svg .ults-dot.neg { fill: var(--critical); }
+  .ults-svg .ults-friend .ults-dot { opacity: 0.75; }
+  .ults-orb-table td.num, .ults-held-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .ults-orb-table tr.muted td { opacity: 0.6; }
+</style>
+{% if not ults or not ults.ranking %}
+<p class="page-meta">The Ults numbers are being built from the uploaded replays. They show here once the first build
+  finishes, which takes a few minutes.</p>
+{% else %}
+{% if not current %}
+<p class="page-meta">These figures are from the last build and are updating: a newer build is on its way.</p>
+{% endif %}
+{% set rows = ults.ranking.rows %}
+{% set cast = ults.ranking.cast_mean %}
+{% set ns = namespace(top=10.0) %}
+{% for r in rows + friend_rows %}{% for v in (r.value, r.lo, r.hi) %}{% if v is not none and (v * 100)|abs > ns.top %}{% set ns.top = (v * 100)|abs %}{% endif %}{% endfor %}{% endfor %}
+{% if cast is not none and (cast * 100)|abs > ns.top %}{% set ns.top = (cast * 100)|abs %}{% endif %}
+{% set lim = ((ns.top / 5) | round(0, 'ceil')) * 5 %}
+{% set height = 34 + 26 * (rows|length + friend_rows|length) %}
+
+<h3>Ult value by agent</h3>
+<p class="page-meta">Mean change in the round-win chance over the ult's use, against moments with no ult of that
+  side up. Agent rows pool every uploaded replay; a charge that was never used (wasted) counts as 0 in the mean. The dot
+  is the mean, the whisker its 95% range, and the dashed line the average over every agent
+  with {{ min_uses }}+ uses{% if cast is not none %} ({{ pp(cast) }}){% endif %}. Under {{ min_uses }} uses a row shows
+  — and its count.</p>
+<div class="table-scroll">
+<svg class="ults-svg" viewBox="0 0 680 {{ height }}" width="680" height="{{ height }}" role="img" aria-label="Ult value by agent, best first" style="min-width: 640px; max-width: 100%;">
+  <line class="ults-grid" x1="{{ px(0, lim) }}" y1="22" x2="{{ px(0, lim) }}" y2="{{ height - 4 }}"/>
+  <text class="ults-head" x="4" y="14">Agent</text><text class="ults-head" x="130" y="14">{{ '%+d'|format(-lim) }}</text><text class="ults-head" x="{{ px(0, lim) }}" y="14" text-anchor="middle">0</text><text class="ults-head" x="460" y="14" text-anchor="end">{{ '%+d'|format(lim) }} pp</text><text class="ults-head" x="486" y="14">Mean (95% range)</text><text class="ults-head" x="640" y="14" text-anchor="end">Uses</text>
+  {% if cast is not none and (cast * 100)|abs <= lim %}<line class="ults-cast-line" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" style="color: var(--ink-muted);" x1="{{ px(cast, lim) }}" y1="22" x2="{{ px(cast, lim) }}" y2="{{ height - 4 }}"><title>Average over agents with {{ min_uses }}+ uses: {{ pp(cast) }}</title></line>{% endif %}
+  {% set y = namespace(v=34) %}
+  {% for r in rows %}
+  {% set thin = r.value is none %}
+  <g class="ults-row" data-agent="{{ r.agent }}"><text x="4" y="{{ y.v }}">{{ r.agent }}</text>{% if not thin %}<line class="ults-whisker" x1="{{ px(r.lo if r.lo is not none else r.value, lim) }}" y1="{{ y.v - 4 }}" x2="{{ px(r.hi if r.hi is not none else r.value, lim) }}" y2="{{ y.v - 4 }}"/><circle class="ults-dot {{ 'pos' if r.lo is not none and r.lo > 0 else ('neg' if r.hi is not none and r.hi < 0 else '') }}" cx="{{ px(r.value, lim) }}" cy="{{ y.v - 4 }}" r="5"/>{% endif %}<text x="486" y="{{ y.v }}">{{ pp(r.value) }}{% if not thin %} {{ ci(r.lo, r.hi) }}{% endif %}</text><text x="640" y="{{ y.v }}" text-anchor="end">{{ r.n_uses }}</text></g>
+  {% set y.v = y.v + 26 %}
+  {% for f in friend_rows if f.agent == r.agent %}
+  {% set fthin = f.value is none %}
+  <g class="ults-row ults-friend"><text x="18" y="{{ y.v }}">{{ f.name|strip_tag }}</text>{% if not fthin %}<line class="ults-whisker" x1="{{ px(f.lo if f.lo is not none else f.value, lim) }}" y1="{{ y.v - 4 }}" x2="{{ px(f.hi if f.hi is not none else f.value, lim) }}" y2="{{ y.v - 4 }}"/><circle class="ults-dot {{ 'pos' if f.lo is not none and f.lo > 0 else ('neg' if f.hi is not none and f.hi < 0 else '') }}" cx="{{ px(f.value, lim) }}" cy="{{ y.v - 4 }}" r="4"/>{% endif %}<text x="486" y="{{ y.v }}">{{ pp(f.value) }}{% if not fthin %} {{ ci(f.lo, f.hi) }}{% endif %}</text><text x="640" y="{{ y.v }}" text-anchor="end">{{ f.n_uses }}</text></g>
+  {% set y.v = y.v + 26 %}
+  {% endfor %}
+  {% endfor %}
+</svg>
+</div>
+{% if friend_rows %}<p class="page-meta">Names under an agent are you and your friends, their value pulled toward the agent's.</p>{% endif %}
+
+<h3 id="ults-orbs">Who should take the orb</h3>
+<p class="page-meta">Find each teammate's agent and the points they hold; the higher cell takes the orb. A cell is the
+  round-win change from one more point, over the rest of the match. Faded rows: the agent's value range spans 0.</p>
+{% set orbs = ults.orbs or {} %}
+{% if orbs.rows %}
+<div class="table-scroll">
+<table class="ults-orb-table">
+  <thead>
+    <tr><th>Ult</th>{% for p in range(orbs.max_cost) %}<th class="num">{{ p }}</th>{% endfor %}</tr>
+    <tr><th class="page-meta" colspan="{{ orbs.max_cost + 1 }}">points held</th></tr>
+  </thead>
+  <tbody>
+    {% for r in orbs.rows %}
+    <tr class="{{ 'muted' if r.muted else '' }}"><td>{{ r.agent }} <span class="page-meta">cost {{ r.cost }}</span>{% if r.muted %} <span class="page-meta">(CI spans 0)</span>{% endif %}</td>{% for c in r.cells %}<td class="num" style="background: color-mix(in srgb, {{ 'var(--good)' if c >= 0 else 'var(--critical)' }} {{ [((c * 100)|abs * 12)|round|int, 45]|min }}%, transparent);">{{ pp(c) }}</td>{% endfor %}{% for _ in range(orbs.max_cost - r.cells|length) %}<td></td>{% endfor %}</tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="page-meta">No agent has {{ min_uses }}+ uses with a known ult cost yet.</p>
+{% endif %}
+
+{% set held = ults.held or {} %}
+<h3 id="ults-held">Held ults</h3>
+<p class="page-meta">The change in a team's round-win chance for each extra ready ult it holds at the start of the round,
+  against the other team with the same buy, in the same match, pistol rounds out
+  ({{ held.rounds or 0 }} rounds, {{ held.matches or 0 }} matches). Used and held-and-not-used split the same ready ults,
+  and the split is not cause and effect: a team that is already winning may be the one that uses its ult.</p>
+<div class="table-scroll">
+<table class="ults-held-table">
+  <thead><tr><th>Ready ult</th><th class="num">Round-win change</th><th class="num">95% range</th></tr></thead>
+  <tbody>
+    {% for key, name in (("any", "Any ready ult"), ("used", "Used that round"), ("unused", "Held and not used")) %}
+    {% set h = held[key] or {} %}
+    <tr><td>{{ name }}</td><td class="num">{{ pp_already(h.pp) }}</td><td class="num">{% if h.lo is none or h.hi is none %}—{% else %}[{{ pp_already(h.lo) }}, {{ pp_already(h.hi) }}]{% endif %}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}

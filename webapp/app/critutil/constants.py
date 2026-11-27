@@ -4,7 +4,7 @@ Standard library only: nothing here may import the app. Values marked "measure" 
 
 from __future__ import annotations
 
-VERSION = 9                 # 9: Hush (her four table entries, Flow's anchor joins its cast, a levitated status joins its zone's cast); 8: Miks in AGENT_KEYS (held util at death); 7: branch review fixes (movement casts, own walls, presence while on, life to the end); 6: Veto's Evolution from its buff row, its regen heals counted; 5: Arc Rose pops and endings (trap-jobs D12); the extractor's output (app/critutil/extract.py); part of the stored row
+VERSION = 10                # 10: each ult's start and gained points and the round's orbs on the row; 9: Hush (her four table entries, Flow's anchor joins its cast, a levitated status joins its zone's cast); 8: Miks in AGENT_KEYS (held util at death); 7: branch review fixes (movement casts, own walls, presence while on, life to the end); 6: Veto's Evolution from its buff row, its regen heals counted; 5: Arc Rose pops and endings (trap-jobs D12); the extractor's output (app/critutil/extract.py); part of the stored row
 
 # --- one cast (measured on real exports, 2026-10-21: a recon is a projectile, a bolt object and two pings over
 # about 3 s; a smoke's zone lands about 2 s after its projectile; a flash's projectile starts with its flash row)
@@ -125,7 +125,8 @@ GUN_WEIGHT = 1.0
 # Chamber 37 Tour de Force kills, Raze 8 rocket, Jett 3 knife, Neon 3 beam, the rest their guns.
 # ("window", None): every kill the owner made while the ult was on (Reyna's Empress: her own guns, faster and
 # stronger, to her death or the round's end; the owner: the whole kill too).
-ULT_WEAPONS = {"Chamber": ("shot", "Tour de Force"), "Neon": ("shot", None),
+# Neon's beam shots carry gun "Overdrive" now, and None in older blobs (D11): both prove it; a tuple is any of them.
+ULT_WEAPONS = {"Chamber": ("shot", "Tour de Force"), "Neon": ("shot", (None, "Overdrive")),
                "Jett": ("damage", "Wushu_X_Dagger_Production"), "Raze": ("damage", "Clay_X_Rocket"),
                "Reyna": ("window", None)}
 ULT_SHOT_MATCH_S = 0.05

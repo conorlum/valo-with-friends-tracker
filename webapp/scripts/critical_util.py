@@ -8,7 +8,9 @@
 its held-out check and calibration. `refresh` rebuilds every cast's value and the fitted job weights (util_model
 "values"); the site also does this on its own when the stored evidence changes. `measure` prints the spec's
 "Measurements to make before code" from the stored evidence and writes nothing. `show` prints the top and bottom
-lineups across every friend. `fit-win` and `refresh` write, and refuse in demo mode.
+lineups across every friend. `ults` prints the stored build's ult report (ranking, orb chart, held ults, orb risk) from
+the stored build only; it never builds or writes, and refuses in demo mode. `fit-win` and `refresh` write, and refuse
+in demo mode.
 
 Exits 0 when done, 2 when refused.
 """
@@ -183,22 +185,104 @@ def cmd_show(db, limit: int) -> int:
     return 0
 
 
+ULTS_REFUSED = "Refused: demo mode is on, and the demo has no Critical Util build to read."
+ULTS_MISSING = "The stored Critical Util build has no ult figures: the build hasn't run yet."
+
+
+def _pp(x) -> str:
+    """A fraction of round-win chance as signed percentage points."""
+    return "—" if x is None else f"{100 * x:+.1f} pp"
+
+
+def _pp_already(x) -> str:
+    """A figure already in percentage points, signed."""
+    return "—" if x is None else f"{x:+.1f} pp"
+
+
+def _ci(lo, hi, scale=_pp) -> str:
+    return "—" if lo is None or hi is None else f"[{scale(lo)}, {scale(hi)}]"
+
+
+def ult_lines(block: dict) -> list[str]:
+    """The stored build's ult block as text lines (pure: no DB). Agent rows only: no player ids or names."""
+    lines = ["Ranking (mean lift in round-win chance per ult charge; difference is from the average of agents with 5+ uses)"]
+    ranking = block.get("ranking") or {}
+    lines.append("  compared = charges with a lift (compared uses plus wasted); uncompared = uses with no lift; "
+                 "a wasted charge counts as 0")
+    lines.append(f"  {'agent':12s} {'uses':>5s} {'compared':>9s} {'uncompared':>11s} {'wasted':>7s} {'mean lift':>10s} "
+                 f"{'95% CI':>22s} {'vs avg':>10s}")
+    for r in ranking.get("rows") or ():
+        lines.append(f"  {str(r['agent']):12s} {r['n_uses']:5d} {r['n_charges']:9d} {r.get('n_uncompared', 0):11d} {r['wasted']:7d} "
+                     f"{_pp(r.get('value')):>10s} {_ci(r.get('lo'), r.get('hi')):>22s} {_pp(r.get('diff')):>10s}")
+    lines.append(f"  average over agents with 5+ uses: {_pp(ranking.get('cast_mean'))}")
+
+    orbs = block.get("orbs") or {}
+    lines += ["", "Orb chart (round-win change from one more orb point at that many held, over the rest of the match)"]
+    if not orbs.get("rows"):
+        lines.append("  no agent has 5+ uses with a proven cost")
+    else:
+        lines.append("  " + " " * 21 + " ".join(f"{p:>9d}" for p in range(orbs.get("max_cost", 0))) + "   (points held)")
+        for r in orbs["rows"]:
+            cells = " ".join(f"{_pp(c):>9s}" for c in r["cells"])
+            lines.append(f"  {str(r['agent']):12s} cost {r['cost']:2d} {cells}{'   (CI spans 0)' if r.get('muted') else ''}")
+
+    held = block.get("held") or {}
+    lines += ["", f"Held ults (round-win change per extra ready ult at the round's start; {held.get('rounds', 0)} rounds, "
+                  f"{held.get('matches', 0)} matches, pistols out)",
+              "  Used and unused is a split of the same ready ults. It is not cause and effect: a team that uses its ult may "
+              "already be winning."]
+    for key, label in (("any", "any ready ult"), ("used", "used that round"), ("unused", "held and not used")):
+        h = held.get(key) or {}
+        lines.append(f"  {label:20s} {_pp_already(h.get('pp')):>10s} {_ci(h.get('lo'), h.get('hi'), _pp_already):>22s}")
+
+    risk = block.get("risk") or {}
+    lines += ["", "Orb risk (cost in round-win chance of a death during or within 3 s of picking up or letting go of an orb, per try)",
+              f"  {'map':14s} {'tries':>6s} {'deaths':>7s} {'cost per try':>13s} {'95% CI':>22s}"]
+    rows = [("all maps", risk.get("overall") or {})] + [(str(m.get("map")), m) for m in risk.get("maps") or ()]
+    for name, m in rows:
+        lines.append(f"  {name:14s} {m.get('tries', 0):6d} {m.get('deaths', 0):7d} {_pp_already(m.get('cost_pp')):>13s} "
+                     f"{_ci(m.get('lo'), m.get('hi'), _pp_already):>22s}")
+    return lines
+
+
+def cmd_ults(db) -> int:
+    """Print the stored build's ult block. Reads only; never builds or writes."""
+    from app.services import replay_util
+
+    row = replay_util._values_row(db)
+    block = (row[1] or {}).get("ults") if row else None
+    if not block:
+        print(ULTS_MISSING, file=sys.stderr)
+        return 2
+    current = replay_util.values_current(db, row)        # reads only: never builds
+    print("Stored build: current" if current else "Stored build: stale (a newer build is pending; these are the last build's figures)")
+    for line in ult_lines(block):
+        print(line)
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("fit-win")
     sub.add_parser("refresh")
     sub.add_parser("measure")
+    sub.add_parser("ults")
     show = sub.add_parser("show")
     show.add_argument("--limit", type=int, default=15)
     args = parser.parse_args(argv)
     if args.cmd in ("fit-win", "refresh") and settings.demo_mode:
         print(REFUSED, file=sys.stderr)
         return 2
+    if args.cmd == "ults" and settings.demo_mode:
+        print(ULTS_REFUSED, file=sys.stderr)
+        return 2
     from app.db import SessionLocal
 
     db = SessionLocal()
     try:
+        if args.cmd == "ults":
+            return cmd_ults(db)
         if args.cmd == "fit-win":
             return cmd_fit_win(db)
         if args.cmd == "refresh":

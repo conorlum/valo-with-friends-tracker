@@ -1268,7 +1268,8 @@ def _first_use(util, slot, agent, end):
         want = lambda r: (r.get("k") == "damage" and r.get("name") == "X_Dagger_Production"
                           and r.get("from") == "equippable")
     elif agent == "Neon":
-        want = lambda r: r.get("k") == "shot" and r.get("gun") is None
+        # the first Overdrive hold (D11): a shot alone, with or without a gun, is no longer a use
+        want = lambda r: r.get("k") == "hold" and r.get("name") == "Overdrive"
     elif agent == "Veto":
         # Evolution's own buff row (CONDENSE 23); before it, the first regen heal (a floor: only when he was hurt)
         span = _evolution(util, slot, end)
@@ -1281,13 +1282,63 @@ def _first_use(util, slot, agent, end):
     return min(ts) if ts else None
 
 
-def _use(rnd, ps, util, slot, agent, end) -> dict | None:
+DROP_USE_AGENTS = ("Sage", "Clove", "Sova", "Yoru")   # D11: the use is a drop in the ult line
+_NEW_LIFE_S = 0.05
+
+
+def _int_keyed(d) -> dict:
+    return {int(k): v for k, v in (d or {}).items()}
+
+
+def _new_life_at(ivs, t) -> bool:
+    """Whether a life other than the first starts within _NEW_LIFE_S of `t`."""
+    return any(abs(float(a) - t) <= _NEW_LIFE_S for a, _ in list(ivs or ())[1:])
+
+
+def drop_use_t(agent, slot, line, util, lives, sides, t_decided) -> float | None:
+    """The time of a Sage, Clove, Sova or Yoru ult use (D11), else None. `line` is the slot's ult line. A drop is
+    two consecutive points `a.n > 0`, `b.n == 0` with `0 < b.t <= t_decided`; the first drop that qualifies is the
+    use, at `b.t`. Sage: a teammate's new life (not their first) starts at the drop; Clove: their own does (the
+    search runs past their first death); Sova and Yoru: the drop alone. `lives` and `sides` may have int or string
+    keys, a life's end may be inf or None. `util` is unused: no evidence but the line and the lives."""
+    if agent not in DROP_USE_AGENTS:
+        return None
+    slot = int(slot)
+    lives, sides = _int_keyed(lives), _int_keyed(sides)
+    for a, b in zip(line or (), (line or ())[1:]):
+        t = float(b["t"])
+        if not (a["n"] > 0 and b["n"] == 0 and 0 < t <= t_decided):
+            continue
+        if agent == "Sage":
+            mine = sides.get(slot)
+            ok = mine is not None and any(s != slot and sides.get(s) == mine and _new_life_at(ivs, t)
+                                          for s, ivs in lives.items())
+        elif agent == "Clove":
+            ok = _new_life_at(lives.get(slot), t)
+        else:
+            ok = True
+        if ok:
+            return t
+    return None
+
+
+def _use(rnd, ps, util, slot, agent, end, sides=None) -> dict | None:
+    line = ((ps or {}).get("ult") or {}).get(str(slot)) or []
+    if agent in DROP_USE_AGENTS:
+        entry = next((e for e in abilities.load() if e.get("agent") == agent and e.get("type") == "ult"), None)
+        t = drop_use_t(agent, slot, line, util, rnd.lives, sides if sides is not None else _sides(rnd), rnd.t_decided)
+        if entry is None or t is None:
+            return None
+        death = next((k for k, a, b in sorted(rnd.kills) if k > t and b == slot), None)
+        return {"t": _r2(t), "ability_id": f"{entry['agent']}/{entry['ability']}", "type": "ult",
+                "signals": {"ult_end": None, "death": _r2(death)}}
     entry = next((e for e in abilities.load() if e.get("agent") == agent and e.get("type") == "ult"
                   and e.get("rule") in ("ult:until_end", "ult:until_death")), None) if agent else None
     if entry is None:
         return None
+    if agent == "Neon":
+        end = rnd.t_decided     # a hold after a revive counts, and the first life's end is not the limit
     t = _first_use(util, slot, agent, end)
-    line = ((ps or {}).get("ult") or {}).get(str(slot)) or []
     end_t = death = None
     if t is not None:
         end_t = next((p["t"] for p in line if p["t"] > t and p["n"] == 0), None)
@@ -1320,14 +1371,41 @@ def _ults(rnd, blob, sides, agents=None) -> dict[str, dict]:
     out = {}
     for slot in sides:
         end = min(rnd.life_end(slot, 0.0) if rnd.alive(slot, 0.0) else 0.0, rnd.t_decided)
-        use = _use(rnd, ps, util, slot, (agents or {}).get(slot), end)
+        use = _use(rnd, ps, util, slot, (agents or {}).get(slot), end, sides)
         # used: an ult ability row, or the use a timed ult's own evidence found (a Tour de Force shot, Evolution's
         # row): the same evidence the use is valued on (branch review B5)
         used = any(r.get("by") == slot and _ult_row(r) and r["t"] <= end for r in util
                    if r.get("k") == "ability") or (use is not None and use.get("t") is not None)
+        start, gained = _ult_start_gained(ps, slot)
         out[str(slot)] = {"cap_seen": _ult_cap(ps, slot), "end": _ult_at(ps, slot, end - _EPS), "t": _r2(end),
-                          "used": used, "use": use}
+                          "used": used, "use": use, "start": start, "gained": gained}
     return out
+
+
+def _ult_start_gained(ps, slot) -> tuple[int | None, int]:
+    """The points held at the round's start (the last entry at t <= 0; None without one) and the points gained
+    after it: the sum of every rise at t > 0 (a drop to 0 on a use is not subtracted)."""
+    line = ((ps or {}).get("ult") or {}).get(str(slot)) or []
+    start = None
+    for p in line:
+        if p["t"] <= 0:
+            start = p["n"]
+    prev = start if start is not None else 0
+    gained = 0
+    for p in line:
+        if p["t"] <= 0:
+            continue
+        if p["n"] > prev:
+            gained += p["n"] - prev
+        prev = p["n"]
+    return start, gained
+
+
+def round_orbs(ps) -> list[dict]:
+    """The round's ult orbs from the player state, each cut to the keys the site reads (`t0`, `t1`, `end`, `slot`,
+    `tries`); a key an orb lacks stays absent."""
+    keep = ("t0", "t1", "end", "slot", "tries")
+    return [{k: o[k] for k in keep if k in o} for o in (ps or {}).get("orbs") or () if isinstance(o, dict)]
 
 
 # --- the round
@@ -1609,7 +1687,8 @@ def _ult_weapon_kills(rnd, util, slot, agent, since=None, until=None) -> list[di
             hit = since is not None and until is not None and t <= until + _EPS
         elif how == "shot":
             hit = any(r.get("k") == "shot" and r.get("by") == slot and abs(float(r["t"]) - t) <= ULT_SHOT_MATCH_S
-                      and r.get("gun") == what for r in util)
+                      and (r.get("gun") in what if isinstance(what, tuple) else r.get("gun") == what)
+                      for r in util)
         else:
             runs = [r for r in util if r.get("k") == "damage" and r.get("by") == slot and r.get("target") == victim
                     and float(r["t"]) <= t + ULT_SHOT_MATCH_S]
@@ -1759,6 +1838,7 @@ def round_util(rnd, blob: dict, holds: dict | None = None) -> dict:
         "heals": _heals(rnd, blob, sides),
         "unused": _unused(rnd, blob, sides, spike, agents),
         "ults": ults,
+        "orbs": round_orbs(ps),
         "avail": {"heals": "heal" in {r.get("k") for r in blob.get("util") or ()} or bool((ps or {}).get("charges")),
                   "causes": has_causes, "charges": bool((ps or {}).get("charges")),
                   "ult": bool((ps or {}).get("ult")),

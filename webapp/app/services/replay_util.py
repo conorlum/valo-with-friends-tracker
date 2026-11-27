@@ -24,7 +24,7 @@ from app.critutil.corpus import (  # re-export the portable build and its helper
     COMBO_S, COMBO_UV, EXAMPLES_KEPT, FULL_BUY_THRESHOLD, LABELS, MIN_CASTS, NO_LIFT,
     PAGE_VERSION, PISTOL_ROUNDS, SHRINK_K,
     _ability_styles, _cast_rows, _gate_list, _item_of, _mark_combos, _round_data,
-    ability_label, area_of, build_from_rounds, buy_type, corpus_from_inputs, kind_label,
+    ability_label, area_of, build_from_rounds, buy_type, corpus_from_inputs, finish_values, kind_label,
     label_of, lineup_score, values_key,
 )
 from app.services import util_model, util_store, util_values
@@ -195,7 +195,8 @@ def build_corpus(db, *, rows: list[tuple] | None = None, model: dict | None = No
         painted_table = areas.load_table(published_only=True)
     inputs = corpus_inputs(db, rows)
     db.commit()
-    return corpus_from_inputs(inputs, rows, model, painted_table=painted_table)
+    return finish_values(corpus_from_inputs(inputs, rows, model, painted_table=painted_table),
+                         inputs[0], inputs[1], model)
 
 
 def corpus_inputs(db, rows: list[tuple]) -> tuple[dict, dict, set]:
@@ -234,7 +235,8 @@ def ensure_values(db, *, force: bool = False) -> dict:
         used = corpus_key(db, rows, model, painted_table=painted_table)
         inputs = corpus_inputs(db, rows)
         db.commit()                         # nothing is held through the compute (R3)
-        data = corpus_from_inputs(inputs, rows, model, painted_table=painted_table)
+        data = finish_values(corpus_from_inputs(inputs, rows, model, painted_table=painted_table),
+                             inputs[0], inputs[1], model)
         with util_model.rebuild_lock(db, "values"):     # a short transaction: the lock, the row, the commit
             _store_values(db, used, data)   # stored even if superseded (D6)
         force = False

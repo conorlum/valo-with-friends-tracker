@@ -43,7 +43,7 @@ RESULT_WINDOW_S = 3.0
 SHOT_LOOKBACK_S = 0.5
 BEHIND_DEG = 120.0
 ROUTE_THIN_S = 0.5
-GAPS_REVISION = 8    # 8: post-plant samples ride the gap run; 7: Critical Util clears and holds; 6: Hush; 5: Critical Util rides the gap run
+GAPS_REVISION = 9    # 9: ult start/gained points and orbs (critutil 10); 8: post-plant samples ride the gap run; 7: Critical Util clears and holds; 6: Hush; 5: Critical Util rides the gap run
 TURN_DEG = 1.0      # a facing change of at most this between two ticks is not a turn (aim noise)
 CAUSE_ORDER = ("route_released", "victim_turned", "victim_moved", "open_timing")
 # The engine's own locating events (Unknown.apply, _locating), gathered onto the next tick as before W09.
