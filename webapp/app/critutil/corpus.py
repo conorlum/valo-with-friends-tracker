@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.critutil.build_digest import KEY_RE  # noqa: F401 - the worker checks keys with the same pattern
-from app.critutil import info
+from app.critutil import info, ult_values
 from app.services import util_model, util_values
 from app.services.stats_math import cluster_bootstrap_ci
 
@@ -395,6 +395,16 @@ def corpus_from_inputs(inputs: tuple[dict, dict, set], rows: list[tuple], model,
     return out
 
 
+def finish_values(values: dict, stored: dict, ctx: dict, model) -> dict:
+    """Adds the ult block (`values["ults"]`, ult_values.build) to a build made by `corpus_from_inputs`, in place, and
+    returns it. Both build paths (the site's and the worker's) call it before anything is stored; `build_from_rounds`
+    and `corpus_from_inputs` are left as they were."""
+    prepared = {rid: {n: _round_data(d, ctx[rid]) for n, d in rounds.items()}
+                for rid, rounds in stored.items() if rid in ctx}
+    values["ults"] = ult_values.build(prepared, ctx, model, FULL_BUY_THRESHOLD)
+    return values
+
+
 # --- the shared site / task wire format
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -571,5 +581,6 @@ def compute(inputs: Inputs) -> dict:
         data = inputs.rounds[row_key(*row)]
         if data:
             stored[row[0]][row[1]] = data
-    values = corpus_from_inputs((stored, c["ctx"], c["friends"]), c["rows"], win, painted_table=c["areas"])
+    values = finish_values(corpus_from_inputs((stored, c["ctx"], c["friends"]), c["rows"], win, painted_table=c["areas"]),
+                           stored, c["ctx"], win)
     return {"win": win, "values": values, "values_key": values_key(c["key_parts"], (win or {}).get("key"))}

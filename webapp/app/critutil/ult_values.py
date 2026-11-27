@@ -539,3 +539,94 @@ def orb_risk(rounds_by_match: dict, ctx: dict, model) -> dict:
     everything = [g for gs in by_map.values() for g in gs]
     maps = [{"map": name, **summary(gs)} for name, gs in sorted(by_map.items(), key=lambda kv: str(kv[0]))]
     return {"overall": summary(everything), "maps": maps}
+
+
+# --- the whole block
+
+PLACES = 4
+
+
+def _clean(x):
+    """JSON-ready: numpy scalars become Python ones, floats are rounded to PLACES, a non-finite float is None."""
+    if x is None or isinstance(x, (bool, str)):
+        return x
+    if isinstance(x, (int, np.integer)):
+        return int(x)
+    if isinstance(x, (float, np.floating)):
+        return round(float(x), PLACES) if math.isfinite(float(x)) else None
+    if isinstance(x, dict):
+        return {(k if isinstance(k, str) else str(k)): _clean(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_clean(v) for v in x]
+    return x
+
+
+def _winner(m_ctx: dict, n):
+    rounds = (m_ctx or {}).get("rounds") or {}
+    row = rounds.get(n)
+    if row is None:
+        try:
+            row = rounds.get(int(n))
+        except (TypeError, ValueError):
+            row = None
+    return (row or {}).get("winner")
+
+
+def _add_cells(total: dict, cells: dict) -> None:
+    for key, arr in cells.items():
+        total[key] = total[key] + arr if key in total else np.array(arr, dtype=float)
+
+
+def _agent_costs(rounds_by_match: dict) -> dict:
+    """{agent: cost}: the cost proven most often over the slots that played it (ties go to the higher cost)."""
+    seen: dict = {}
+    for m in rounds_by_match.values():
+        for slot, cost in proven_costs(m["rounds"]).items():
+            agent = m["agents"].get(slot)
+            if agent is not None:
+                d = seen.setdefault(agent, {})
+                d[cost] = d.get(cost, 0) + 1
+    return {a: max(d, key=lambda c: (d[c], c)) for a, d in seen.items()}
+
+
+def build(stored: dict, ctx: dict, model, full_buy: float) -> dict:
+    """{"ranking", "charges", "orbs", "held", "risk"} for a corpus. `stored` is {replay id: {round: row}} with each row
+    prepared as corpus._round_data does (clock_offset, on_known); `ctx` is the replay context. A match is keyed by its
+    `match_id`; when several replays hold one match the lowest replay id stands for it. Every figure is rounded to
+    four places and the result is JSON-encodable (`charges` is a list of [agent, player, match, lift, cost, used])."""
+    matches: dict = {}
+    for rid in sorted(stored):
+        c = (ctx or {}).get(rid)
+        if c is None:
+            continue
+        key = c.get("match_id", rid)
+        if key in matches:
+            continue
+        players = c.get("players") or {}
+        matches[key] = {"rounds": stored[rid], "ctx": c,
+                        "agents": {str(s): (p or {}).get("agent") for s, p in players.items()},
+                        "players": {str(s): (p or {}).get("player_id") for s, p in players.items()}}
+    # the ult table: every match's moments with no ult of that side up, each match kept apart to be left out of its own
+    per_match: dict = {}
+    total: dict = {}
+    for key, m in matches.items():
+        cells: dict = {}
+        for n, row in m["rounds"].items():
+            for k, arr in ult_moments(row, model, _winner(m["ctx"], n)).items():
+                util_values._acc(cells, k, arr)
+        per_match[key] = util_values.expand(cells)
+        _add_cells(total, per_match[key])
+    all_charges: list = []
+    for key, m in matches.items():
+        lifts: dict = {}
+        for n, row in m["rounds"].items():
+            won = _winner(m["ctx"], n)
+            for item in use_items(row):
+                lifts[(int(n), str(item.get("by")))] = ult_lift(row, model, item, total, per_match[key], won)["lift"]
+        all_charges += charges(m["rounds"], lifts, {"match": key, "agents": m["agents"], "players": m["players"]})
+    ranked = rank(all_charges)
+    by_match = {k: {"rounds": m["rounds"], "agents": m["agents"]} for k, m in matches.items()}
+    ctx_by_match = {k: m["ctx"] for k, m in matches.items()}
+    orbs = orb_chart(ranked, gain_pmf(by_match), _agent_costs(by_match), rounds_left(ctx_by_match))
+    return _clean({"ranking": ranked, "charges": all_charges, "orbs": orbs,
+                   "held": held_ults(by_match, ctx_by_match, full_buy), "risk": orb_risk(by_match, ctx_by_match, model)})

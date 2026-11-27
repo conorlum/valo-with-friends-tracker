@@ -668,3 +668,195 @@ def test_the_cost_is_the_mean_per_try_and_maps_are_split(monkeypatch):
     out = _risk(monkeypatch, [row])
     assert out["overall"]["tries"] == 2 and out["overall"]["cost_pp"] == pytest.approx(-10.0)
     assert [m["map"] for m in out["maps"]] == ["Ascent"] and out["maps"][0]["tries"] == 2
+
+
+# --- build: the whole block, on toy rounds and on a synthetic corpus
+
+BLOCK = {"ranking", "charges", "orbs", "held", "risk"}
+# slot 1 (Jett): round -> (start, gained, end, used). Jett uses in rounds 3 and 6 only.
+_JETT = {1: (2, 3, 5, False), 2: (5, 3, 8, False), 3: (8, 2, 2, True), 4: (2, 3, 5, False), 5: (5, 3, 8, False),
+         6: (8, 2, 2, True), 7: (2, 3, 5, False)}
+# slot 5 (Sage): full from round 3 and never used, so one wasted charge at the match's last round
+_SAGE = {1: (3, 0, 3), 2: (3, 0, 3), 3: (3, 5, 8), 4: (8, 0, 8), 5: (8, 0, 8), 6: (8, 0, 8), 7: (8, 0, 8)}
+_N_MATCHES = 8
+
+
+def ult_fixture():
+    """(stored {rid: {n: row}}, ctx): 8 matches of 7 rounds with compared ult uses (Jett), a wasted charge (Sage),
+    charging gains, non-pistol rounds where the blue team holds a ready ult, and an orb capture that ends in a death."""
+    stored, ctx = {}, {}
+    for m in range(1, _N_MATCHES + 1):
+        rounds, c_rounds, loadout = {}, {}, {}
+        for n in range(1, 8):
+            js, jg, je, ju = _JETT[n]
+            ss, sg, se = _SAGE[n]
+            casts = [_ult_cast(10.0, by=1, signals={"seen_end": 15.0})] if ju else []
+            ults = {"0": {"cap_seen": 6, "start": 2, "gained": 1, "end": 3, "used": False, "use": None},
+                    "1": {"cap_seen": 8 if ju else None, "start": js, "gained": jg, "end": je, "used": ju, "use": None},
+                    "5": {"cap_seen": 8, "start": ss, "gained": sg, "end": se, "used": False, "use": None},
+                    "6": {"cap_seen": 7, "start": 1, "gained": 1, "end": 2, "used": False, "use": None}}
+            row = _round(casts=casts, kills=[_kill(21.0, 5, 0, [5, 5])], ults=ults)
+            row["orbs"] = [{"t0": 5.0, "t1": 20.0, "end": 40.0, "slot": "0", "tries": []}]
+            rounds[n] = row
+            c_rounds[n] = {"winner": "attack" if (m + n) % 3 else "defense", "id": m * 100 + n}
+            loadout[(n, "Red")], loadout[(n, "Blue")] = 3000.0 + 200 * (n % 3), 4300.0 - 100 * n
+        stored[m] = rounds
+        ctx[m] = {"map": "Ascent", "uuid": f"u{m}", "match_id": m, "offset": 0.0, "on_known": True,
+                  "players": {0: {"player_id": 100, "agent": "Omen", "team": "Red"},
+                              1: {"player_id": 101, "agent": "Jett", "team": "Red"},
+                              5: {"player_id": 200, "agent": "Sage", "team": "Blue"},
+                              6: {"player_id": 201, "agent": "Cypher", "team": "Blue"}},
+                  "rounds": c_rounds, "loadout": loadout}
+    return stored, ctx
+
+
+def _prepared(stored, ctx):
+    from app.critutil import corpus
+
+    return {rid: {n: corpus._round_data(d, ctx[rid]) for n, d in rs.items()} for rid, rs in stored.items()}
+
+
+def _encodable(block):
+    import json
+
+    return json.loads(json.dumps(block, allow_nan=False))
+
+
+def _toy():
+    from tests.critutil.test_build import toy_corpus
+
+    return toy_corpus()
+
+
+@pytest.mark.parametrize("with_model", [True, False])
+def test_build_on_the_toy_corpus_is_json_encodable_with_and_without_a_model(with_model):
+    from app.critutil import corpus
+
+    stored, ctx = _toy()
+    out = ult_values.build(_prepared(stored, ctx), ctx, MODEL if with_model else None, corpus.FULL_BUY_THRESHOLD)
+    assert set(out) == BLOCK
+    assert out["charges"] == [] and out["orbs"]["rows"] == [] and out["risk"]["overall"]["tries"] == 0
+    assert _encodable(out) == out
+
+
+@pytest.mark.parametrize("with_model", [True, False])
+def test_build_on_the_synthetic_corpus_fills_every_part(with_model):
+    stored, ctx = ult_fixture()
+    out = ult_values.build(_prepared(stored, ctx), ctx, MODEL if with_model else None, 4200)
+    assert set(out) == BLOCK and _encodable(out) == out
+    rows = {r["agent"]: r for r in out["ranking"]["rows"]}
+    assert rows["Jett"]["n_uses"] == 2 * _N_MATCHES and rows["Jett"]["n_charges"] > 0
+    assert rows["Sage"]["wasted"] == _N_MATCHES and rows["Sage"]["n_uses"] == 0
+    if with_model:
+        assert rows["Jett"]["value"] is not None
+    charges = out["charges"]
+    assert all(isinstance(c, list) and len(c) == 6 for c in charges)
+    assert sum(1 for c in charges if c[5] == 0) == _N_MATCHES and sum(1 for c in charges if c[5] == 1) == 2 * _N_MATCHES
+    assert {c[2] for c in charges} == set(range(1, _N_MATCHES + 1))
+    if with_model:
+        assert any(c[0] == "Jett" and c[3] is not None for c in charges)
+    jett = [r for r in out["orbs"]["rows"] if r["agent"] == "Jett"]
+    assert out["orbs"]["max_cost"] == 8 and len(jett) == 1 and jett[0]["cost"] == 8 and len(jett[0]["cells"]) == 8
+    assert out["held"]["rounds"] > 0 and out["held"]["matches"] == _N_MATCHES and out["held"]["any"]["pp"] is not None
+    assert out["risk"]["overall"]["tries"] == 7 * _N_MATCHES and out["risk"]["overall"]["deaths"] == 7 * _N_MATCHES
+    assert [m["map"] for m in out["risk"]["maps"]] == ["Ascent"]
+
+
+def test_build_figures_have_at_most_four_places():
+    stored, ctx = ult_fixture()
+    out = ult_values.build(_prepared(stored, ctx), ctx, MODEL, 4200)
+
+    def walk(x):
+        if isinstance(x, float):
+            assert round(x, 4) == x, x
+        elif isinstance(x, dict):
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    walk(out)
+
+
+def test_build_costs_are_the_agents_most_common_proven_cost():
+    stored, ctx = ult_fixture()
+    for rid in (1, 2, 3):                     # three matches where the second Jett proves another cost
+        stored[rid][3]["ults"]["1"]["cap_seen"] = 9
+        stored[rid][6]["ults"]["1"]["cap_seen"] = 9
+    out = ult_values.build(_prepared(stored, ctx), ctx, MODEL, 4200)
+    assert [r["cost"] for r in out["orbs"]["rows"] if r["agent"] == "Jett"] == [8]
+    for rid in range(4, 8):
+        stored[rid][3]["ults"]["1"]["cap_seen"] = 9
+        stored[rid][6]["ults"]["1"]["cap_seen"] = 9
+    out = ult_values.build(_prepared(stored, ctx), ctx, MODEL, 4200)
+    assert [r["cost"] for r in out["orbs"]["rows"] if r["agent"] == "Jett"] == [9]
+
+
+def test_a_match_with_two_replays_counts_once_by_its_lowest_replay():
+    stored, ctx = ult_fixture()
+    stored[11], ctx[11] = stored[1], {**ctx[1], "uuid": "dup"}      # another replay of match 1
+    one = ult_values.build(_prepared(*ult_fixture()), ult_fixture()[1], MODEL, 4200)
+    two = ult_values.build(_prepared(stored, ctx), ctx, MODEL, 4200)
+    assert two == one
+
+
+def test_the_build_does_not_change_its_inputs():
+    import copy
+
+    stored, ctx = ult_fixture()
+    prepared = _prepared(stored, ctx)
+    before = copy.deepcopy((prepared, ctx))
+    ult_values.build(prepared, ctx, MODEL, 4200)
+    assert (prepared, ctx) == before
+
+
+def test_finish_values_adds_the_block_and_accepts_an_empty_build():
+    from app.critutil import corpus
+
+    stored, ctx = ult_fixture()
+    got = corpus.finish_values({}, stored, ctx, MODEL)
+    assert set(got) == {"ults"}
+    assert got["ults"] == ult_values.build(_prepared(stored, ctx), ctx, MODEL, corpus.FULL_BUY_THRESHOLD)
+    base = {"rows": [1]}
+    assert corpus.finish_values(base, stored, ctx, None) is base and "ults" in base and base["rows"] == [1]
+    assert corpus.finish_values({}, {}, {}, None)["ults"]["charges"] == []
+
+
+def test_the_synthetic_block_is_the_same_through_ensure_values_and_compute(tmp_path, monkeypatch):
+    import json
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from app.coach import areas
+    from app.critutil import corpus
+    from app.services import replay_util
+    from tests.critutil.test_corpus_codec import AT, parts_for
+
+    stored, ctx = ult_fixture()
+    monkeypatch.setattr(corpus, "corpus_from_inputs", lambda *a, **k: {"rows": []})
+    monkeypatch.setattr(replay_util, "corpus_from_inputs", lambda *a, **k: {"rows": []})
+    # the local path
+    monkeypatch.setattr(areas, "AREAS_DIR", tmp_path)
+    monkeypatch.setattr(areas, "_git_root", lambda: None)
+    monkeypatch.setattr(replay_util, "friend_players", lambda db: set())
+    monkeypatch.setattr(replay_util, "current_rows", lambda db, **kw: [])
+    monkeypatch.setattr(replay_util, "_values_row", lambda db: None)
+    monkeypatch.setattr(replay_util.util_model, "ensure", lambda db: MODEL)
+    monkeypatch.setattr(replay_util.util_model, "load", lambda db: MODEL)
+    monkeypatch.setattr(replay_util.util_model, "rebuild_lock", lambda *args: nullcontext())
+    monkeypatch.setattr(replay_util, "corpus_inputs", lambda db, rows: (stored, ctx, set()))
+    saved = []
+    monkeypatch.setattr(replay_util, "_store_values", lambda db, key, data: saved.append(data))
+    replay_util.ensure_values(SimpleNamespace(expire_all=lambda: None, commit=lambda: None))
+    local = json.loads(corpus.encode_output(saved[0]["ults"]))
+    # the worker path: encoded, packed, decoded, computed
+    rows = [(rid, n, f"fp-{rid}-{n}", AT, data) for rid, rs in stored.items() for n, data in rs.items()]
+    parts = parts_for(ctx, set(), rows)
+    encoded = corpus.encode_context(ctx, set(), MODEL, rows, set(), False, parts)
+    path = tmp_path / "inputs.tar"
+    corpus.pack_inputs(encoded, {corpus.row_key(*r[:4]): corpus.encode_round(r[4]) for r in rows}, {}, path)
+    worker = json.loads(corpus.encode_output(corpus.compute(corpus.unpack_inputs(path))["values"]["ults"]))
+    assert worker == local
+    assert local["ranking"]["rows"] and local["orbs"]["rows"] and local["held"]["rounds"] and local["risk"]["overall"]["tries"]
+    assert local["charges"]

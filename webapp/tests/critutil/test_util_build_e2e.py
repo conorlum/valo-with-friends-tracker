@@ -148,7 +148,9 @@ def rows_of(box):
 
 def expected_values(box, model):
     rows = [(m, 1, FINGERPRINT, COMPUTED, box.stored[m][1]) for m in sorted(box.ctx)]
-    values = corpus.corpus_from_inputs((box.stored, box.ctx, {FRIEND}), rows, model)
+    values = corpus.finish_values(corpus.corpus_from_inputs((box.stored, box.ctx, {FRIEND}), rows, model),
+                                  box.stored, box.ctx, model)
+    assert "ults" in values
     return json.loads(corpus.encode_output(values))
 
 

@@ -74,7 +74,9 @@ def test_full_build_round_trip_preserves_types_order_and_values(tmp_path, monkey
     with tarfile.open(path) as archive:
         assert set(archive.getnames()) == {"context.json", *(f"rounds/{key}.json" for key in blobs)}
     inputs = corpus.unpack_inputs(path)
-    expected = corpus.corpus_from_inputs((stored, ctx, {FRIEND}), rows, model, painted_table={})
+    expected = corpus.finish_values(corpus.corpus_from_inputs((stored, ctx, {FRIEND}), rows, model, painted_table={}),
+                                    stored, ctx, model)
+    assert "ults" in expected
     result = corpus.compute(inputs)
     assert result["values"] == expected
     assert json.dumps(result["values"], sort_keys=True) == json.dumps(expected, sort_keys=True)
@@ -196,7 +198,8 @@ def test_compute_refit_uses_payload_match_ids_and_the_resulting_estimator_key(tm
     result = corpus.compute(corpus.unpack_inputs(path))
     win = util_model.refit_from(obs, excluded) if refit else None
     assert result["win"] == win
-    assert result["values"] == corpus.corpus_from_inputs((stored, ctx, {FRIEND}), rows, win, painted_table={})
+    assert result["values"] == corpus.finish_values(
+        corpus.corpus_from_inputs((stored, ctx, {FRIEND}), rows, win, painted_table={}), stored, ctx, win)
     assert result["values_key"] == corpus.values_key(parts, (win or {}).get("key"))
     if refit:
         assert result["values_key"] != corpus.values_key(parts, None)
