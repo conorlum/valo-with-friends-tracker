@@ -382,3 +382,160 @@ def orb_chart(ranked, pmfs: dict, costs: dict, left_dist: dict) -> dict:
         muted = lo is None or hi is None or lo <= 0 <= hi
         rows.append({"agent": agent, "cost": cost, "muted": muted, "cells": cells})
     return {"max_cost": max((r["cost"] for r in rows), default=0), "rows": rows}
+
+
+# --- held ults and orb risk
+# Both take `rounds_by_match` = {match: {"rounds": {round int: util row}, ...}} (as gain_pmf) and `ctx` = {match:
+# {"map", "players": {slot: {"team", ...}}, "rounds": {n: {"winner": a side}}, "loadout": {(n, team): avg}}} with the
+# same match keys. A slot's team is ctx players[slot]["team"], its side that round is the util row's sides[slot], and
+# a round's winner is ctx rounds[n]["winner"] (a side, "attack" or "defense").
+
+_PISTOL_ROUNDS = (1, 13)    # corpus.PISTOL_ROUNDS (not imported: ult_values may not import corpus)
+ORB_CAPTURE_S = 2.0         # a capture is [t1 - 2 s, t1]: the orb data has no capture start (declared)
+ORB_RISK_S = 3.0            # a death this long after a try ends still counts
+_BUY_CATS = ((True, True), (True, False), (False, True))     # joint buy (first full, second full); other/other = reference
+
+
+def _held_row(row: dict, m_ctx: dict, costs: dict, n: int, full_buy: float):
+    """One round's regression row [won, ready gap, used gap, unused gap, loadout gap / 1000, side, buy x3], or None
+    when the round can't be used (pistol, no winner, a player missing a start or proven cost, a team without a loadout)."""
+    if n in _PISTOL_ROUNDS:
+        return None
+    players = m_ctx.get("players") or {}
+    winner = ((m_ctx.get("rounds") or {}).get(n) or {}).get("winner")
+    teams = sorted({(p or {}).get("team") for p in players.values()} - {None})
+    if winner not in _SIDES or len(teams) != 2:
+        return None
+    ults, sides = row.get("ults") or {}, row.get("sides") or {}
+    ready = {t: 0 for t in teams}
+    used = {t: 0 for t in teams}
+    for slot, p in players.items():
+        slot = str(slot)
+        u = ults.get(slot) or {}
+        if u.get("start") is None or slot not in costs or sides.get(slot) not in _SIDES:
+            return None
+        if u["start"] >= costs[slot]:
+            t = p["team"]
+            ready[t] += 1
+            used[t] += 1 if (u.get("used") or u.get("use")) else 0
+    loads = [(m_ctx.get("loadout") or {}).get((n, t)) for t in teams]
+    if any(v is None for v in loads):
+        return None
+    first, second = teams
+    first_slot = next(str(s) for s, p in players.items() if p["team"] == first)
+    side = sides[first_slot]
+    won = 1.0 if side == winner else 0.0
+    ready_gap = ready[first] - ready[second]
+    used_gap = used[first] - used[second]
+    unused_gap = (ready[first] - used[first]) - (ready[second] - used[second])
+    cat = (loads[0] >= full_buy, loads[1] >= full_buy)
+    return [won, ready_gap, used_gap, unused_gap, (loads[0] - loads[1]) / 1000.0, 1.0 if side == "attack" else -1.0,
+            *[1.0 if cat == c else 0.0 for c in _BUY_CATS]]
+
+
+def _solve(xtx, xty):
+    return np.linalg.lstsq(xtx, xty, rcond=None)[0]
+
+
+def held_ults(rounds_by_match: dict, ctx: dict, full_buy: float = 4200) -> dict:
+    """{"rounds", "matches", "any", "used", "unused"}: the change in the first team's round-win chance per extra ready
+    ult it holds at the round's start (pp), same match (each match's mean removed), loadout gap and joint buy category.
+    "any" regresses on the ready gap; "used"/"unused" split it by whether the ult was used that round. Each is
+    {pp, lo, hi}; a 95% CI by whole-match bootstrap (1000 draws, seed 0)."""
+    cols_any = [1, 4, 5, 6, 7, 8]
+    cols_split = [2, 3, 4, 5, 6, 7, 8]
+    per_match = []
+    for mk, m in rounds_by_match.items():
+        m_ctx = (ctx or {}).get(mk) or {}
+        urows = (m or {}).get("rounds") or {}
+        costs = proven_costs(urows)
+        rows = [r for n, row in sorted(urows.items(), key=lambda kv: int(kv[0]))
+                if (r := _held_row(row, m_ctx, costs, int(n), full_buy)) is not None]
+        if rows:
+            a = np.array(rows, dtype=float)
+            per_match.append(a - a.mean(axis=0))    # the match's own mean removed from y and every column
+    out = {"rounds": sum(len(a) for a in per_match), "matches": len(per_match)}
+    nulls = {"pp": None, "lo": None, "hi": None}
+    designs = {"any": (cols_any, 0), "used": (cols_split, 0), "unused": (cols_split, 1)}
+    if not per_match:
+        return out | {k: dict(nulls) for k in designs}
+    sums = {}
+    for name, cols in (("any", cols_any), ("split", cols_split)):
+        sums[name] = [(a[:, cols].T @ a[:, cols], a[:, cols].T @ a[:, 0]) for a in per_match]
+    for key, (cols, idx) in designs.items():
+        parts = sums["any" if key == "any" else "split"]
+
+        def fn(rows, idx=idx):
+            return float(_solve(sum(r[0] for r in rows), sum(r[1] for r in rows))[idx]) * 100.0
+
+        lo, hi = cluster_ci([[p] for p in parts], fn)
+        out[key] = {"pp": fn(parts, idx), "lo": lo, "hi": hi}
+    return out
+
+
+def _intervals(row: dict) -> list:
+    """[(slot, start, end)] of the row's orb tries, every interval cut at t_decided (one whose start is past it is
+    dropped: the round was over)."""
+    td = row.get("t_decided")
+    out = []
+    for orb in row.get("orbs") or ():
+        if orb.get("t1") is not None and orb.get("slot") is not None:
+            out.append((str(orb["slot"]), orb["t1"] - ORB_CAPTURE_S, orb["t1"]))
+        for t in orb.get("tries") or ():
+            if len(t) < 3 or t[0] is None or t[2] is None:
+                continue
+            end = t[1] if t[1] is not None else td
+            out.append((str(t[2]), t[0], end))
+    cut = []
+    for slot, a, b in out:
+        if td is not None:
+            if a > td:
+                continue
+            b = td if b is None else min(b, td)
+        if b is None:
+            continue
+        cut.append((slot, a, b))
+    return cut
+
+
+def orb_risk(rounds_by_match: dict, ctx: dict, model) -> dict:
+    """{"overall": {...}, "maps": [{"map", ...}]}, each {tries, deaths, cost_pp, lo, hi}. Every capture and let-go try
+    is one try; the capturer's death inside it or within ORB_RISK_S after it counts once, at the signed change in
+    that player's side's win chance (minus util_values.swings of the kill). cost_pp is the mean per try."""
+    by_map: dict = {}
+    for mk, m in rounds_by_match.items():
+        map_name = ((ctx or {}).get(mk) or {}).get("map")
+        costs, deaths = [], 0
+        for _n, row in sorted(((m or {}).get("rounds") or {}).items(), key=lambda kv: int(kv[0])):
+            tries = _intervals(row)
+            if not tries:
+                continue
+            sw = util_values.swings(row, model)
+            td = row.get("t_decided")
+            kills = sorted((k for k in row.get("kills") or () if td is None or k["t"] <= td), key=lambda k: k["t"])
+            for slot, a, b in tries:
+                hit = next((k for k in kills if str(k["victim"]) == slot and a <= k["t"] <= b + ORB_RISK_S), None)
+                if hit is None:
+                    costs.append(0.0)
+                else:
+                    deaths += 1
+                    costs.append(-sw.get(util_values._kill_key(hit["t"], hit["killer"], hit["victim"]), 0.0))
+        if costs:
+            by_map.setdefault(map_name, []).append((costs, deaths))
+
+    def summary(groups):
+        cost_groups = [g[0] for g in groups]
+        tries = sum(len(c) for c in cost_groups)
+        if not tries:
+            return {"tries": 0, "deaths": 0, "cost_pp": None, "lo": None, "hi": None}
+
+        def mean_pp(rows):
+            flat = [x for r in rows for x in r]
+            return 100.0 * sum(flat) / len(flat) if flat else None
+
+        lo, hi = cluster_ci([[c] for c in cost_groups], mean_pp)
+        return {"tries": tries, "deaths": sum(g[1] for g in groups), "cost_pp": mean_pp(cost_groups), "lo": lo, "hi": hi}
+
+    everything = [g for gs in by_map.values() for g in gs]
+    maps = [{"map": name, **summary(gs)} for name, gs in sorted(by_map.items(), key=lambda kv: str(kv[0]))]
+    return {"overall": summary(everything), "maps": maps}

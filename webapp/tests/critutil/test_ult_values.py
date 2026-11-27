@@ -485,3 +485,186 @@ def test_negative_value_negative_cells_muted_when_ci_spans_zero_and_thin_agents_
     a, b = out["rows"]
     assert min(a["cells"]) < 0 and not a["muted"]
     assert b["muted"]
+
+
+# --- W7: held ults and orb risk
+
+_RED = ["0", "1", "2", "3", "4"]
+_BLUE = ["5", "6", "7", "8", "9"]
+_NON_PISTOL = [n for n in range(2, 26) if n not in (12, 13)][:20]
+
+
+def _held_round(red_ready, blue_ready, red_won, n, red_used=0, blue_used=0, drop_start=None):
+    sides = {s: ("attack" if n % 2 else "defense") for s in _RED} | {s: ("defense" if n % 2 else "attack") for s in _BLUE}
+    ults = {}
+    for team, ready, used in ((_RED, red_ready, red_used), (_BLUE, blue_ready, blue_used)):
+        for i, s in enumerate(team):
+            r = i < ready
+            ults[s] = {"cap_seen": 8, "start": 8 if r else 0, "used": r and i < used, "use": None}
+    if drop_start:
+        ults[drop_start].pop("start")
+    row = _round(ults=ults)
+    row["sides"] = sides
+    red_side = sides["0"]
+    return row, ("attack" if (red_side == "attack") == red_won else "defense")
+
+
+def _held_ctx(match, rows_won, loadouts=None):
+    players = {s: {"player_id": int(s), "agent": "A", "team": "Red"} for s in _RED}
+    players |= {s: {"player_id": int(s), "agent": "A", "team": "Blue"} for s in _BLUE}
+    rounds = {n: {"winner": w, "id": n} for n, w in rows_won.items()}
+    loadout = {}
+    for n in rows_won:
+        lo = (loadouts or {}).get(n, (3000, 3000))
+        loadout[(n, "Red")], loadout[(n, "Blue")] = lo
+    return {"match_id": match, "map": "Ascent", "players": players, "rounds": rounds, "loadout": loadout}
+
+
+def _sim(seed, n_matches, make):
+    """make(rng, match_index, n) -> (red_ready, blue_ready, p_red_wins, loadouts)."""
+    rng = np.random.default_rng(seed)
+    by, ctx = {}, {}
+    for m in range(n_matches):
+        rounds, won, loads = {}, {}, {}
+        for n in _NON_PISTOL:
+            rr, br, p, lo = make(rng, m, n)
+            row, winner = _held_round(rr, br, bool(rng.random() < p), n)
+            rounds[n], won[n], loads[n] = row, winner, lo
+        by[f"m{m}"] = {"rounds": rounds}
+        ctx[f"m{m}"] = _held_ctx(f"m{m}", won, loads)
+    return by, ctx
+
+
+def test_each_ready_ult_adding_ten_points_reads_about_ten():
+    def make(rng, m, n):
+        a, b = int(rng.integers(0, 3)), int(rng.integers(0, 3))
+        return a, b, 0.5 + 0.1 * (a - b), (3000, 3000)
+    by, ctx = _sim(1, 150, make)
+    out = ult_values.held_ults(by, ctx)
+    assert abs(out["any"]["pp"] - 10) < 2
+    assert out["any"]["lo"] < out["any"]["pp"] < out["any"]["hi"]
+    assert out["rounds"] == 150 * 20 and out["matches"] == 150
+
+
+def test_a_better_team_in_one_match_does_not_move_the_estimate():
+    def make(rng, m, n):
+        # in even matches red holds more ults and wins 90%; in odd ones blue does; no true ult effect
+        if m % 2 == 0:
+            return int(rng.integers(1, 3)), int(rng.integers(0, 2)), 0.9, (3000, 3000)
+        return int(rng.integers(0, 2)), int(rng.integers(1, 3)), 0.1, (3000, 3000)
+    by, ctx = _sim(2, 100, make)
+    assert abs(ult_values.held_ults(by, ctx)["any"]["pp"]) < 2
+
+
+def test_full_buys_that_win_and_hold_more_ults_leave_no_ult_effect():
+    def make(rng, m, n):
+        rf, bf = rng.random() < 0.5, rng.random() < 0.5
+        a = int(rng.integers(0, 3)) + (1 if rf and not bf else 0)
+        b = int(rng.integers(0, 3)) + (1 if bf and not rf else 0)
+        p = 0.5 + (0.2 if rf and not bf else 0) - (0.2 if bf and not rf else 0)
+        return a, b, p, (4500 if rf else 2000, 4500 if bf else 2000)
+    by, ctx = _sim(3, 150, make)
+    assert abs(ult_values.held_ults(by, ctx)["any"]["pp"]) < 2
+
+
+def test_pistol_rounds_and_rounds_missing_a_start_are_left_out():
+    won, rounds = {}, {}
+    for n in (1, 13, 2, 3, 4):
+        row, w = _held_round(2, 1, True, n, drop_start="3" if n == 4 else None)
+        rounds[n], won[n] = row, w
+    out = ult_values.held_ults({"m": {"rounds": rounds}}, {"m": _held_ctx("m", won)})
+    assert out["rounds"] == 2
+
+
+def test_a_round_with_no_loadout_for_a_team_is_left_out():
+    row, w = _held_round(2, 1, True, 2)
+    c = _held_ctx("m", {2: w})
+    del c["loadout"][(2, "Blue")]
+    assert ult_values.held_ults({"m": {"rounds": {2: row}}}, {"m": c})["rounds"] == 0
+
+
+def test_the_used_and_unused_split_has_its_own_estimates():
+    rng = np.random.default_rng(5)
+    by, ctx = {}, {}
+    for m in range(250):
+        rounds, won = {}, {}
+        for n in _NON_PISTOL:
+            ready = int(rng.integers(1, 3))
+            used = int(rng.integers(0, ready + 1))
+            # only a used ult swings the round: +20 points each
+            p = 0.5 + 0.2 * used
+            row, w = _held_round(ready, 0, bool(rng.random() < p), n, red_used=used)
+            rounds[n], won[n] = row, w
+        by[f"m{m}"], ctx[f"m{m}"] = {"rounds": rounds}, _held_ctx(f"m{m}", won)
+    out = ult_values.held_ults(by, ctx)
+    assert abs(out["used"]["pp"] - 20) < 4 and abs(out["unused"]["pp"]) < 4
+    assert out["used"]["lo"] < out["used"]["pp"] < out["used"]["hi"]
+
+
+def test_no_rounds_gives_none_figures():
+    out = ult_values.held_ults({}, {})
+    assert out["rounds"] == 0 and out["any"]["pp"] is None
+
+
+def _orb_row(orbs, kills, t_decided=60.0):
+    return _round(kills=kills, t_decided=t_decided) | {"orbs": orbs}
+
+
+def _risk(monkeypatch, rows, swing=0.2):
+    monkeypatch.setattr(util_values, "swings", lambda rd, model: {
+        util_values._kill_key(k["t"], k["killer"], k["victim"]): swing for k in rd["kills"]})
+    return ult_values.orb_risk({"m": {"rounds": dict(enumerate(rows, 1))}}, {"m": {"map": "Ascent"}}, None)
+
+
+def _let_go(t, t1, slot="0"):
+    return {"t0": t - 1, "t1": None, "end": None, "slot": slot, "tries": [[t, t1, slot]]}
+
+
+def test_a_death_2_9_s_after_a_capture_counts_and_3_1_s_does_not(monkeypatch):
+    cap = {"t0": 5.0, "t1": 20.0, "end": 40.0, "slot": "0", "tries": []}
+    hit = _risk(monkeypatch, [_orb_row([cap], [_kill(22.9, 5, 0, [5, 5])])])
+    assert hit["overall"]["deaths"] == 1 and hit["overall"]["tries"] == 1
+    miss = _risk(monkeypatch, [_orb_row([cap], [_kill(23.1, 5, 0, [5, 5])])])
+    assert miss["overall"]["deaths"] == 0 and miss["overall"]["cost_pp"] == 0
+
+
+def test_a_death_just_before_the_capture_ends_counts_from_two_seconds_earlier(monkeypatch):
+    cap = {"t0": 5.0, "t1": 20.0, "end": 40.0, "slot": "0", "tries": []}
+    assert _risk(monkeypatch, [_orb_row([cap], [_kill(18.1, 5, 0, [5, 5])])])["overall"]["deaths"] == 1
+    assert _risk(monkeypatch, [_orb_row([cap], [_kill(17.9, 5, 0, [5, 5])])])["overall"]["deaths"] == 0
+
+
+def test_a_let_go_with_no_t1_runs_to_t_decided(monkeypatch):
+    orb = _let_go(10.0, None)
+    row = _orb_row([orb], [_kill(35.0, 5, 0, [5, 5])], t_decided=40.0)
+    assert _risk(monkeypatch, [row])["overall"]["deaths"] == 1
+
+
+def test_a_death_after_t_decided_does_not_count(monkeypatch):
+    orb = _let_go(10.0, None)
+    row = _orb_row([orb], [_kill(41.0, 5, 0, [5, 5])], t_decided=40.0)
+    assert _risk(monkeypatch, [row])["overall"]["deaths"] == 0
+
+
+def test_a_killer_swing_of_plus_point_two_costs_minus_point_two_and_the_sign_is_kept(monkeypatch):
+    orb = _let_go(10.0, 12.0)
+    row = _orb_row([orb], [_kill(11.0, 5, 0, [5, 5])])
+    assert _risk(monkeypatch, [row], swing=0.2)["overall"]["cost_pp"] == pytest.approx(-20.0)
+    assert _risk(monkeypatch, [row], swing=-0.1)["overall"]["cost_pp"] == pytest.approx(10.0)
+
+
+def test_two_deaths_cannot_count_on_one_try_and_a_teammates_death_does_not(monkeypatch):
+    orb = _let_go(10.0, 20.0)
+    two = _orb_row([orb], [_kill(11.0, 5, 0, [5, 5]), _kill(12.0, 6, 0, [4, 5])])
+    out = _risk(monkeypatch, [two])
+    assert out["overall"]["deaths"] == 1 and out["overall"]["cost_pp"] == pytest.approx(-20.0)
+    mate = _orb_row([orb], [_kill(11.0, 5, 1, [5, 5])])
+    assert _risk(monkeypatch, [mate])["overall"]["deaths"] == 0
+
+
+def test_the_cost_is_the_mean_per_try_and_maps_are_split(monkeypatch):
+    died, safe = _let_go(10.0, 12.0), _let_go(30.0, 32.0)
+    row = _orb_row([died, safe], [_kill(11.0, 5, 0, [5, 5])])
+    out = _risk(monkeypatch, [row])
+    assert out["overall"]["tries"] == 2 and out["overall"]["cost_pp"] == pytest.approx(-10.0)
+    assert [m["map"] for m in out["maps"]] == ["Ascent"] and out["maps"][0]["tries"] == 2
