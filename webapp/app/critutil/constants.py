@@ -125,7 +125,8 @@ GUN_WEIGHT = 1.0
 # Chamber 37 Tour de Force kills, Raze 8 rocket, Jett 3 knife, Neon 3 beam, the rest their guns.
 # ("window", None): every kill the owner made while the ult was on (Reyna's Empress: her own guns, faster and
 # stronger, to her death or the round's end; the owner: the whole kill too).
-ULT_WEAPONS = {"Chamber": ("shot", "Tour de Force"), "Neon": ("shot", None),
+# Neon's beam shots carry gun "Overdrive" now, and None in older blobs (D11): both prove it; a tuple is any of them.
+ULT_WEAPONS = {"Chamber": ("shot", "Tour de Force"), "Neon": ("shot", (None, "Overdrive")),
                "Jett": ("damage", "Wushu_X_Dagger_Production"), "Raze": ("damage", "Clay_X_Rocket"),
                "Reyna": ("window", None)}
 ULT_SHOT_MATCH_S = 0.05

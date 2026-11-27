@@ -451,10 +451,14 @@ def _knife(t, by, target):
     return {**damage(t, by, target), "code": "Wushu", "name": "X_Dagger_Production", "from": "equippable"}
 
 
+def _hold(t, by=0, name="Overdrive", gun=None):
+    return {"k": "hold", "t": t, "by": by, "gun": gun, "cat": "ability", "name": name}
+
+
 @pytest.mark.parametrize("agent, util", [
     # the real rows' shapes (2026-10-25): Neon's beam is a shot with no gun; Jett's knives and Raze's rocket are
     # the damage run that ends at the kill
-    ("Neon", [shot(11.0, 0, gun=None), shot(13.0, 0, gun=None), shot(16.0, 0, gun="Vandal")]),
+    ("Neon", [_hold(11.0), shot(11.0, 0, gun=None), shot(13.0, 0, gun=None), shot(16.0, 0, gun="Vandal")]),
     ("Jett", [_knife(11.0, 0, 6), _knife(13.0, 0, 5), damage(16.0, 0, 6)]),
     ("Raze", [toy_ability("Clay", "X_Rocket", 300, 200, 0, t=12.0, t1=13.0, kind="Projectile"),
               {**damage(13.0, 0, 5), "code": "Clay", "name": "X_Rocket", "from": "causer"}, damage(16.0, 0, 6)]),
@@ -493,10 +497,132 @@ def test_jett_use_is_the_first_knife_hit_from_the_equippable():
     assert use["signals"] == {"ult_end": None, "death": None}
 
 
-def test_neon_use_is_the_first_shot_with_no_gun():
-    util = [shot(7.0, 0, gun="Vandal"), shot(11.0, 0, gun=None)]
+def test_neon_use_is_the_first_overdrive_hold():
+    util = [shot(7.0, 0, gun="Vandal"), _hold(14.0), _hold(11.0), shot(11.0, 0, gun=None)]
     out = run(util, player_state=ult_state(0), agents={0: "Neon"})
     assert out["ults"]["0"]["use"]["t"] == 11.0
+
+
+def test_neon_hold_alone_is_a_use_and_a_shot_alone_is_not():
+    out = run([_hold(11.0)], player_state=ult_state(0), agents={0: "Neon"})
+    assert out["ults"]["0"]["use"]["t"] == 11.0 and out["ults"]["0"]["used"] is True
+    for shots in ([shot(11.0, 0, gun=None)], [shot(11.0, 0, gun="Overdrive")], [_hold(9.0, name="Other")]):
+        out = run(shots, player_state=ult_state(0), agents={0: "Neon"})
+        assert out["ults"]["0"]["use"]["t"] is None and out["ults"]["0"]["used"] is False
+
+
+def test_neon_hold_after_a_revive_counts():
+    out = run_lives({0: [[0.0, 5.0], [14.0, None]]}, [_hold(16.0)], player_state=ult_state(0), agents={0: "Neon"})
+    assert out["ults"]["0"]["use"]["t"] == 16.0
+
+
+@pytest.mark.parametrize("gun, hit", [("Overdrive", True), (None, True), ("Vandal", False)])
+def test_neon_ult_kill_proof_accepts_overdrive_or_no_gun(gun, hit):
+    util = [_hold(11.0), shot(13.0, 0, gun=gun)]
+    out = run(util, kills=[kill(13.0, 0, 5)], player_state=ult_state(0, drop=40.0), agents={0: "Neon"})
+    (c,) = [c for c in out["casts"] if c["type"] == "ult"]
+    assert bool([k for k in c["kills"] if k["ev"] == "ult_weapon"]) is hit
+
+
+# --- D11: Sage, Clove, Sova and Yoru uses are a drop in the ult line
+
+def run_lives(alive, util=(), kills=(), player_state=None, agents=None, t_end=30.0, t_decided=None):
+    """Like `run`, with `alive` = {slot: [[start, end or None], ...]} replacing those slots' lives."""
+    from app.control import engine as ce
+    from tests.replays.control_toys import blob
+
+    data = blob(players(), t_end=t_end, t_decided=t_decided, util=list(util), deaths={k["victim"]: k["t"] for k in kills})
+    data["kills"] = list(kills)
+    for slot, ivs in alive.items():
+        data["alive"][str(slot)] = [list(iv) for iv in ivs]
+    for p in data["players"]:
+        if p["slot"] in (agents or {}):
+            p["agent"] = agents[p["slot"]]
+    data["player_state"] = player_state
+    return extract.round_util(ce.RoundInputs(data, GEO, ce.ControlLink()), data)
+
+
+def drops(*times, slot=0, start=8):
+    return {"version": 1, "ult": {str(slot): [{"t": -30.0, "n": start}] + [
+        {"t": t, "n": 0 if i % 2 == 0 else start} for i, t in enumerate(times)]}}
+
+
+def test_sage_drop_with_a_teammates_new_life_is_a_use():
+    alive = {1: [[0.0, 10.0], [20.0, None]]}
+    out = run_lives(alive, kills=[kill(10.0, 5, 1)], player_state=drops(20.0), agents={0: "Sage"})
+    assert out["ults"]["0"]["use"]["t"] == 20.0 and out["ults"]["0"]["used"] is True
+
+
+def test_sage_drop_without_a_new_life_is_no_use():
+    out = run_lives({}, player_state=drops(20.0), agents={0: "Sage"})
+    assert out["ults"]["0"]["use"] is None and out["ults"]["0"]["used"] is False
+
+
+def test_sage_new_life_on_the_other_side_or_her_own_is_not_the_proof():
+    # an enemy revived, or Sage's own new life: neither
+    out = run_lives({5: [[0.0, 10.0], [20.0, None]]}, kills=[kill(10.0, 0, 5)], player_state=drops(20.0),
+                    agents={0: "Sage"})
+    assert out["ults"]["0"]["use"] is None
+
+
+def test_clove_drop_with_their_own_new_life_is_a_use_after_dying():
+    alive = {0: [[0.0, 10.0], [15.0, None]]}
+    out = run_lives(alive, kills=[kill(10.0, 5, 0)], player_state=drops(15.0), agents={0: "Clove"})
+    assert out["ults"]["0"]["use"]["t"] == 15.0 and out["ults"]["0"]["used"] is True
+    assert len([c for c in out["casts"] if c.get("from_use")]) == 1
+
+
+def test_clove_drop_without_a_new_life_is_no_use():
+    out = run_lives({0: [[0.0, 10.0]]}, kills=[kill(10.0, 5, 0)], player_state=drops(15.0), agents={0: "Clove"})
+    assert out["ults"]["0"]["use"] is None
+
+
+def test_drop_use_t_is_the_same_with_string_and_int_keys():
+    line = drops(20.0)["ult"]["0"]
+    lives = {0: [(0.0, 30.0)], 1: [(0.0, 10.0), (20.0, float("inf"))], 5: [(0.0, 30.0)]}
+    sides = {0: "A", 1: "A", 5: "B"}
+    s_lives = {str(k): [[a, None if b == float("inf") else b] for a, b in v] for k, v in lives.items()}
+    s_sides = {str(k): v for k, v in sides.items()}
+    for agent in ("Sage", "Sova", "Yoru"):
+        assert extract.drop_use_t(agent, 0, line, [], lives, sides, 30.0) == 20.0
+        assert extract.drop_use_t(agent, 0, line, [], s_lives, s_sides, 30.0) == 20.0
+    assert extract.drop_use_t("Clove", 0, line, [], lives, sides, 30.0) is None
+    clove_lives = {**lives, 0: [(0.0, 10.0), (20.0, float("inf"))]}
+    s_clove = {**s_lives, "0": [[0.0, 10.0], [20.0, None]]}
+    assert extract.drop_use_t("Clove", 0, line, [], clove_lives, sides, 30.0) == 20.0
+    assert extract.drop_use_t("Clove", 0, line, [], s_clove, s_sides, 30.0) == 20.0
+
+
+def test_sova_drop_is_a_use_and_no_drop_is_none():
+    out = run([], player_state=drops(12.0), agents={0: "Sova"})
+    assert out["ults"]["0"]["use"]["t"] == 12.0
+    assert out["ults"]["0"]["use"]["signals"] == {"ult_end": None, "death": None}
+    out = run([], player_state=ult_state(0), agents={0: "Sova"})
+    assert out["ults"]["0"]["use"] is None and out["ults"]["0"]["used"] is False
+
+
+def test_yoru_use_is_the_drop_not_the_equip():
+    equip = {"k": "equip", "t": 9.0, "by": 0, "code": "Stealth", "name": "X_Teleport"}
+    out = run([], player_state=drops(12.0), agents={0: "Yoru"})
+    assert out["ults"]["0"]["use"]["t"] == 12.0, "no equip row needed"
+    out = run([equip], player_state=ult_state(0), agents={0: "Yoru"})
+    assert out["ults"]["0"]["use"] is None, "an equip with no drop is no use"
+
+
+def test_a_drop_after_the_round_is_decided_is_no_use_and_the_first_of_two_is_the_use():
+    for agent in ("Sova", "Yoru"):
+        out = run([], player_state=drops(25.0), agents={0: agent}, t_end=30.0)
+        assert out["ults"]["0"]["use"]["t"] == 25.0
+        out = run_lives({}, player_state=drops(25.0), agents={0: agent}, t_decided=20.0)
+        assert out["ults"]["0"]["use"] is None
+    line = {"version": 1, "ult": {"0": [{"t": -30.0, "n": 8}, {"t": 10.0, "n": 0}, {"t": 12.0, "n": 8},
+                                        {"t": 18.0, "n": 0}]}}
+    assert extract.drop_use_t("Sova", 0, line["ult"]["0"], [], {0: [(0.0, 30.0)]}, {0: "A"}, 30.0) == 10.0
+    lives = {0: [(0.0, 5.0), (10.0, 30.0), (18.0, 30.0)], 1: [(0.0, 30.0)]}
+    assert extract.drop_use_t("Clove", 0, line["ult"]["0"], [], lives, {0: "A", 1: "A"}, 30.0) == 10.0
+    assert extract.drop_use_t("Sova", 0, line["ult"]["0"], [], {0: [(0.0, 30.0)]}, {0: "A"}, 9.0) is None
+    assert extract.drop_use_t("Sage", 0, line["ult"]["0"], [], {0: [(0.0, 30.0)], 1: [(0.0, 5.0), (10.0, 30.0)]},
+                              {0: "A", 1: "A"}, 9.0) is None
 
 
 def frenzy_heal(t, by=0):
