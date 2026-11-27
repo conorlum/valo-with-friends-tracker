@@ -1,0 +1,117 @@
+{# The player page's Aim section. Expects `aim` (aim_stats.summary of the player's events), `aim_everyone` (the
+   all-players summary), `aim_trend` (per-match {date, n, median}, oldest first) and `aim_bands`. Every figure shows
+   its n, medians their IQR; a cell under 10 ok events says "too few" (R12). Opponents are never named (R11). #}
+{% macro deg(cell) -%}
+{%- if cell is none -%}&ndash;
+{%- elif cell.too_few -%}too few (n={{ cell.n }})
+{%- else -%}{{ "%.2f"|format(cell.median) }}&deg; (IQR {{ "%.2f"|format(cell.q1) }} to {{ "%.2f"|format(cell.q3) }}, n={{ cell.n }})
+{%- endif -%}
+{%- endmacro %}
+{% macro secs(cell) -%}
+{%- if cell is none -%}&ndash;
+{%- elif cell.too_few -%}too few (n={{ cell.n }})
+{%- elif cell.not_reached -%}not reached (n={{ cell.n }}, {{ "%.0f"|format(cell.reached * 100) }}% reached)
+{%- else -%}{{ "%.2f"|format(cell.median) }} s (IQR {{ "%.2f"|format(cell.q1) if cell.q1 is not none else "not reached" }} to {{ "%.2f"|format(cell.q3) if cell.q3 is not none else "not reached" }}, n={{ cell.n }})
+{%- endif -%}
+{%- endmacro %}
+{% macro span(w) -%}
+{%- set a = w["from"].strftime("%Y-%m-%d") if w["from"] else "undated" -%}
+{%- set b = w["to"].strftime("%Y-%m-%d") if w["to"] else "undated" -%}
+{{- a if a == b else a ~ " to " ~ b -}}
+{%- endmacro %}
+{% macro shares(p) -%}
+{%- if p is none or p.too_few -%}&ndash;
+{%- else -%}on {{ "%.0f"|format(p.on * 100) }}% / near {{ "%.0f"|format(p.near * 100) }}% / off {{ "%.0f"|format(p.off * 100) }}% (n={{ p.n }})
+{%- endif -%}
+{%- endmacro %}
+<section class="aim-section" data-aim>
+  <h2>Aim</h2>
+  <p class="page-meta">Horizontal only: the replays have no pitch, so head height isn't judged.</p>
+  <p class="page-meta">On target means the crosshair was within the enemy's body width when they came into view:
+    atan(0.4 m / distance at that moment), taken as the largest stored threshold at or under it, never under
+    0.5&deg;. Near is up to {{ aim_near_deg }}&deg;. A cell with fewer than 10 events shows no figure.</p>
+  {% if not aim.classes %}
+  <p data-aim-none>No replays measured yet.</p>
+  {% else %}
+  <div class="table-scroll">
+    <table class="plants-table">
+      <thead>
+        <tr><th></th><th>Crosshair error (median)</th><th>On target / near / off</th></tr>
+      </thead>
+      <tbody>
+        <tr data-aim-you><td>You</td><td>{{ deg(aim.placement) }}</td><td>{{ shares(aim.placement) }}</td></tr>
+        <tr data-aim-everyone><td>Everyone</td><td>{{ deg(aim_everyone.placement) }}</td><td>{{ shares(aim_everyone.placement) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="page-meta">Events measured: {{ aim.n_ok }} usable of {{ aim.classes.values() | sum }}.</p>
+
+  <h3>Time from the enemy coming into view, by distance</h3>
+  <div class="table-scroll">
+    <table class="plants-table">
+      <thead>
+        <tr><th>Distance</th><th></th><th>To on target</th><th>To first shot</th><th>To first damage</th></tr>
+      </thead>
+      <tbody>
+        {% for band in aim_bands %}
+        {% set mine = aim.bands[band] %}
+        {% set theirs = aim_everyone.bands[band] if aim_everyone.bands else none %}
+        <tr data-band="{{ band }}" data-aim-you>
+          <td rowspan="2">{{ band | capitalize }}</td><td>You</td>
+          {% if mine.too_few %}<td colspan="3">too few (n={{ mine.n }})</td>
+          {% else %}<td>{{ secs(mine.to_on) }}</td><td>{{ secs(mine.to_shot) }}</td><td>{{ secs(mine.to_dmg) }}</td>{% endif %}
+        </tr>
+        <tr data-band="{{ band }}" data-aim-everyone>
+          <td>Everyone</td>
+          {% if theirs is none %}<td colspan="3">&ndash;</td>
+          {% elif theirs.too_few %}<td colspan="3">too few (n={{ theirs.n }})</td>
+          {% else %}<td>{{ secs(theirs.to_on) }}</td><td>{{ secs(theirs.to_shot) }}</td><td>{{ secs(theirs.to_dmg) }}</td>{% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Crosshair error over time</h3>
+  <p class="page-meta">Each point pools matches to at least 10 events, oldest first.</p>
+  {% if not aim_trend %}
+  <p data-trend-too-few>too few (n={{ aim.n_ok }})</p>
+  {% else %}
+  {% if aim_trend | length < 3 %}
+  <div class="table-scroll">
+    <table class="plants-table" data-trend-table>
+      <thead><tr><th>Matches</th><th>Median error</th><th>n</th></tr></thead>
+      <tbody>
+        {% for m in aim_trend %}
+        <tr><td>{{ span(m) }} ({{ m.matches }} matches)</td><td>{{ "%.2f"|format(m.median) }}&deg; (IQR {{ "%.2f"|format(m.q1) }} to {{ "%.2f"|format(m.q3) }})</td><td>n={{ m.n }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div style="max-width: 720px;"><canvas id="aim-trend" height="160"></canvas></div>
+  <script>
+  (function () {
+    var canvas = document.getElementById("aim-trend");
+    if (!canvas || !window.Chart) return;
+    var points = {{ aim_trend | map(attribute="median") | list | tojson }};
+    var counts = {{ aim_trend | map(attribute="n") | list | tojson }};
+    var q1 = {{ aim_trend | map(attribute="q1") | list | tojson }};
+    var q3 = {{ aim_trend | map(attribute="q3") | list | tojson }};
+    var labels = [{% for w in aim_trend %}{{ span(w) | trim | tojson }}{{ "," if not loop.last }}{% endfor %}];
+    new Chart(canvas, {
+      type: "line",
+      data: {labels: labels, datasets: [{label: "Median crosshair error (degrees)", data: points, tension: 0.2}]},
+      options: {
+        plugins: {tooltip: {callbacks: {label: function (c) {
+          return c.parsed.y.toFixed(2) + " deg (IQR " + q1[c.dataIndex].toFixed(2) + " to " + q3[c.dataIndex].toFixed(2) + "), n=" + counts[c.dataIndex];
+        }}}},
+        scales: {y: {title: {display: true, text: "degrees"}}}
+      }
+    });
+  })();
+  </script>
+  {% endif %}
+  {% endif %}
+  {% endif %}
+</section>

@@ -102,9 +102,21 @@
     return text;
   }
 
+  // The crosshair-placement line: how far off the enemy the crosshair was when they appeared, then the time to get on
+  // target. A flashed or blinded player's placement says nothing, so that class has no on-target part.
+  function placement(ev) {
+    if (ev.cls === "impaired") return "appeared while impaired";
+    var head = ev.cls === "behind" ? "appeared behind" : ev.cls === "turning" ? "turning" :
+      ev.cls === "in_view_at_start" ? "already in view" :
+      typeof ev.err === "number" ? "appeared " + Math.round(ev.err) + "°" : "appeared";
+    return head + (typeof ev.on_s === "number" ? ", on target " + ev.on_s.toFixed(2) + " s" : ", not on target");
+  }
+
   function angles(row) {
     var d = (row.duels || [])[0];
     if (!d) return "";
+    var ev = (row.aim || []).filter(function (a) { return a.opponent === d.opponent; })[0];
+    if (ev) return placement(ev);
     var bits = [];
     if (typeof d.you_angle === "number") bits.push("you " + d.you_angle + "°");
     if (typeof d.they_angle === "number") bits.push("they " + d.they_angle + "°");

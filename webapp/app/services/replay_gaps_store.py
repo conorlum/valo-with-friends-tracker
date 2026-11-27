@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.exc import IntegrityError
 
-from app.models.replay import (Replay, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
+from app.models.replay import (Replay, ReplayAimEvent, ReplayGap, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments,
                                ReplayRoundUtil)
 from app.models.replay_postplant import ReplayRoundPostplant
 from app.replays import choke_assets
@@ -65,6 +65,17 @@ def _stale(session, replay_id: int, round_number: int, run: dict, expected: str)
     return None
 
 
+def _aim_row(replay_id: int, round_number: int, idx: int, run: dict, e: dict) -> ReplayAimEvent:
+    """One worker aim event (`moments["aim"]`) as a row: `i` is stored as `fight_i`, `on` as `on_times`."""
+    return ReplayAimEvent(
+        replay_id=replay_id, round_number=round_number, idx=idx, fingerprint=run["fingerprint"],
+        gaps_revision=run["gaps_revision"], slot=e["slot"], fight_i=e["i"], opponent=e["opponent"], t=e["t"],
+        cls=e["cls"], err=e.get("err"), err_125=e.get("err_125"), err_250=e.get("err_250"), d_m=e.get("d_m"),
+        fine=bool(e["fine"]), hold=e.get("hold"), opener=e.get("opener"), gun_class=e.get("gun_class"),
+        hp=e.get("hp"), enemy_hp=e.get("enemy_hp"), outcome=e["outcome"], t_end=e["t_end"],
+        on_times=e.get("on"), shot=e.get("shot"), dmg=e.get("dmg"))
+
+
 def store_gaps(session_factory, replay_id: int, round_number: int, run: dict, rows: list[dict], *,
                moments: dict, util: dict | None = None, postplant: dict | None = None,
                expected_control_fingerprint: str | None = None) -> str:
@@ -107,6 +118,11 @@ def store_gaps(session_factory, replay_id: int, round_number: int, run: dict, ro
             fights={"v": moments.get("v"), "sight": moments.get("sight"), "fights": moments["fights"]}
             if moments_ok else None,
             error=moments.get("error"), computed_at=datetime.now(timezone.utc)))
+        session.query(ReplayAimEvent).filter(ReplayAimEvent.replay_id == replay_id,
+                                             ReplayAimEvent.round_number == round_number).delete()
+        aim = moments.get("aim") if moments_ok else None
+        if isinstance(aim, list):
+            session.add_all(_aim_row(replay_id, round_number, idx, run, event) for idx, event in enumerate(aim))
         if util is not None:
             util_ok = util["status"] == "ok"
             session.merge(ReplayRoundUtil(

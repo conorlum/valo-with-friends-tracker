@@ -11,8 +11,10 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     REAL,
+    Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -209,6 +211,45 @@ class ReplayRoundMoments(Base):
     fights: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # {"v", "sight", "fights"} when ok
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ReplayAimEvent(Base):
+    """One aim event of a round (migration 0039): the worker's `moments["aim"]` list, one row each (idx = list
+    order), stored with the gap run under the same keys. Written only by app/services/replay_gaps_store.py; read
+    through app/services/replay_aim.py."""
+
+    __tablename__ = "replay_aim_events"
+    __table_args__ = (
+        ForeignKeyConstraint(["replay_id", "round_number"], ["replay_rounds.replay_id", "replay_rounds.round_number"],
+                             ondelete="CASCADE", name="fk_replay_aim_events_round"),
+        Index("ix_replay_aim_events_replay_slot", "replay_id", "slot"),
+    )
+
+    replay_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    round_number: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    idx: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(16), nullable=False)
+    gaps_revision: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    slot: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    fight_i: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    opponent: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    t: Mapped[float] = mapped_column(Float, nullable=False)
+    cls: Mapped[str] = mapped_column(String(20), nullable=False)
+    err: Mapped[float | None] = mapped_column(Float, nullable=True)
+    err_125: Mapped[float | None] = mapped_column(Float, nullable=True)
+    err_250: Mapped[float | None] = mapped_column(Float, nullable=True)
+    d_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fine: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    hold: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    opener: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    gun_class: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    hp: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    enemy_hp: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(8), nullable=False)
+    t_end: Mapped[float] = mapped_column(Float, nullable=False)
+    on_times: Mapped[list | None] = mapped_column(JSONType, nullable=True)
+    shot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dmg: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class ReplayRoundUtil(Base):

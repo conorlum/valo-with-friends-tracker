@@ -57,6 +57,38 @@ def test_a_segments_heights_must_cover_every_sample():
         fmt.decode_segment_z({"t0": 0.0, "u": [1, 1], "v": [1, 1], "yaw": [0, 0], "z": [5]}, hz=4)
 
 
+def test_yaw_units_round_trip_and_wrap():
+    assert fmt.YAW_UNITS == 65536
+    units = [65530, 4, 40000, 7000, 0, 65535]
+    encoded = fmt.encode_yaw_units(units)
+    assert encoded[:2] == [65530, 10], "65530 -> 4 is +10 along the shortest arc"
+    assert all(-32768 <= d <= 32767 for d in encoded[1:])
+    assert fmt.decode_yaw_units(encoded) == units
+    assert fmt.encode_yaw_units([]) == [] and fmt.decode_yaw_units([]) == []
+
+
+def test_a_segment_with_yq_round_trips_and_keeps_the_old_four_values():
+    yq = [65530, 4, 700]
+    segment = fmt.encode_segment(1.25, [10, 12, 15], [20, 20, 19], [90, 91, 359], yq=yq)
+    assert segment["yq"] == [65530, 10, 696]
+    assert fmt.decode_segment(segment, hz=4) == [(1.25, 10, 20, 90), (1.5, 12, 20, 91), (1.75, 15, 19, 359)]
+    degrees = fmt.fine_yaw_deg(segment)
+    assert degrees == [u * 360 / 65536 for u in yq]
+
+
+def test_a_segments_yq_must_match_u_in_length():
+    with pytest.raises(fmt.FormatError):
+        fmt.encode_segment(0.0, [1, 2], [1, 2], [1, 2], yq=[5])
+
+
+def test_fine_yaw_is_none_without_yq_or_with_a_wrong_length():
+    segment = fmt.encode_segment(1.25, [10, 12], [20, 20], [90, 91])
+    assert "yq" not in segment and fmt.fine_yaw_deg(segment) is None
+    assert fmt.decode_segment(segment, hz=4) == [(1.25, 10, 20, 90), (1.5, 12, 20, 91)]
+    assert fmt.fine_yaw_deg({**segment, "yq": [5]}) is None
+    assert fmt.decode_segment({**segment, "yq": [5]}, hz=4) == [(1.25, 10, 20, 90), (1.5, 12, 20, 91)]
+
+
 def test_health_parts_invalidate_the_old_condensed_recipe(monkeypatch):
     # Revision 21 (damage causes, heals, charges) is a new recipe too: replay_reparse_auto re-parses every upload.
     # R7/R9: crouch spans use revision 24; legacy blobs are witnessed in test_replay_crouch.
@@ -66,8 +98,9 @@ def test_health_parts_invalidate_the_old_condensed_recipe(monkeypatch):
     # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
     # R9: CONDENSE 32 stores overheal and combined decay timelines.
     # CONDENSE 33: the parser's missing hit rows, `src`, `hits_read` / `fired` (W2).
-    assert fmt.CONDENSE_REVISION == 33 and fmt.FORMAT_VERSION == 1
-    assert ".c33.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
+    # CONDENSE 34: `yq`, native 16-bit yaw beside whole-degree yaw.
+    assert fmt.CONDENSE_REVISION == 34 and fmt.FORMAT_VERSION == 1
+    assert ".c34.f1." in fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789")
     monkeypatch.setattr(fmt, "CONDENSE_REVISION", 31)
     assert fmt.recipe("2b66c65a7b116154e18e", "abcdef0123456789") == "2b66c65a7b11.c31.f1.aabcdef01"
 

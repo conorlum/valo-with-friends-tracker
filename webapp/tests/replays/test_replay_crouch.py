@@ -135,7 +135,7 @@ def test_condenser_attaches_string_slot_keys_and_marks_empty_rounds(tmp_path, st
     # CONDENSE 32: every spike plant attempt, held or let go, in player_state.plants.
     # CONDENSE 32: overheal and combined decay timelines (R9).
     # CONDENSE 33: the parser's missing hit rows, `src`, `hits_read` / `fired` (W2).
-    assert fmt.CONDENSE_REVISION == 33
+    assert fmt.CONDENSE_REVISION == 34  # 34: yq, native 16-bit yaw
 
 
 def test_a_legacy_blob_without_crouch_reads_unchanged():

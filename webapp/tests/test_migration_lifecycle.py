@@ -20,7 +20,7 @@ def test_empty_database_upgrade_persists_at_head_and_is_idempotent(scratch_datab
             assert set(conn.exec_driver_sql('SELECT version_num FROM alembic_version').scalars()) == expected_heads
             tables = set(inspect(conn).get_table_names())
             assert {'players', 'impact_scores', 'replays', 'coach_feedback', 'account_group_view_cache',
-                    'map_pool_changes', 'replay_round_moments', 'replay_round_util',
+                    'map_pool_changes', 'replay_round_moments', 'replay_round_util', 'replay_aim_events',
                     'site_events', 'site_event_resolutions', 'site_event_marks'} <= tables
             assert 'riot_subject' in {c['name'] for c in inspect(conn).get_columns('players')}
             assert 'scoring_version' in {c['name'] for c in inspect(conn).get_columns('impact_scores')}

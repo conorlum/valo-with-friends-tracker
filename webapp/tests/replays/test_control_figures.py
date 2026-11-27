@@ -108,8 +108,9 @@ def test_the_revisions_of_this_release():
     # CONDENSE 33: the parser's missing hit rows (Prowler, Wingman, Seekers, Thrash, Hunter's Fury, Fakeout), `src` on the
     # status sources readers tell apart by cast, `hits_read` / `fired` on their source rows (W2).
     # Control 28: Thrash and Tejo's drone are flown drones; the footprint figures the info readers use (W3).
-    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (33, 28)
-    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 8, "mixed ground gap consumers"
+    # CONDENSE 34: yq
+    assert (fmt.CONDENSE_REVISION, cf.CONTROL_REVISION) == (34, 28)
+    assert detect.GAPS_REVISION == replay_gaps.GAPS_REVISION == 9, "mixed ground gap consumers"
 
 
 def test_the_incremental_counterfactual_matches_the_full_one_across_a_wall_and_a_reveal():

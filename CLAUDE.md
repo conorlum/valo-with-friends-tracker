@@ -293,6 +293,23 @@ and attaches `ValoUploader.exe` + `.sha256` (no binary in git); self-update read
 retries after 1, 2, 4, 8, then every 14 days; a match deleted on request (the status route adds `deleted: true`) is
 never re-sent; bumping `RETRY_GENERATION` (with `__version__`, then tag) makes every app re-send what failed once.
 
+### Crosshair placement
+
+Where a player's crosshair was when an enemy came into view, and how fast it reached the enemy. Never on the demo.
+
+- The `yq` channel (CONDENSE_REVISION 34): the native 16-bit minimap yaw beside the whole-degree `yaw`; arena
+  segments carry none; read through `format.fine_yaw_deg`.
+- The worker's `app/moments/aim.py` `round_aim` runs inside `fights.round_moments` (moments v2, `GAPS_REVISION` 9);
+  an aim error leaves the fights. Rows go to `replay_aim_events` (migration 0039) from
+  `replay_gaps_store.store_gaps` under the gap run's keys, and the site reads them only through
+  `app/services/replay_aim.py` `current_events` (current rows, freshness decided once per round).
+- `app/services/aim_stats.py` aggregates them. The on-target rule `ON_RULE` is a site constant over the stored
+  ladder `AIM_LADDER_DEG`, so changing it needs no recompute. A distance of 0.0 (stored to one decimal) counts as the
+  widest ladder value.
+- Pages: `/players/{name}/aim`, `/stats/aim`, and the Critical Moments duel line. `scripts/crosshair_report.py
+  events | predict` checks them against live public replays.
+- The web app must not import `app.moments.aim` or `app.moments.peeks` (they pull in the control engine).
+
 ### Plant spots
 
 Where attackers plant on each map and how those rounds go. `/plants` and `/plants/<map>` (`app/routers/plants.py`,

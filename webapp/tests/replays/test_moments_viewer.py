@@ -154,6 +154,38 @@ def test_row_text_for_each_kind_of_group():
 
 
 @needs_node
+def test_the_duel_line_shows_placement_when_the_opponent_has_an_aim_event():
+    duel = {"opponent": 5, "you_saw_t": 20, "they_saw_t": 20.1, "you_angle": 12.0, "they_angle": 40.5}
+
+    def row(aim):
+        r = fight(died={"t": 25.0, "killer": 5}, duels=[duel], aim=aim)
+        r["round"] = 3
+        return r
+
+    def ev(cls, err=64.3, on_s=None, opponent=5):
+        return {"opponent": opponent, "cls": cls, "err": err, "d_m": 12.0, "t": 20.0, "on_s": on_s}
+
+    rows = {"ok": row([ev("ok", on_s=0.31)]), "never": row([ev("ok")]), "behind": row([ev("behind", 140.0, 0.9)]),
+            "turning": row([ev("turning", 80.0, 1.2)]), "view": row([ev("in_view_at_start", 10.0, 0.2)]),
+            "impaired": row([ev("impaired", 70.0, 0.4)]), "other": row([ev("ok", on_s=0.31, opponent=6)]),
+            "none": row([]), "missing": row(None)}
+    del rows["missing"]["aim"]
+    got = run_node("""function run(p) {
+      const out = {};
+      Object.keys(p.rows).forEach(k => { out[k] = M.rowText(p.rows[k], "saw_first", p.players); });
+      return out;
+    }""", {"rows": rows, "players": PLAYERS})
+    assert "appeared 64°, on target 0.31 s" in got["ok"] and "you 12°" not in got["ok"]
+    assert "appeared 64°, not on target" in got["never"]
+    assert "appeared behind, on target 0.90 s" in got["behind"]
+    assert "turning, on target 1.20 s" in got["turning"]
+    assert "already in view, on target 0.20 s" in got["view"]
+    assert "appeared while impaired" in got["impaired"] and "on target" not in got["impaired"]
+    for k in ("other", "none", "missing"):
+        assert "you 12°, they 40.5°" in got[k] and "appeared" not in got[k]
+
+
+@needs_node
 def test_expensive_fight_text_carries_its_sign():
     tf = {"t0": 30.0, "t1": 33.0, "ours": 4, "theirs": 1, "swing_m2": -1551.4, "wipe": False}
     row = fight(died={"t": 30.0, "killer": 5}, tags=["expensive_fight"], team_fight=tf)

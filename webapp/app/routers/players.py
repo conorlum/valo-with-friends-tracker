@@ -13,7 +13,8 @@ from app.db import SessionLocal, get_db
 from app.models import AccountGroupMember, MatchPlayer, Player
 from app.models.replay import Replay
 from app.replays import layouts
-from app.services import postplant_page, postplant_stats, site_health, util_model
+from app.moments import constants as mc
+from app.services import aim_stats, postplant_page, postplant_stats, site_health, util_model
 from app.services.account_groups import (
     get_cached_group_views,
     group_fingerprint,
@@ -528,6 +529,32 @@ def player_postplant_fragment(
     sections = _postplant_sections(db, player, player_ids, agents)
     return templates.TemplateResponse(request, "players/_postplant.html", {
         "postplant_sections": sections, "postplant_note": POSTPLANT_NOTE,
+    })
+
+
+@router.get("/{display_name}/aim")
+def player_aim_fragment(
+    request: Request, display_name: str, accounts: str | None = None, filter: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """The Aim section, loaded after the page (htmx). It covers all the player's replays, not the Recent/Career
+    toggle, honours `accounts=all` (one row per shared match) and `filter`, and shows the all-players figure
+    beside each of the player's (D5). Aggregates only: no opponent is named (R11). Never on the demo (R10)."""
+    if settings.demo_mode:
+        raise HTTPException(status_code=404)
+    player = get_player_or_404(db, display_name)
+    combined = accounts == "all"
+    player_ids = _account_view(db, player, accounts).player_ids if combined else None
+    agents = None
+    if filter:
+        agents_played = [agent for agent, _, _ in played_agent_counts(db, player.id, player_ids)]
+        key = parse_filter(filter, agents_played)
+        agents = filter_agents(key, agents_played) if key else None
+    events = aim_stats.events_for(db, player_ids or [player.id], agents, one_per_match=combined)
+    summary = aim_stats.summary(events)
+    return templates.TemplateResponse(request, "players/_aim_section.html", {
+        "aim": summary, "aim_everyone": aim_stats.everyone_summary(db), "aim_trend": aim_stats.trend(events),
+        "aim_bands": aim_stats.BANDS, "aim_near_deg": mc.CROSSHAIR_NEAR_DEG,
     })
 
 

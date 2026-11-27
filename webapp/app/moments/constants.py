@@ -118,3 +118,11 @@ ABILITY_KIND = {  # placed ability name -> kind; agents from the corpus (ability
     "E_HawkFlash_FlashSource": "blind",                                                      # Skye
     "StealthingTrap_Flash_2": "blind",                                                       # Vyse
 }
+
+# Crosshair placement (aim events, app/moments/aim.py)
+AIM_LADDER_DEG = (0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 15, 20)   # the error thresholds a time is stored for
+AIM_BODY_HALF_M = 0.4        # half a body's width: the on-target angle is atan(this / distance)
+AIM_BEHIND_DEG = 90          # an error past this at the event is a player facing away
+AIM_TURN_DEG = 45            # a net yaw change over this in the window before the event is a turn
+AIM_TURN_WINDOW_S = 0.25
+AIM_PROBE_S = (0.125, 0.25)  # the errors also kept this long after the event

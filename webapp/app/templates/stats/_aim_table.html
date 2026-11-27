@@ -1,0 +1,36 @@
+{# The Aim card's table (app/routers/site_stats.py aim_fragment). Context: pooled (aim_stats.summary), members
+   ([{name, summary}], friends only), label, near_deg. Every figure shows its n, medians their IQR; a cell under
+   10 usable events says "too few" (R12). Only aggregates and circle members are named (R11). #}
+{# The macros match players/_aim_section.html (which can't be imported: its body needs the player's context). #}
+{% macro deg(cell) -%}
+{%- if cell is none -%}&ndash;
+{%- elif cell.too_few -%}too few (n={{ cell.n }})
+{%- else -%}{{ "%.2f"|format(cell.median) }}&deg; (IQR {{ "%.2f"|format(cell.q1) }} to {{ "%.2f"|format(cell.q3) }}, n={{ cell.n }})
+{%- endif -%}
+{%- endmacro %}
+{% macro shares(p) -%}
+{%- if p is none or p.too_few -%}&ndash;
+{%- else -%}on {{ "%.0f"|format(p.on * 100) }}% / near {{ "%.0f"|format(p.near * 100) }}% / off {{ "%.0f"|format(p.off * 100) }}% (n={{ p.n }})
+{%- endif -%}
+{%- endmacro %}
+<p class="page-meta">Horizontal only: the replays have no pitch, so head height isn't judged.</p>
+{% if not pooled.classes %}
+<p class="page-meta">No replay in {{ label }} has been measured for aim yet.</p>
+{% else %}
+<div class="table-scroll">
+  <table class="plants-table">
+    <thead>
+      <tr><th></th><th>Crosshair error (median)</th><th>On target / near / off</th></tr>
+    </thead>
+    <tbody>
+      {% for m in members %}
+      <tr data-aim-member><td>{{ m.name }}</td><td>{{ deg(m.summary.placement) }}</td><td>{{ shares(m.summary.placement) }}</td></tr>
+      {% endfor %}
+      <tr data-aim-pooled><td>{{ "Together" if members else "Everyone" }}</td><td>{{ deg(pooled.placement) }}</td><td>{{ shares(pooled.placement) }}</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="page-meta">{{ label | capitalize }}: {{ pooled.n_ok }} usable of {{ pooled.classes.values() | sum }} events.
+  On target means the crosshair was within the enemy's body width when they came into view; near is up to
+  {{ near_deg }}&deg;. A row needs 10 usable events to show a figure.</p>
+{% endif %}

@@ -94,6 +94,42 @@ def map_control_fragment(request: Request, group: str = "all", db: Session = Dep
         "rows": rows, "label": label, "min_rounds": control_views.MIN_ROUNDS_PER_MAP})
 
 
+@router.get("/aim")
+def aim_fragment(request: Request, group: str = "all", db: Session = Depends(get_db)):
+    """The Aim card's table, loaded by htmx. All Players: one pooled row, no names. Friends: one row per circle
+    member with at least aim_stats.MIN_N usable events, plus a pooled row; logged out gets the login note. 404 on
+    the demo site, where there are no replays. Writes nothing."""
+    from app.config import settings
+    from app.models import Player
+    from app.moments import constants as mc
+    from app.services import aim_stats
+    from app.services.site_stats import viewer_group_player_ids
+
+    if settings.demo_mode:
+        raise HTTPException(status_code=404)
+    context = {"members": [], "near_deg": mc.CROSSHAIR_NEAR_DEG}
+    if group == "friends":
+        viewer = get_current_player(request, db)
+        if viewer is None:
+            return HTMLResponse(f'<p class="page-meta">{FRIENDS_LOGIN_NOTE}</p>')
+        events = aim_stats.events_for(db, viewer_group_player_ids(db, viewer.id))
+        by_player: dict = {}
+        for e in events:
+            by_player.setdefault(e.player_id, []).append(e)
+        names = dict(db.query(Player.id, Player.display_name).filter(Player.id.in_(by_player)).all()) if by_player else {}
+        for pid, evs in by_player.items():
+            cell = aim_stats.summary(evs)
+            if cell["n_ok"] >= aim_stats.MIN_N:
+                context["members"].append({"name": names.get(pid, ""), "summary": cell})
+        context["members"].sort(key=lambda m: (-m["summary"]["n_ok"], m["name"]))
+        context["pooled"] = aim_stats.summary(events)
+        context["label"] = "you and your friends"
+    else:
+        context["pooled"] = aim_stats.everyone_summary(db)
+        context["label"] = "every player with an uploaded replay"
+    return templates.TemplateResponse(request, "stats/_aim_table.html", context)
+
+
 @router.get("/all")
 def all_players_page(request: Request, db: Session = Depends(get_db)):
     stats = get_site_stats(db)

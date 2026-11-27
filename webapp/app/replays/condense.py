@@ -103,6 +103,13 @@ class MapInfo:
         dv = math.cos(rad) * self.y_mult  # v follows world x
         return int(round(math.degrees(math.atan2(dv, du)))) % 360
 
+    def yaw_to_map_units(self, yaw_degrees: float) -> int:
+        """`yaw_to_map` without the whole-degree rounding, in units of 360/65536 degrees."""
+        rad = math.radians(yaw_degrees)
+        du = math.sin(rad) * self.x_mult
+        dv = math.cos(rad) * self.y_mult
+        return int(round(math.degrees(math.atan2(dv, du)) * fmt.YAW_UNITS / 360.0)) % fmt.YAW_UNITS
+
 
 def _to_int_uv(value: float) -> int:
     return max(0, min(fmt.UV_SCALE, int(round(value * fmt.UV_SCALE))))
@@ -1207,34 +1214,38 @@ def build_segments(samples: list[Sample], intervals: list[list], start: int, end
     segments = []
     covered_points = 0
     for run in _runs(samples, intervals, start, end):
-        grid: dict[int, tuple[int, int, int, int | None]] = {}
+        grid: dict[int, tuple[int, int, int, int | None, int]] = {}
         for sample, _ in run:
             k = int(round((sample.t_ms - start) / 1000.0 * hz))
             u, v = game_map.to_uv(sample.x, sample.y)
             # the last sample on a grid point wins; z in decimetres of world z, as the parser gave it
-            grid[k] = (u, v, game_map.yaw_to_map(sample.yaw), None if sample.z is None else int(round(sample.z / 10.0)))
+            grid[k] = (u, v, game_map.yaw_to_map(sample.yaw), None if sample.z is None else int(round(sample.z / 10.0)),
+                       game_map.yaw_to_map_units(sample.yaw))
         keys = sorted(grid)
         # A segment has a height for every sample or for none (revision 11). A run with any sample
         # missing one stores none: splitting it would move the positions revision 10 stored.
         has_z = all(sample.z is not None for sample, _ in run)
-        u_list, v_list, yaw_list, z_list = [], [], [], []
+        u_list, v_list, yaw_list, z_list, yq_list = [], [], [], [], []
         for a, b in zip(keys, keys[1:] + [None]):
-            ua, va, ya, za = grid[a]
-            u_list.append(ua), v_list.append(va), yaw_list.append(ya), z_list.append(za)
+            ua, va, ya, za, qa = grid[a]
+            u_list.append(ua), v_list.append(va), yaw_list.append(ya), z_list.append(za), yq_list.append(qa)
             if b is None:
                 continue
             # Grid points the source skipped inside a segment (< SEGMENT_GAP_S)
             # are filled linearly, yaw along the shortest arc; never beyond the source's rate.
-            ub, vb, yb, zb = grid[b]
+            ub, vb, yb, zb, qb = grid[b]
             turn = (yb - ya + 180) % 360 - 180
+            fine_turn = (qb - qa + fmt.YAW_UNITS // 2) % fmt.YAW_UNITS - fmt.YAW_UNITS // 2
             for step in range(1, b - a):
                 f = step / (b - a)
                 u_list.append(int(round(ua + (ub - ua) * f)))
                 v_list.append(int(round(va + (vb - va) * f)))
                 yaw_list.append(int(round(ya + turn * f)) % 360)
+                yq_list.append(int(round(qa + fine_turn * f)) % fmt.YAW_UNITS)
                 z_list.append(int(round(za + (zb - za) * f)) if has_z else None)
         covered_points += len(u_list)
-        segments.append(fmt.encode_segment(keys[0] / hz, u_list, v_list, yaw_list, z_list if has_z else None))
+        segments.append(fmt.encode_segment(keys[0] / hz, u_list, v_list, yaw_list, z_list if has_z else None,
+                                           yq=yq_list))
 
     alive_s = sum(_uncovered(iv[0], iv[1] if iv[1] is not None else end, unobserved) / 1000.0 for iv in intervals)
     max_gap = 0.0

@@ -33,7 +33,7 @@ import compute_control  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.db import Base  # noqa: E402
 from app.models.replay_postplant import ReplayRoundPostplant
-from app.models.replay import (Replay, ReplayGap, ReplayMatchState, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments, ReplayRoundUtil,
+from app.models.replay import (Replay, ReplayAimEvent, ReplayGap, ReplayMatchState, ReplayRoundControl, ReplayRoundGapRun, ReplayRoundMoments, ReplayRoundUtil,
                                 ControlFeatureArtifact, UtilModel, ReplayRoundWallShare, ReplayUpload)  # noqa: E402
 from app.models.impact_score import ImpactScore  # noqa: E402
 from app.models.map_pool import MapPoolPatchNotes  # noqa: E402
@@ -47,7 +47,7 @@ from app.routers import replays as routes  # noqa: E402
 from app.services import replay_control as rc  # noqa: E402
 from app.services import replays as service  # noqa: E402
 
-CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayRoundMoments.__table__, ReplayRoundUtil.__table__, ReplayRoundPostplant.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__,
+CONTROL_TABLES = TABLES + [ReplayRoundGapRun.__table__, ReplayRoundMoments.__table__, ReplayRoundUtil.__table__, ReplayRoundPostplant.__table__, ReplayAimEvent.__table__, ReplayGap.__table__, ControlFeatureArtifact.__table__,
                                   ReplayMatchState.__table__, SiteEvent.__table__, SiteEventResolution.__table__, SiteEventMark.__table__, UtilModel.__table__,
                                   ImpactScore.__table__, MapPoolPatchNotes.__table__, ReplayRoundWallShare.__table__,
                                   DeployDrain.__table__, Friendship.__table__]

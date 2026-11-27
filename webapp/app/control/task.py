@@ -397,8 +397,11 @@ def _gaps(geo, blob, link, job: dict, guard: _CacheGuard | None = None) -> dict:
             from app.moments import fights
 
             made = fights.round_moments(engine.RoundInputs(blob, geo, link), engine.control_view(blob))
-            moments = _plain({"status": "ok", "v": made.get("v"), "sight": made.get("sight"),
-                              "fights": made["fights"], "error": None})
+            moments = {"status": "ok", "v": made.get("v"), "sight": made.get("sight"),
+                       "fights": made["fights"], "error": None}
+            if isinstance(made.get("aim"), list):
+                moments["aim"] = made["aim"]
+            moments = _plain(moments)
         except Exception as error:  # noqa: BLE001 - the moments' failure, not the gap run's
             moments = {"status": "failed", "fights": [], "error": f"{type(error).__name__}: {error}"}
         # Critical Util the same way (docs/superpowers/specs/2026-10-21-critical-util-design.md): its own fresh

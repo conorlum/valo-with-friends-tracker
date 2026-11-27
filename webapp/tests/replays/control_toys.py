@@ -250,14 +250,15 @@ def track(points, t0: float = 0.0, t1: float = 30.0, hz: int = HZ) -> list[dict]
     return [{"t0": t0, "u": enc(u), "v": enc(v), "yaw": yaw_d}]
 
 
-def blob(players: dict, *, t_end: float = 30.0, t_decided: float | None = None, util=(), deaths=None) -> dict:
+def blob(players: dict, *, t_end: float = 30.0, t_decided: float | None = None, util=(), deaths=None,
+         hz: int = HZ) -> dict:
     """`players` = {slot: (side, [(t, x, y, yaw), ...])}; `deaths` = {slot: t}."""
     deaths = deaths or {}
     return {
-        "v": 1, "round": 1, "map": "Toy", "hz": HZ, "t_start": 0.0,
+        "v": 1, "round": 1, "map": "Toy", "hz": hz, "t_start": 0.0,
         "t_decided": t_end if t_decided is None else t_decided, "t_end": t_end,
         "players": [{"slot": s, "agent": "Jett", "side": side} for s, (side, _) in players.items()],
-        "tracks": {str(s): track(pts, 0.0, t_end) for s, (_, pts) in players.items()},
+        "tracks": {str(s): track(pts, 0.0, t_end, hz) for s, (_, pts) in players.items()},
         "alive": {str(s): [[0.0, deaths.get(s), "kill" if s in deaths else None]] for s in players},
         "kills": [], "plant": None, "defuse": None, "util": list(util),
     }

@@ -474,6 +474,94 @@ def test_tracks_sit_on_the_native_grid(tmp_path):
     assert points[16][0] == 1.0
 
 
+FINE_TOLERANCE_DEG = 0.5 + 360 / 65536 / 2
+
+
+def _arc(a, b):
+    return (b - a + 32768) % 65536 - 32768
+
+
+def _check_fine_yaw(samples, intervals, start, end, hz, game_map, segments):
+    """R8: yq on every segment, exact on grid samples, on the shortest arc between grid neighbours elsewhere."""
+    runs = cd._runs(samples, intervals, start, end)
+    assert len(runs) == len(segments)
+    checked_grid = checked_filled = 0
+    for run, segment in zip(runs, segments):
+        assert len(segment["yq"]) == len(segment["u"])
+        fine = fmt.decode_yaw_units(segment["yq"])
+        whole = fmt.decode_yaw_deltas(segment["yaw"])
+        last = {}
+        for sample, _ in run:
+            last[int(round((sample.t_ms - start) / 1000.0 * hz))] = sample
+        first_k = int(round(segment["t0"] * hz))
+        for i, units in enumerate(fine):
+            k = first_k + i
+            if k in last:
+                assert units == game_map.yaw_to_map_units(last[k].yaw)
+                diff = abs(_arc(units, whole[i] * 65536 // 360)) * 360 / 65536
+                assert diff <= FINE_TOLERANCE_DEG
+                checked_grid += 1
+            else:
+                lo = max(g for g in last if g < k)
+                hi = min(g for g in last if g > k)
+                ua, ub = game_map.yaw_to_map_units(last[lo].yaw), game_map.yaw_to_map_units(last[hi].yaw)
+                expected = ua + _arc(ua, ub) * (k - lo) / (hi - lo)
+                assert abs(_arc(units, round(expected))) <= 1
+                checked_filled += 1
+    return checked_grid, checked_filled
+
+
+def _capture_build_segments(monkeypatch):
+    calls = []
+    original = cd.build_segments
+
+    def spy(*args, **kwargs):
+        result = original(*args, **kwargs)
+        calls.append((args, kwargs, result))
+        return result
+    monkeypatch.setattr(cd, "build_segments", spy)
+    return calls
+
+
+def _check_captured(calls):
+    grid = filled = 0
+    for args, kwargs, (segments, _) in calls:
+        samples, intervals, start, end, hz, game_map = args[:6]
+        g, f = _check_fine_yaw(samples, intervals, start, end, hz, game_map, segments)
+        grid, filled = grid + g, filled + f
+    return grid, filled
+
+
+def test_the_synthetic_match_stores_fine_yaw_on_every_segment(tmp_path, monkeypatch):
+    calls = _capture_build_segments(monkeypatch)
+    blob = run(tmp_path).rounds[1]
+    assert all(len(seg["yq"]) == len(seg["u"]) for segs in blob["tracks"].values() for seg in segs)
+    grid, _ = _check_captured(calls)
+    assert grid > 0
+
+
+def test_the_real_swiftplay_fixture_stores_fine_yaw_on_every_segment(monkeypatch):
+    calls = _capture_build_segments(monkeypatch)
+    out = cd.condense_export_dir(REAL_FIXTURE, source_sha256=None, pin=fixture_pin(REAL_FIXTURE))
+    assert all("yq" in seg and len(seg["yq"]) == len(seg["u"])
+               for blob in out.rounds.values() for segs in blob["tracks"].values() for seg in segs)
+    grid, filled = _check_captured(calls)
+    assert grid > 0 and filled > 0, "the thinned fixture has skipped grid points to fill"
+
+
+def test_filled_points_turn_along_the_shortest_arc_across_the_wrap():
+    # yaw 180 / 179 on Ascent map to ~90 deg; use headings straddling the 0/360 seam: 90 -> 91 world is ~0 / 359 map.
+    samples = [cd.Sample(0, 0.0, 0.0, 0.0, 89.9, 1), cd.Sample(1000, 0.0, 0.0, 0.0, 90.1, 1)]
+    intervals = [[0, None, "round_end"]]
+    [segment], _ = cd.build_segments(samples, intervals, 0, 1000, 4, ASCENT)
+    first, last = ASCENT.yaw_to_map_units(89.9), ASCENT.yaw_to_map_units(90.1)
+    assert abs(_arc(first, last)) < 200, "the seam is crossed by a short arc"
+    fine = fmt.decode_yaw_units(segment["yq"])
+    assert fine[0] == first and fine[-1] == last
+    assert all(abs(_arc(a, b)) <= abs(_arc(first, last)) for a, b in zip(fine, fine[1:]))
+    assert max(abs(_arc(first, f)) for f in fine) <= abs(_arc(first, last))
+
+
 def test_a_gap_over_one_second_splits_a_segment_and_a_short_gap_does_not(tmp_path):
     match = SyntheticMatch()
     start = match.round_start(1)
@@ -1158,7 +1246,7 @@ def test_the_condenser_stamps_the_sources_whose_hits_it_reads_and_not_boom_bot(t
     assert rows["4_WolfHound"]["hits_read"] is True and "fired" not in rows["4_WolfHound"]
     assert rows["X_WaveForm"]["hits_read"] is True and rows["X_WaveForm"]["fired"] is True
     assert "hits_read" not in rows["E_Boomba"] and "hits_read" not in rows["MolotovFire"]
-    assert fmt.CONDENSE_REVISION == 33 and f".c{fmt.CONDENSE_REVISION}." in out.recipe
+    assert fmt.CONDENSE_REVISION == 34 and f".c{fmt.CONDENSE_REVISION}." in out.recipe
 
 
 def test_an_export_with_no_player_state_sources_keeps_the_old_blob_shape(tmp_path):
@@ -1240,8 +1328,18 @@ def _arena_sample(t_ms, x=-50000, y=1000, z=-49900, yaw=90, pawn=1):
     return cd.Sample(t_ms, x, y, z, yaw, pawn)
 
 
+def _without_yq(result):
+    """A build_segments result with `yq` removed from each segment (asserting it has u's length)."""
+    segments, stats = result
+    stripped = []
+    for segment in segments:
+        assert len(segment["yq"]) == len(segment["u"])
+        stripped.append({key: value for key, value in segment.items() if key != "yq"})
+    return stripped, stats
+
+
 def _check_legacy_tracks(samples, intervals, start, end, hz):
-    actual = cd.build_segments(samples, intervals, start, end, hz, ASCENT)
+    actual = _without_yq(cd.build_segments(samples, intervals, start, end, hz, ASCENT))
     legacy = _legacy_build_segments(samples, intervals, start, end, hz, ASCENT)
     assert actual == legacy
     assert json.dumps(actual[0]).encode() == json.dumps(legacy[0]).encode()
@@ -1300,7 +1398,7 @@ def test_round_arena_slots_and_kill_places_use_victims_last_sample(tmp_path, mon
     # Check every slot, with its actual alive intervals and coverage spans, against revision 31.
     def checked_segments(*args, **kwargs):
         actual = original(*args, **kwargs)
-        assert actual == _legacy_build_segments(*args, **kwargs)
+        assert _without_yq(actual) == _legacy_build_segments(*args, **kwargs)
         return actual
     original = cd.build_segments
     monkeypatch.setattr(cd, "build_segments", checked_segments)

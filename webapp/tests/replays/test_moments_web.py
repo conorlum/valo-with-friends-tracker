@@ -124,6 +124,57 @@ def test_payload_shape_and_stale_count(db, linked):
     assert body["stale"] == linked.round_count - 1
 
 
+def put_aim(db, replay, n, idx, *, slot=0, fight_i=0, opponent=5, fingerprint=None, cls="ok", err=64.3, d_m=20.0,
+            on_times=None):
+    from app.models.replay import ReplayAimEvent
+
+    db.add(ReplayAimEvent(
+        replay_id=replay.id, round_number=n, idx=idx, fingerprint=fingerprint or current_fingerprint(db, replay, n),
+        gaps_revision=gaps.GAPS_REVISION, slot=slot, fight_i=fight_i, opponent=opponent, t=10.0, cls=cls, err=err,
+        err_125=None, err_250=None, d_m=d_m, fine=True, hold=None, opener=None, gun_class=None, hp=100, enemy_hp=100,
+        outcome="won", t_end=12.0, on_times=[round(0.05 * (k + 1), 3) for k in range(14)] if on_times is None
+        else on_times, shot=None, dmg=None))
+    db.commit()
+
+
+def test_stored_aim_events_reach_their_fight_with_on_s_at_the_threshold(db, linked):
+    from app.moments.constants import AIM_LADDER_DEG
+    from app.services import aim_stats
+
+    put_row(db, linked, 1)
+    put_moments(db, linked, 1, fights=[fight(), fight(i=1, t0=30.0, t1=34.0)])
+    put_aim(db, linked, 1, 0)
+    put_aim(db, linked, 1, 1, opponent=6, d_m=None)
+    put_aim(db, linked, 1, 2, opponent=7, on_times=[None] * 14)
+    put_aim(db, linked, 1, 3, fight_i=1, slot=0, opponent=5, cls="behind")
+    f0, f1 = body_of(call(db))["rounds"]["1"]["fights"]
+    k = list(AIM_LADDER_DEG).index(aim_stats.on_threshold(20.0))
+    by_opp = {a["opponent"]: a for a in f0["aim"]}
+    assert set(by_opp) == {5, 6, 7}
+    assert by_opp[5]["on_s"] == round(0.05 * (k + 1), 3) and by_opp[5]["cls"] == "ok" and by_opp[5]["err"] == 64.3
+    assert by_opp[6]["on_s"] is None and by_opp[7]["on_s"] is None
+    assert [a["cls"] for a in f1["aim"]] == ["behind"]
+
+
+def test_a_zero_distance_aim_event_still_builds_the_payload(db, linked):
+    from app.moments.constants import AIM_LADDER_DEG
+
+    put_row(db, linked, 1)
+    put_moments(db, linked, 1)
+    put_aim(db, linked, 1, 0, d_m=0.0, on_times=[None] * 13 + [0.7])
+    [f] = body_of(call(db))["rounds"]["1"]["fights"]
+    [a] = f["aim"]
+    assert a["d_m"] == 0.0 and a["on_s"] == 0.7 and len(AIM_LADDER_DEG) == 14
+
+
+def test_a_stale_aim_row_does_not_reach_the_payload(db, linked):
+    put_row(db, linked, 1)
+    put_moments(db, linked, 1)
+    put_aim(db, linked, 1, 0, fingerprint="0" * 16)
+    [f] = body_of(call(db))["rounds"]["1"]["fights"]
+    assert "aim" not in f
+
+
 def test_the_other_team_than_the_friends_is_named_by_agent(db, linked):
     from app.services import replays as replay_service
 
