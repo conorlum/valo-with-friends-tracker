@@ -15,6 +15,9 @@
   .plants-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
   .plants-table th, .plants-table td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border-strong); }
   .plants-table td:first-child { white-space: nowrap; }
+  .plants-table th[data-sort-key] { cursor: pointer; user-select: none; }
+  .plants-table th[aria-sort="descending"]::after { content: " \25BC"; }
+  .plants-table th[aria-sort="ascending"]::after { content: " \25B2"; }
   .plant-grey { color: var(--ink-muted); }
   .plant-detail { min-height: 1.5rem; color: var(--ink-secondary); }
   @media (max-width: 640px) { .plants-table { display: block; overflow-x: auto; } [data-label-spot] { display: none; } }
