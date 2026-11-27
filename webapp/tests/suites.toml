@@ -151,7 +151,7 @@ tests = [
   "tests/test_halftime_conversion_stats.py", "tests/test_map_side_stats.py", "tests/test_round_streak_stats.py",
   "tests/test_score_reached_stats.py", "tests/test_round_combo_stats.py", "tests/test_eco_followup.py",
   "tests/test_enemy_at_11_response.py", "tests/test_map_control_card.py", "tests/test_map_streaks.py",
-  "tests/test_match_streaks.py",
+  "tests/test_match_streaks.py", "tests/test_ults_card.py",
 ]
 guards = [
   "app/services/site_stats*.py", "app/services/viewer_site_stats_cache.py", "app/services/*_stats.py",

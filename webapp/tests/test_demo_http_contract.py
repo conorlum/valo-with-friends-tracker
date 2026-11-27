@@ -29,6 +29,7 @@ from tests.support.replays import stored_replay
     ('GET','/admin/replays/refused',None,404),
     ('GET','/admin/replays/archive/0f0e0d0c-0b0a-4908-8706-050403020100.vrf',None,404),
     ('GET','/gaps',None,404),
+    ('GET','/stats/ults',None,404),
 ])
 def test_demo_route_families_refuse_without_mutation(site, monkeypatch, method, path, data, status):
     client, factory = site
