@@ -266,11 +266,11 @@ def test_unlinking_and_drop_unlinked(factory):
     assert pending_ids(factory) == []
     assert stored(factory, rid)
     with factory() as db:
-        assert store.drop_unlinked(db) == 1
+        assert len(store.drop_unlinked(db)) == 1
         db.commit()
     assert stored(factory, rid) == [] and state_of(factory, rid) is None
     with factory() as db:
-        assert store.drop_unlinked(db) == 0
+        assert len(store.drop_unlinked(db)) == 0
 
 
 def test_deleting_the_replay_cascades(factory):

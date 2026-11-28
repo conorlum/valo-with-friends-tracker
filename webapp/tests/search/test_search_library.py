@@ -158,9 +158,17 @@ R1_TABLE = [
     ["side=defense", "state=4v5", "kind=kill"], ["as=Alpha#1", "our_score=0"], ["as=Foxtrot#6", "their_score=1"],
     ["side=attack", "our_score=0..1", "their_score=0..1"], ["as=Alpha#1", "our_buy=full"],
     ["as=Foxtrot#6", "their_buy=full"], ["side=attack", "their_buy=eco"], ["as=Alpha#1", "won=1"],
-    ["as=Alpha#1", "won=0"], ["ability=smoke"], ["ability=c"], ["ability=C", "kind=cast"], ["ability=sm", "kind=cast"],
+    ["as=Alpha#1", "won=0"], ["ability=smoke"], ["ability=sm", "kind=cast"],
     ["ability=zzz"], ["tag=won"], ["tag=won", "kind=fight"], ["tag=nope"], ["as=Alpha#1", "team=ours"],
     ["as=Alpha#1", "team=theirs", "kind=kill"],
+    # streamed prefilter: tag in SQL, won / team with side= against the attack team (R2.1)
+    ["tag=smoke"], ["tag=smoke", "tag=nope"], ["tag=won", "tag=smoke"], ["tag=mo"], ["tag=%"], ["tag=_"],
+    ["tag=wo\\n"], ['tag=w"on'],
+    ["side=attack", "won=1"], ["side=attack", "won=0"], ["side=defense", "won=1"], ["side=defense", "won=0"],
+    ["side=attack", "won=1", "kind=kill"], ["side=attack", "team=ours"], ["side=attack", "team=theirs"],
+    ["side=defense", "team=ours"], ["side=defense", "team=theirs", "kind=kill"],
+    ["side=attack", "team=ours", "won=1"], ["side=attack", "team=ours", "tag=smoke"],
+    ["player=Alpha#1", "side=attack", "team=ours"],
 ]
 
 
@@ -179,7 +187,7 @@ def test_library_hits_equal_the_matcher_over_every_row(factory, args):
 def prefiltered(db, args):
     f = filters.parse(args)
     ctx, actor = lib._context(db, f)
-    return lib._prefiltered_rows(db, f, ctx, actor)
+    return list(lib._prefiltered_rows(db, f, ctx, actor))
 
 
 def row_key(r):
@@ -210,6 +218,12 @@ def test_ult_without_a_kind_reads_only_ult_rows(factory):
     (["round=2"], lambda r: r["round"] == 2), (["after=25"], lambda r: r["t"] >= 25),
     (["before=11"], lambda r: r["t"] <= 11), (["ability=smoke"], lambda r: r["kind"] == "cast"),
     (["as=Alpha#1", "state=4v5"], lambda r: {r["alive1"], r["alive2"]} == {4, 5}),
+    (["tag=smoke"], lambda r: "smoke" in r["tags"]),
+    (["side=attack", "won=1"], lambda r: r["won_team"] == r["attack_team"]),
+    (["side=attack", "won=0"], lambda r: r["won_team"] != r["attack_team"]),
+    (["side=defense", "won=1"], lambda r: r["won_team"] != r["attack_team"]),
+    (["side=attack", "team=ours"], lambda r: r["team"] == r["attack_team"]),
+    (["side=attack", "team=theirs"], lambda r: r["team"] != r["attack_team"]),
 ])
 def test_scalar_filters_narrow_what_sql_reads(factory, args, column):
     with factory() as db:
@@ -222,6 +236,58 @@ def test_prefiltered_rows_are_plain_dicts_with_the_row_keys(factory):
     with factory() as db:
         rows = prefiltered(db, ["kind=kill"])
     assert rows and all(type(r) is dict and tuple(r) == ROW_KEYS for r in rows)
+
+
+def test_the_prefilter_is_streamed_not_listed(factory):
+    with factory() as db:
+        f = filters.parse([])
+        ctx, actor = lib._context(db, f)
+        rows = lib._prefiltered_rows(db, f, ctx, actor)
+        assert not isinstance(rows, (list, tuple)) and iter(rows) is rows
+
+
+def test_search_hands_the_matcher_an_iterator_and_never_a_list(factory, monkeypatch):
+    seen = []
+    real = match.select
+
+    def spy(f, ctx, rows):
+        seen.append(rows)
+        return real(f, ctx, rows)
+
+    monkeypatch.setattr(lib.match, "select", spy)
+    with factory() as db:
+        lib.search(db, ["tag=smoke"])
+    assert len(seen) == 1 and not isinstance(seen[0], (list, tuple))
+
+
+def test_the_query_is_executed_with_yield_per(factory, monkeypatch):
+    options = []
+    with factory() as db:
+        real = db.execute
+
+        def spy(statement, *a, **kw):
+            options.append(getattr(statement, "get_execution_options", lambda: {})())
+            return real(statement, *a, **kw)
+
+        monkeypatch.setattr(db, "execute", spy)
+        lib.search(db, ["kind=kill"])
+    assert any(o.get("yield_per") == 2000 for o in options)
+
+
+@pytest.mark.parametrize("tag", ["smoke", "SMOKE", "sm", "mo", "%", "_", "a b", 'w"on', "wo\\n", "é", "x\ny"])
+def test_tag_condition_is_a_superset_for_odd_values(factory, tag):
+    with factory() as db:
+        f = filters.parse([f"tag={tag}"])
+        want = {row_key(r) for r in match.select(f, expected_ctx(db, f), all_rows(db))}
+        got = {row_key(r) for r in prefiltered(db, [f"tag={tag}"])}
+    assert want <= got
+
+
+def test_the_tag_needle_is_the_quoted_json_element(factory):
+    # the text form of a stored tag list holds `"smoke"` with its quotes on both dialects
+    with factory() as db:
+        text_form = db.execute(text("SELECT tags FROM replay_moment_index WHERE kind='cast'")).scalars().first()
+    assert '"smoke"' in text_form
 
 
 def test_the_r1_table_is_not_vacuous(factory):

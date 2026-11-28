@@ -47,6 +47,8 @@ def our_team(f: Filters, ctx: Context, row: dict) -> str | None:
         return ctx.ours.get(row["replay_id"])
     if f.side is not None:
         attack = row["attack_team"]
+        if attack is None:  # no known attacker, so no known defender either
+            return None
         return attack if f.side == "attack" else _other(attack)
     return None
 
@@ -55,13 +57,18 @@ def _in_range(rng: tuple[int, int] | None, value) -> bool:
     return rng is None or (value is not None and rng[0] <= value <= rng[1])
 
 
+_SLASHED_AGENT = "KAY/O/"  # the one agent whose name holds a slash
+
+
 def _ability_tail(row: dict) -> str | None:
     """The ability's own name: `ability` is "<agent>/<ability>", and an agent's name may hold a slash
-    ("KAY/O/NULL/cmd" -> "NULL/cmd"). The row's agent plus "/" is stripped when it is the prefix, else the
+    ("KAY/O/NULL/cmd" -> "NULL/cmd"). Stripped in order: "KAY/O/" (any case), the row's agent plus "/", else the
     text after the first "/"."""
     ability = row.get("ability")
     if not ability:
         return None
+    if ability[:len(_SLASHED_AGENT)].casefold() == _SLASHED_AGENT.casefold():
+        return ability[len(_SLASHED_AGENT):]
     agent = row.get("agent")
     if agent and ability.casefold().startswith(agent.casefold() + "/"):
         return ability[len(agent) + 1:]
@@ -69,10 +76,8 @@ def _ability_tail(row: dict) -> str | None:
 
 
 def _ability_ok(wanted: str, row: dict) -> bool:
+    """`ability=` is a case-insensitive part of the ability's name; a keybind is never searched."""
     w = wanted.casefold()
-    if len(w) == 1:
-        key = row.get("ability_key")
-        return key is not None and key.casefold() == w
     tail = _ability_tail(row)
     return tail is not None and w in tail.casefold()
 

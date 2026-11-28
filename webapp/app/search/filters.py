@@ -3,6 +3,7 @@
 Standard library only. An unknown key, a bad value, a repeated key (except `tag`), `as` with `side`, or an
 our/their filter without `as`/`side` is a `FilterError` naming the key, never an empty result.
 `since` and `until` are UTC calendar days of the match start (an evening match in the US can fall on the next day).
+`ability` is a case-insensitive part of an ability's name (two characters or more); never a keybind letter.
 """
 
 from __future__ import annotations
@@ -183,7 +184,12 @@ def parse(args: list[str]) -> Filters:
             v["team"] = _choice(key, value, ("ours", "theirs"))
         elif key == "page":
             v["page"] = _page(key, value)
-        else:  # circle, player, agent, ability
+        elif key == "ability":
+            # keybinds can change per player, so only an ability's name is searchable
+            if len(value) < 2:
+                raise FilterError("ability: give the ability's name, e.g. ability=owl")
+            v[key] = value
+        else:  # circle, player, agent
             v[key] = value
 
     if "left" in v:

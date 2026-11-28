@@ -43,16 +43,15 @@ def buy_of(round_number, loadouts) -> str | None:
     return "full"
 
 
-KEY_COLUMN_LENGTH = 16  # `ReplayMomentIndex.ability_key`; anything longer is stored as None
-
-# The stored names put the archetype letter (or the digit slot) between underscores: "Q_Molotov",
-# "4_Smoke", "Grenadier_Q_SemtexBasic", "BountyHunter_4_WolfHound". Many start with a codename instead.
+# The stored names put a one-character token between underscores: "Q_Molotov", "4_Smoke",
+# "Grenadier_Q_SemtexBasic", "BountyHunter_4_WolfHound". Many start with a codename instead. Internal data
+# (`ability_key`): not a keybind, and nothing searches it.
 _KEY_TOKEN = re.compile(r"(?:^|_)([CQEX4])_")
 
 
 def _key_of(name):
-    """The archetype letter of an ability name ("Q_Molotov" -> "Q", "Cable_X_FishingHook_Cage" -> "X"); None when
-    the name has no single-character token."""
+    """The one-character token of an ability's internal name ("Q_Molotov" -> "Q", "Cable_X_FishingHook_Cage" ->
+    "X"); None when the name has none."""
     if not name:
         return None
     found = _KEY_TOKEN.search(name)
@@ -155,8 +154,6 @@ def build_rows(inputs: dict) -> list[dict]:
 
         for c in rnd.get("casts") or []:
             key = next((x for x in (_key_of(nm) for nm in c.get("names") or ()) if x), None)
-            if key is not None and len(key) > KEY_COLUMN_LENGTH:
-                key = None
             add("cast", c["t"], t_end=c.get("t_end"), slot=c.get("by"), agent=c.get("agent"),
                 ability=c.get("ability_id"), ability_key=key, ult=c.get("type") == "ult",
                 tags=c.get("kinds"))

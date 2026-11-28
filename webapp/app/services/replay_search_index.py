@@ -239,7 +239,7 @@ def rebuild(session_factory, replay_id: int) -> str:
         with session_factory() as db:
             key = None
             try:
-                parts =key_parts(db, [replay_id]).get(replay_id)
+                parts = key_parts(db, [replay_id]).get(replay_id)
                 if parts is None:
                     return "skipped: not linked"
                 key = index.source_key(parts)
@@ -267,7 +267,8 @@ def rebuild(session_factory, replay_id: int) -> str:
                         db.add(state)
                     elif key is not None and state.key == key and state.revision == index.INDEX_REVISION:
                         # another build of this replay already stored this key: its row is current, leave it
-                        return f"failed: {message}"
+                        # (not a failure: the sweep resolves any Site health row for it)
+                        return "skipped: built elsewhere"
                     state.error, state.built_at = message, _now()
                     db.commit()
                 except Exception:  # noqa: BLE001
@@ -302,8 +303,9 @@ def pending(db, limit: int, skip=()) -> list[int]:
     return sorted(out, reverse=True)[:limit]
 
 
-def drop_unlinked(db) -> int:
-    """Delete the index and state rows of replays no longer linked; the number of replays dropped. The caller commits."""
+def drop_unlinked(db) -> list[int]:
+    """Delete the index and state rows of replays no longer linked; the dropped replay ids, sorted (`len` is the
+    number dropped). The caller commits."""
     linked = {rid for rid, _ in _linked(db)}
     held = set(db.execute(select(ReplayMomentIndex.replay_id).distinct()).scalars())
     held |= set(db.execute(select(ReplayMomentIndexState.replay_id)).scalars())
@@ -311,7 +313,7 @@ def drop_unlinked(db) -> int:
     for ids in _chunks(gone):
         db.execute(delete(ReplayMomentIndex).where(ReplayMomentIndex.replay_id.in_(ids)))
         db.execute(delete(ReplayMomentIndexState).where(ReplayMomentIndexState.replay_id.in_(ids)))
-    return len(gone)
+    return sorted(gone)
 
 
 def rows_for_replay(db, replay_id: int) -> tuple[bool, dict[int, list[dict]]]:

@@ -54,14 +54,23 @@ def run_pass(session_factory, stop, failed_until: dict[int, float], now: float, 
             del failed_until[replay_id]
 
     db = session_factory()
+    dropped: list[int] = []
     try:
         try:
-            if drop(db):
+            gone = drop(db)
+            if gone:
                 log.info("search-index sweep: dropped rows of unlinked replays")
             db.commit()
+            dropped = list(gone) if isinstance(gone, (list, tuple, set, frozenset)) else []
         except Exception:  # noqa: BLE001 - a failed drop must not stop the rebuilds
             log.exception("search-index sweep: drop_unlinked failed")
             db.rollback()
+        if dropped:  # an unlinked replay's failure row would otherwise never clear
+            try:
+                for replay_id, uuid in uuids(db, dropped).items():
+                    site_health.resolve("search_index_failed", uuid, replay_id=replay_id)
+            except Exception:  # noqa: BLE001 - Site health is an extra
+                log.exception("search-index sweep: resolving dropped replays failed")
         replay_ids = select(db, limit, skip=set(failed_until))
         try:
             uuid_of = uuids(db, replay_ids)

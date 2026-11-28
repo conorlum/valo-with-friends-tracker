@@ -1,7 +1,9 @@
 """The pure replay-search matcher on hand-made rows (R1, R4, R5, R6)."""
 
+import pytest
+
 from app.search import match
-from app.search.filters import parse
+from app.search.filters import FilterError, parse
 from app.search.match import ROW_KEYS, Context, matches, our_team, select, summary
 
 
@@ -105,10 +107,10 @@ def test_ability_name_and_key():
     cast = row(kind="cast", ability="Sova/Hunter's Fury", ability_key="4")
     assert matches(parse(["ability=hunter"]), ctx(), cast)
     assert not matches(parse(["ability=sova"]), ctx(), cast)  # only the ability's name part
-    assert matches(parse(["ability=4"]), ctx(), cast)
-    assert not matches(parse(["ability=x"]), ctx(), cast)
-    assert matches(parse(["ability=X"]), ctx(), row(kind="cast", ability="A/B", ability_key="X"))
-    assert matches(parse(["ability=x"]), ctx(), row(kind="cast", ability="A/B", ability_key="X"))
+    for letter in ("4", "x", "X", "q"):  # a keybind letter is never a filter: the parser refuses it
+        with pytest.raises(FilterError, match="ability: give the ability's name"):
+            parse([f"ability={letter}"])
+    assert not matches(parse(["ability=bb"]), ctx(), row(kind="cast", ability="A/Z", ability_key="bb"))  # name only
     assert not matches(parse(["ability=hunter"]), ctx(), row(kind="cast", ability=None))
 
 

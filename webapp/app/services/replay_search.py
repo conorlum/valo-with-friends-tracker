@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from datetime import timedelta
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Text, and_, cast, func, or_, select
 
 from app.models import MatchPlayer, Player
 from app.models.replay import Replay, ReplayPlayer
@@ -65,14 +65,18 @@ def _context(db, f) -> tuple[match.Context, int | None]:
     return match.Context(ours, slots, None if allowed is None else frozenset(allowed)), actor
 
 
-def _prefiltered_rows(db, f, ctx: match.Context, actor) -> list[dict]:
+STREAM_ROWS = 2000  # rows fetched per round trip; memory is bounded by the hits, not by the table
+
+
+def _prefiltered_rows(db, f, ctx: match.Context, actor):
+    """The prefiltered index rows as an iterator of dicts, streamed from the database."""
     wanted: set[int] | None = None
     for ids in (ctx.allowed, set(ctx.ours) if f.as_ is not None else None,
                 set(ctx.player_slots) if f.player is not None else None):
         if ids is not None:
             wanted = set(ids) if wanted is None else wanted & set(ids)
     if wanted is not None and not wanted:
-        return []
+        return
     t = ReplayMomentIndex
     query = (select(*[getattr(t, k) for k in ROW_KEYS])
              .join(ReplayMomentIndexState, ReplayMomentIndexState.replay_id == t.replay_id)
@@ -81,7 +85,18 @@ def _prefiltered_rows(db, f, ctx: match.Context, actor) -> list[dict]:
         query = query.where(condition)
     if wanted is not None:
         query = query.where(t.replay_id.in_(sorted(wanted)))
-    return [{k: row[k] for k in ROW_KEYS} for row in db.execute(query).mappings()]
+    for row in db.execute(query.execution_options(yield_per=STREAM_ROWS)).mappings():
+        yield {k: row[k] for k in ROW_KEYS}
+
+
+def _tag_needle(tag: str) -> str | None:
+    """A LIKE pattern for the quoted element in a tag list's JSON text (`["alone", "x"]` on SQLite and on
+    PostgreSQL's JSON and JSONB alike), or None when the tag's JSON form could differ between dialects (a quote,
+    backslash, control or non-ASCII character): the matcher then decides alone."""
+    if not tag.isascii() or not tag.isprintable() or '"' in tag or "\\" in tag:
+        return None
+    escaped = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f'%"{escaped}"%'
 
 
 def _either(column_a, column_b, test):
@@ -90,8 +105,8 @@ def _either(column_a, column_b, test):
 
 
 def _conditions(f, actor) -> list:
-    """SQL conditions that keep a superset of what `match.matches` keeps (never fewer rows). `tag` is left to the
-    matcher (a JSON column), and so are `player`, `with`, `circle` and `as` beyond the replay-id set."""
+    """SQL conditions that keep a superset of what `match.matches` keeps (never fewer rows). `player`, `with`,
+    `circle` and `as` go beyond the replay-id set only through the matcher."""
     t = ReplayMomentIndex
     out = []
     if f.kind is not None:
@@ -127,8 +142,17 @@ def _conditions(f, actor) -> list:
                         t.plant_t + match.SPIKE_SECONDS - t.t >= f.left - 1e-6))  # slack for float rounding
     if f.won is not None:
         out.append(t.won_team.is_not(None))
+        if f.side is not None:  # our team is the attacking or the defending one
+            out.append(t.won_team == t.attack_team if (f.side == "attack") == f.won else t.won_team != t.attack_team)
     if f.team is not None:
         out.append(t.team.is_not(None))
+        if f.side is not None:
+            out.append(t.team == t.attack_team if (f.side == "attack") == (f.team == "ours")
+                       else t.team != t.attack_team)
+    for tag in f.tags:
+        needle = _tag_needle(tag)
+        if needle is not None:
+            out.append(cast(t.tags, Text).like(needle, escape="\\"))
     if f.state is not None:
         x, y = f.state
         out.append(or_(and_(t.alive1 == x, t.alive2 == y), and_(t.alive1 == y, t.alive2 == x)))
@@ -140,11 +164,8 @@ def _conditions(f, actor) -> list:
             out.append(_either(t.buy1, t.buy2, lambda column, buy=buy: column == buy))
     if f.ability is not None:
         wanted_ability = f.ability.casefold()
-        if wanted_ability.isascii():
-            if len(wanted_ability) == 1:
-                out.append(func.lower(t.ability_key) == wanted_ability)
-            else:
-                out.append(func.lower(t.ability).contains(wanted_ability, autoescape=True))
+        if wanted_ability.isascii():  # a substring of the whole id is a superset of one of its name part
+            out.append(func.lower(t.ability).contains(wanted_ability, autoescape=True))
     return out
 
 

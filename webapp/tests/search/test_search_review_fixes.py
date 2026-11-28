@@ -69,16 +69,6 @@ def test_first_name_with_a_letter_decides_and_none_when_no_name_has_one():
     assert [c["ability_key"] for c in casts] == ["E", None, None]
 
 
-def test_an_unexpected_long_value_is_stored_as_none(monkeypatch):
-    inputs = _inputs()
-    inputs["rounds"][1]["casts"] = [{"by": 2, "agent": "A", "t": 1.0, "names": ["x"], "type": "ability",
-                                     "ability_id": "A/M"}]
-    for value, expected in (("X" * 16, "X" * 16), ("X" * 17, None)):
-        monkeypatch.setattr(index, "_key_of", lambda _n, v=value: v)
-        cast = next(r for r in index.build_rows(inputs) if r["kind"] == "cast")
-        assert cast["ability_key"] == expected
-
-
 def test_the_column_is_wide_enough_in_the_model_and_the_migration():
     assert ReplayMomentIndex.__table__.c.ability_key.type.length == 16
     source = (Path(__file__).resolve().parents[2] / "alembic" / "versions" / "0039_replay_moment_index.py"
@@ -262,7 +252,7 @@ def test_a_failed_build_leaves_a_row_that_already_holds_the_key_alone(factory, m
     before = state_of(factory, rid)
     key, built_at = before.key, before.built_at
     monkeypatch.setattr(index, "build_rows", _raise)
-    assert store.rebuild(factory, rid).startswith("failed: ")
+    assert store.rebuild(factory, rid) == "skipped: built elsewhere"
     after = state_of(factory, rid)
     assert after.error is None and after.key == key and after.built_at == built_at
     assert pending_ids(factory) == []
