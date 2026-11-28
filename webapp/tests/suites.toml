@@ -208,6 +208,11 @@ guards = ["tests/replays/layout_golden.py", "tests/fixtures/control/layout_golde
           "app/replays/layouts.py", "app/replays/height_inputs.py", "app/services/layout_walls.py", "app/static/data/layouts.json", "scripts/map_layout*.py", "../replay_tasks/tasks.py",
           "../replay_worker/server.py", "../replay_worker/control_cache.py"]
 
+[search]
+about = "Replay search: the filter parser and the one pure matcher that decides every hit."
+tests = ["tests/search/test_search_*.py"]
+guards = ["app/search/**"]
+
 [browser]
 about = "Real browser journeys (Playwright, network blocked): fragments, event wiring, the replay canvas. Needs a browser installed."
 tests = ["tests/browser/**/test_*.py"]
