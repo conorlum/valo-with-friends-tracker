@@ -55,15 +55,26 @@ def _in_range(rng: tuple[int, int] | None, value) -> bool:
     return rng is None or (value is not None and rng[0] <= value <= rng[1])
 
 
+def _ability_tail(row: dict) -> str | None:
+    """The ability's own name: `ability` is "<agent>/<ability>", and an agent's name may hold a slash
+    ("KAY/O/NULL/cmd" -> "NULL/cmd"). The row's agent plus "/" is stripped when it is the prefix, else the
+    text after the first "/"."""
+    ability = row.get("ability")
+    if not ability:
+        return None
+    agent = row.get("agent")
+    if agent and ability.casefold().startswith(agent.casefold() + "/"):
+        return ability[len(agent) + 1:]
+    return ability.split("/", 1)[-1]
+
+
 def _ability_ok(wanted: str, row: dict) -> bool:
     w = wanted.casefold()
     if len(w) == 1:
         key = row.get("ability_key")
         return key is not None and key.casefold() == w
-    ability = row.get("ability")
-    if not ability:
-        return False
-    return w in ability.split("/", 1)[-1].casefold()
+    tail = _ability_tail(row)
+    return tail is not None and w in tail.casefold()
 
 
 def matches(f: Filters, ctx: Context, row: dict) -> bool:
@@ -182,8 +193,7 @@ def _label(slot, agent, name_of: Callable[[int], str | None], our: str | None) -
 
 
 def _ability_name(row: dict) -> str:
-    ability = row.get("ability")
-    return ability.split("/", 1)[-1] if ability else "an ability"
+    return _ability_tail(row) or "an ability"
 
 
 def summary(row: dict, name_of: Callable[[int], str | None], our: str | None) -> str:

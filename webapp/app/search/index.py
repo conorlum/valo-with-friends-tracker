@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from app.search.match import ROW_KEYS
 
@@ -42,11 +43,20 @@ def buy_of(round_number, loadouts) -> str | None:
     return "full"
 
 
+KEY_COLUMN_LENGTH = 16  # `ReplayMomentIndex.ability_key`; anything longer is stored as None
+
+# The stored names put the archetype letter (or the digit slot) between underscores: "Q_Molotov",
+# "4_Smoke", "Grenadier_Q_SemtexBasic", "BountyHunter_4_WolfHound". Many start with a codename instead.
+_KEY_TOKEN = re.compile(r"(?:^|_)([CQEX4])_")
+
+
 def _key_of(name):
-    """The archetype letter of an ability name ("Q_Molotov" -> "Q"); mirrors `critutil.extract._key_of`."""
-    if not name or "_" not in name:
+    """The archetype letter of an ability name ("Q_Molotov" -> "Q", "Cable_X_FishingHook_Cage" -> "X"); None when
+    the name has no single-character token."""
+    if not name:
         return None
-    return name.split("_", 1)[0]
+    found = _KEY_TOKEN.search(name)
+    return found.group(1) if found else None
 
 
 def _slot_info(players: dict, slot) -> dict:
@@ -145,6 +155,8 @@ def build_rows(inputs: dict) -> list[dict]:
 
         for c in rnd.get("casts") or []:
             key = next((x for x in (_key_of(nm) for nm in c.get("names") or ()) if x), None)
+            if key is not None and len(key) > KEY_COLUMN_LENGTH:
+                key = None
             add("cast", c["t"], t_end=c.get("t_end"), slot=c.get("by"), agent=c.get("agent"),
                 ability=c.get("ability_id"), ability_key=key, ult=c.get("type") == "ult",
                 tags=c.get("kinds"))

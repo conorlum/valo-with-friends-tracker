@@ -47,7 +47,7 @@ class ReplayMomentIndex(Base):
     other_agent: Mapped[str | None] = mapped_column(String(32), nullable=True)
     other_team: Mapped[str | None] = mapped_column(String(8), nullable=True)
     ability: Mapped[str | None] = mapped_column(String(96), nullable=True)
-    ability_key: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    ability_key: Mapped[str | None] = mapped_column(String(16), nullable=True)
     ult: Mapped[bool] = mapped_column(Boolean, nullable=False)
     first: Mapped[bool] = mapped_column(Boolean, nullable=False)
     alive1: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)

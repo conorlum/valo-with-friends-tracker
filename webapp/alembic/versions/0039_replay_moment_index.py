@@ -52,7 +52,7 @@ def upgrade() -> None:
         sa.Column("other_agent", sa.String(length=32), nullable=True),
         sa.Column("other_team", sa.String(length=8), nullable=True),
         sa.Column("ability", sa.String(length=96), nullable=True),
-        sa.Column("ability_key", sa.String(length=8), nullable=True),
+        sa.Column("ability_key", sa.String(length=16), nullable=True),
         sa.Column("ult", sa.Boolean(), nullable=False),
         sa.Column("first", sa.Boolean(), nullable=False),
         sa.Column("alive1", sa.SmallInteger(), nullable=True),

@@ -59,6 +59,11 @@ def _on_replay_clock(value, offset):
     return None if value is None else round(value - offset, 3)
 
 
+def _round3(value):
+    """`ReplayGap.t_open` is a REAL (float32), so 41.47 comes back as 41.470001220703125."""
+    return None if value is None else round(float(value), 3)
+
+
 def load_inputs(db, replay_id: int) -> dict | None:
     """The DB-free `inputs` of `index.build_rows`; None when the replay is not linked to a match."""
     replay = db.get(Replay, replay_id)
@@ -110,7 +115,7 @@ def load_inputs(db, replay_id: int) -> dict | None:
     backshots: dict[int, list] = {}
     for g in (db.query(ReplayGap).filter(ReplayGap.replay_id == replay_id, ReplayGap.kind == "backshot")
               .order_by(ReplayGap.round_number, ReplayGap.seq)):
-        backshots.setdefault(g.round_number, []).append({"t": g.t_open, "victim_slot": g.victim_slot,
+        backshots.setdefault(g.round_number, []).append({"t": _round3(g.t_open), "victim_slot": g.victim_slot,
                                                          "cause": g.cause})
 
     out_rounds = {}
@@ -166,29 +171,38 @@ def key_parts(db, replay_ids) -> dict[int, dict]:
                   .filter(ReplayGap.replay_id.in_(ids), ReplayGap.kind == "backshot")
                   .order_by(ReplayGap.replay_id, ReplayGap.round_number, ReplayGap.seq)):
             parts[g.replay_id]["backshots"].append([g.round_number, g.seq, g.t_open, g.victim_slot, g.cause])
-        for rp in db.query(ReplayPlayer.replay_id, ReplayPlayer.slot, ReplayPlayer.match_player_id).filter(
-                ReplayPlayer.replay_id.in_(ids)):
-            parts[rp.replay_id]["slots"][str(rp.slot)] = rp.match_player_id
+        for rp in db.query(ReplayPlayer.replay_id, ReplayPlayer.slot, ReplayPlayer.match_player_id,
+                           ReplayPlayer.agent).filter(ReplayPlayer.replay_id.in_(ids)):
+            parts[rp.replay_id]["slots"][str(rp.slot)] = [rp.match_player_id, rp.agent]
 
         by_match: dict[int, list[int]] = {}
         for rid in ids:
             by_match.setdefault(linked[rid], []).append(rid)
         match_ids = list(by_match)
+        players: dict[int, list] = {m: [] for m in match_ids}
+        for mp in (db.query(MatchPlayer.id, MatchPlayer.match_id, MatchPlayer.player_id, MatchPlayer.team)
+                   .filter(MatchPlayer.match_id.in_(match_ids)).order_by(MatchPlayer.id)):
+            players[mp.match_id].append([mp.id, mp.player_id, _team_value(mp.team)])
         round_info: dict[int, dict] = {m: {} for m in match_ids}
         round_match: dict[int, tuple[int, int]] = {}
-        for r in db.query(Round.id, Round.match_id, Round.round_number, Round.outcome, Round.plant_time,
-                          Round.defuse_time).filter(Round.match_id.in_(match_ids)):
-            round_info[r.match_id][str(r.round_number)] = [r.outcome, r.plant_time, r.defuse_time]
+        for r in db.query(Round.id, Round.match_id, Round.round_number, Round.outcome, Round.planted,
+                          Round.exploded, Round.defused, Round.plant_time, Round.defuse_time).filter(
+                              Round.match_id.in_(match_ids)):
+            round_info[r.match_id][str(r.round_number)] = [r.outcome, r.planted, r.exploded, r.defused,
+                                                           r.plant_time, r.defuse_time]
             round_match[r.id] = (r.match_id, r.round_number)
         sites: dict[int, dict] = {m: {} for m in match_ids}
         for p in db.query(RoundPlant.match_id, RoundPlant.round_number, RoundPlant.site).filter(
                 RoundPlant.match_id.in_(match_ids)):
             sites[p.match_id][str(p.round_number)] = p.site
         kill_ids: dict[int, list] = {m: [] for m in match_ids}
-        for k in (db.query(KillEvent.id, KillEvent.round_id, KillEvent.event_time_seconds)
+        for k in (db.query(KillEvent.id, KillEvent.round_id, KillEvent.event_time_seconds,
+                           KillEvent.killer_match_player_id, KillEvent.death_match_player_id, KillEvent.weapon)
                   .join(Round, Round.id == KillEvent.round_id).filter(Round.match_id.in_(match_ids))
                   .order_by(KillEvent.id)):
-            kill_ids[round_match[k.round_id][0]].append([k.id, k.event_time_seconds])
+            kill_ids[round_match[k.round_id][0]].append([k.id, k.round_id, k.event_time_seconds,
+                                                         k.killer_match_player_id, k.death_match_player_id,
+                                                         k.weapon])
         digests: dict[int, list] = {m: [] for m in match_ids}
         for s in (db.query(RoundPlayerStat.round_id, RoundPlayerStat.match_player_id, RoundPlayerStat.loadout)
                   .join(Round, Round.id == RoundPlayerStat.round_id).filter(Round.match_id.in_(match_ids))):
@@ -198,7 +212,7 @@ def key_parts(db, replay_ids) -> dict[int, dict]:
             digest = hashlib.sha256(json.dumps(sorted(digests[m])).encode("utf-8")).hexdigest()
             for rid in rids:
                 parts[rid].update({"rounds": round_info[m], "sites": sites[m], "kills": kill_ids[m],
-                                   "loadouts": digest})
+                                   "loadouts": digest, "players": players[m]})
     return parts
 
 
@@ -223,8 +237,9 @@ def rebuild(session_factory, replay_id: int) -> str:
     and `built_at` on the state row, so the old key and revision stay and the replay remains pending."""
     try:
         with session_factory() as db:
+            key = None
             try:
-                parts = key_parts(db, [replay_id]).get(replay_id)
+                parts =key_parts(db, [replay_id]).get(replay_id)
                 if parts is None:
                     return "skipped: not linked"
                 key = index.source_key(parts)
@@ -250,6 +265,9 @@ def rebuild(session_factory, replay_id: int) -> str:
                     if state is None:
                         state = ReplayMomentIndexState(replay_id=replay_id, key="", revision=0, row_count=0)
                         db.add(state)
+                    elif key is not None and state.key == key and state.revision == index.INDEX_REVISION:
+                        # another build of this replay already stored this key: its row is current, leave it
+                        return f"failed: {message}"
                     state.error, state.built_at = message, _now()
                     db.commit()
                 except Exception:  # noqa: BLE001
