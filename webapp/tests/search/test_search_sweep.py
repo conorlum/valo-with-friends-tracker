@@ -32,6 +32,8 @@ class Stop:
 @pytest.fixture
 def batch(monkeypatch):
     monkeypatch.setattr(sweep.deploy_drain, "paused_now", lambda: False)
+    monkeypatch.setattr(sweep.site_health, "record", Mock())
+    monkeypatch.setattr(sweep.site_health, "resolve", Mock())
     db = Mock()
     factory = Mock(return_value=db)
     select = Mock(return_value=[9, 8, 7])
@@ -49,7 +51,6 @@ def batch(monkeypatch):
 def run_batch(batch, failed_until=None, now=100, **kwargs):
     return sweep.run_pass(batch.factory, batch.stop, {} if failed_until is None else failed_until, now,
                           select=batch.select, rebuild=batch.rebuild, drop=batch.drop, **kwargs)
-
 
 def test_constants():
     assert (sweep.LOOP_NAME, sweep.CYCLE_S, sweep.FIRST_DELAY_S) == ("search-index", 120, 90)
@@ -140,6 +141,44 @@ def test_drop_error_does_not_block_rebuilds(batch):
     batch.drop.side_effect = RuntimeError("drop failed")
     assert run_batch(batch) == {"rebuilt": 3}
     batch.db.rollback.assert_called()
+
+
+UUIDS = {9: "uuid-9", 8: "uuid-8", 7: "uuid-7"}
+
+
+def test_a_failed_rebuild_records_search_index_failed_with_the_uuid(batch):
+    batch.rebuild.side_effect = ["rebuilt: 1 rows", "failed: ValueError: boom", "rebuilt: 2 rows"]
+    run_batch(batch, uuids=lambda db, ids: {i: UUIDS[i] for i in ids})
+    record = sweep.site_health.record
+    record.assert_called_once()
+    args, kwargs = record.call_args
+    assert args[0] == "search_index_failed" and args[1] == "uuid-8" and "boom" in args[2]
+    assert kwargs.get("replay_id") == 8
+
+
+def test_a_later_rebuilt_status_resolves_that_replays_row(batch):
+    batch.rebuild.side_effect = ["rebuilt: 1 rows", "failed: boom", "rebuilt: 2 rows"]
+    run_batch(batch, uuids=lambda db, ids: {i: UUIDS[i] for i in ids})
+    resolved = sorted(c.args[:2] for c in sweep.site_health.resolve.call_args_list)
+    assert resolved == [("search_index_failed", "uuid-7"), ("search_index_failed", "uuid-9")]
+
+
+def test_a_failed_uuid_lookup_never_fails_the_pass(batch):
+    def broken(db, ids):
+        raise RuntimeError("no db")
+
+    assert run_batch(batch, uuids=broken) == {"rebuilt": 3}
+    sweep.site_health.record.assert_not_called()
+
+
+def test_search_index_failed_is_a_registered_site_health_kind():
+    from app.services import replay_errors, site_health
+
+    assert "search_index_failed" in site_health.RECORDED_KINDS
+    assert "search_index_failed" in site_health.KNOWN_KINDS
+    assert dict(replay_errors.KINDS)["search_index_failed"]
+    assert replay_errors.GROUPS["search_index_failed"] in replay_errors.GROUP_ORDER
+    assert "search_index_failed" in replay_errors.EVENT_KINDS
 
 
 @pytest.fixture

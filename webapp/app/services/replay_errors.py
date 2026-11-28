@@ -71,6 +71,7 @@ KINDS = (
     ("agent_unsupported", "Agents the site doesn't support yet"),
     ("held_ability_unnamed", "Held abilities with no kit name"),
     ("cache_fallback", "Cache fallbacks"),
+    ("search_index_failed", "Replay search index builds failed"),
 )
 GROUP_ORDER = ("Pages", "Background work", "Data", "Replays")
 GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages", "slow_page": "Pages",
@@ -78,11 +79,12 @@ GROUPS = {**{key: "Replays" for key, _ in KINDS}, "page_error": "Pages", "slow_p
           "util_build_failed": "Background work", "util_build_stale": "Background work",
           "worker_overrun": "Background work", "worker_refused": "Background work", "warm_vanished": "Background work",
           "unscored_match": "Data", "kill_impact_missing": "Data", "map_pool_note": "Data", "cache_fallback": "Data",
-          "map_layout_walls": "Data", "agent_unsupported": "Data", "held_ability_unnamed": "Data"}
+          "map_layout_walls": "Data", "agent_unsupported": "Data", "held_ability_unnamed": "Data",
+          "search_index_failed": "Background work"}
 EVENT_KINDS = frozenset({"page_error", "slow_page", "loop_failed", "loop_quiet", "util_build_failed", "util_build_stale",
                          "worker_overrun", "worker_refused", "warm_vanished", "cache_fallback", "forced_deploy",
                          "trip_too_long", "unscored_match", "kill_impact_missing", "map_pool_note", "map_layout_walls", "agent_unsupported",
-                         "held_ability_unnamed"})
+                         "held_ability_unnamed", "search_index_failed"})
 LIVE_KINDS = frozenset({"loop_quiet", "util_build_stale", "unscored_match", "kill_impact_missing", "map_pool_note"})
 # read when the card is computed; the rest come from site_events
 KILL_IMPACT_RECHECK_S = 600  # How often the background pass compares stored per-kill fingerprints

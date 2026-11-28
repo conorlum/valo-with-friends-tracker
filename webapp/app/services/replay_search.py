@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from datetime import timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from app.models import MatchPlayer, Player
 from app.models.replay import Replay, ReplayPlayer
@@ -74,23 +74,78 @@ def _prefiltered_rows(db, f, ctx: match.Context, actor) -> list[dict]:
     if wanted is not None and not wanted:
         return []
     t = ReplayMomentIndex
-    query = (select(t).join(ReplayMomentIndexState, ReplayMomentIndexState.replay_id == t.replay_id)
+    query = (select(*[getattr(t, k) for k in ROW_KEYS])
+             .join(ReplayMomentIndexState, ReplayMomentIndexState.replay_id == t.replay_id)
              .where(ReplayMomentIndexState.revision == index.INDEX_REVISION))
-    if f.kind is not None:
-        query = query.where(t.kind == f.kind)
-    if f.map is not None:
-        query = query.where(func.lower(t.map) == f.map.lower())
-    if f.agent is not None:
-        query = query.where(func.lower(t.agent) == f.agent.lower())
-    if f.since is not None:
-        query = query.where(t.played_at >= f.since.isoformat())
-    if f.until is not None:
-        query = query.where(t.played_at < (f.until + timedelta(days=1)).isoformat())
-    if actor is not None:
-        query = query.where(or_(t.kind == "state", t.player_id == actor))
+    for condition in _conditions(f, actor):
+        query = query.where(condition)
     if wanted is not None:
         query = query.where(t.replay_id.in_(sorted(wanted)))
-    return [{k: getattr(r, k) for k in ROW_KEYS} for r in db.execute(query).scalars()]
+    return [{k: row[k] for k in ROW_KEYS} for row in db.execute(query).mappings()]
+
+
+def _either(column_a, column_b, test):
+    """`test` on either of two columns: the filter's team order is only known per row."""
+    return or_(test(column_a), test(column_b))
+
+
+def _conditions(f, actor) -> list:
+    """SQL conditions that keep a superset of what `match.matches` keeps (never fewer rows). `tag` is left to the
+    matcher (a JSON column), and so are `player`, `with`, `circle` and `as` beyond the replay-id set."""
+    t = ReplayMomentIndex
+    out = []
+    if f.kind is not None:
+        out.append(t.kind == f.kind)
+    if f.map is not None:
+        out.append(func.lower(t.map) == f.map.lower())
+    if f.agent is not None:
+        out.append(func.lower(t.agent) == f.agent.lower())
+    if f.since is not None:
+        out.append(t.played_at >= f.since.isoformat())
+    if f.until is not None:
+        out.append(t.played_at < (f.until + timedelta(days=1)).isoformat())
+    if actor is not None:
+        out.append(or_(t.kind == "state", t.player_id == actor))
+    if f.ult is not None:
+        out.append(t.ult == f.ult)
+    if f.first is not None:
+        out.append(t.first == f.first)
+    if f.planted is not None:
+        out.append(t.planted == f.planted)
+    if f.post_plant is not None:
+        out.append(t.post_plant == f.post_plant)
+    if f.site is not None:
+        out.append(t.site == f.site)
+    if f.round is not None:
+        out.append(t.round.between(*f.round))
+    if f.after is not None:
+        out.append(t.t >= f.after - 1e-6)
+    if f.before is not None:
+        out.append(t.t <= f.before + 1e-6)
+    if f.left is not None:
+        out.append(and_(t.post_plant.is_(True), t.plant_t.is_not(None),
+                        t.plant_t + match.SPIKE_SECONDS - t.t >= f.left - 1e-6))  # slack for float rounding
+    if f.won is not None:
+        out.append(t.won_team.is_not(None))
+    if f.team is not None:
+        out.append(t.team.is_not(None))
+    if f.state is not None:
+        x, y = f.state
+        out.append(or_(and_(t.alive1 == x, t.alive2 == y), and_(t.alive1 == y, t.alive2 == x)))
+    for rng in (f.our_score, f.their_score):
+        if rng is not None:
+            out.append(_either(t.score1, t.score2, lambda column, rng=rng: column.between(*rng)))
+    for buy in (f.our_buy, f.their_buy):
+        if buy is not None:
+            out.append(_either(t.buy1, t.buy2, lambda column, buy=buy: column == buy))
+    if f.ability is not None:
+        wanted_ability = f.ability.casefold()
+        if wanted_ability.isascii():
+            if len(wanted_ability) == 1:
+                out.append(func.lower(t.ability_key) == wanted_ability)
+            else:
+                out.append(func.lower(t.ability).contains(wanted_ability, autoescape=True))
+    return out
 
 
 def _names(db, replay_ids) -> dict[int, dict[int, tuple[str, str]]]:

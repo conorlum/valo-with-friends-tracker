@@ -3,6 +3,7 @@
     python scripts/with_friends_db.py --expect-database valowithfriendsdb --read-only scripts/replay_search.py kind=death first=1 side=attack --format coach
 
 Filters are `key=value` arguments (kind, map, since, until, with, circle, as, side, round, state, agent, ...).
+`since` and `until` are UTC calendar days of the match start (an evening match in the US can fall on the next day).
 json (default): one hit per line, then a final {"total","page","pages"} line. coach: one line per hit.
 `--status` prints the index counts (linked, indexed, missing, stale, failed). A bad filter prints
 `error: <message>` to stderr and exits 2. The script never writes.

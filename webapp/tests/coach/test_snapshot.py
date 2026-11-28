@@ -247,6 +247,22 @@ def test_assemble_flattens_the_rows_and_flags_a_stale_index():
     assert "search" in stale
 
 
+def test_an_index_read_that_raises_rolls_back_and_never_fails_the_run(monkeypatch, caplog):
+    from unittest.mock import Mock
+
+    def boom(db, replay_id):
+        raise RuntimeError("relation replay_moment_index_state does not exist")
+
+    monkeypatch.setattr(snapshot.replay_search_index, "rows_for_replay", boom)
+    db = Mock()
+    context = {"match": {"asset_key": None, "rounds": []}, "players": {}}
+    with caplog.at_level("WARNING"):
+        data = snapshot._read_rounds(db, Mock(id=5), context, {"rounds": {}})
+    db.rollback.assert_called_once_with()
+    assert data["search"] == [] and data["rounds"] == {}
+    assert len([r for r in caplog.records if "search index" in r.getMessage().lower()]) == 1
+
+
 def test_a_snapshot_without_search_rows_saves_exactly_what_it_did(tmp_path):
     snapshot.save(built(), tmp_path)
     head = json.loads((tmp_path / snapshot.FILE).read_text(encoding="utf-8"))

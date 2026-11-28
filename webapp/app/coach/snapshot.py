@@ -206,7 +206,12 @@ def _read_rounds(db, replay, context, util):
         controls[n] = (answer.status, bool(answer.stale), shares)
     # Context is stored once in snapshot.json; each round file keeps only that round's casts.
     context = {**context, "util_info": util.get("info") or {}}
-    search = replay_search_index.rows_for_replay(db, replay.id)
+    try:
+        search = replay_search_index.rows_for_replay(db, replay.id)
+    except Exception:  # noqa: BLE001 - the index is an extra; a missing table or a bad read never fails a run
+        db.rollback()
+        log.warning("coach snapshot: the search index could not be read; reading the match without it", exc_info=True)
+        search = (False, {})
     return assemble(context, blobs, controls, links, util.get("rounds"), search)
 
 

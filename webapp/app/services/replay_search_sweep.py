@@ -12,7 +12,10 @@ import logging
 import threading
 import time
 
+from sqlalchemy import select as sa_select
+
 from app.config import settings
+from app.models.replay import Replay
 from app.services import deploy_drain, replay_search_index, site_health
 
 log = logging.getLogger(__name__)
@@ -25,9 +28,21 @@ PAUSE_S = 0.2
 RETRY_AFTER_S = 6 * 3600
 
 
+def _match_uuids(db, replay_ids) -> dict[int, str]:
+    """{replay id: its match uuid}, the key of a replay's Site health row."""
+    if not replay_ids:
+        return {}
+    rows = db.execute(sa_select(Replay.id, Replay.match_uuid).where(Replay.id.in_(list(replay_ids)))).all()
+    return {rid: str(uuid) for rid, uuid in rows}
+
+
 def run_pass(session_factory, stop, failed_until: dict[int, float], now: float, *,
-             select=None, rebuild=None, drop=None, paused=None, limit=PER_PASS, pause_s=PAUSE_S) -> dict[str, int]:
-    """Drop unlinked rows and select once, release that session, then rebuild each replay independently."""
+             select=None, rebuild=None, drop=None, paused=None, limit=PER_PASS, pause_s=PAUSE_S,
+             uuids=None) -> dict[str, int]:
+    """Drop unlinked rows and select once, release that session, then rebuild each replay independently.
+    A failed rebuild records the `search_index_failed` Site health kind (key = the match uuid); the replay's next
+    rebuild resolves it. Both only queue in memory."""
+    uuids = _match_uuids if uuids is None else uuids
     paused = deploy_drain.paused_now if paused is None else paused
     if paused():
         return {"paused": 1}
@@ -48,6 +63,11 @@ def run_pass(session_factory, stop, failed_until: dict[int, float], now: float, 
             log.exception("search-index sweep: drop_unlinked failed")
             db.rollback()
         replay_ids = select(db, limit, skip=set(failed_until))
+        try:
+            uuid_of = uuids(db, replay_ids)
+        except Exception:  # noqa: BLE001 - Site health is an extra; it never stops a rebuild
+            log.exception("search-index sweep: match uuid lookup failed")
+            uuid_of = {}
     finally:
         try:
             db.rollback()
@@ -62,8 +82,14 @@ def run_pass(session_factory, stop, failed_until: dict[int, float], now: float, 
             counts["paused"] = 1
             break
         status = rebuild(session_factory, replay_id)
+        uuid = uuid_of.get(replay_id)
         if status.startswith("failed"):
             failed_until[replay_id] = now + RETRY_AFTER_S
+            if uuid is not None:
+                site_health.record("search_index_failed", uuid, status.partition(":")[2].strip() or status,
+                                   replay_id=replay_id)
+        elif uuid is not None and status.split(":")[0] in ("rebuilt", "skipped"):
+            site_health.resolve("search_index_failed", uuid, replay_id=replay_id)
         key = status.split(":")[0]
         counts[key] = counts.get(key, 0) + 1
         if index < len(replay_ids) - 1 and stop.wait(pause_s):

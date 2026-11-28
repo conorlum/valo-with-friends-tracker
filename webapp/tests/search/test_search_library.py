@@ -150,6 +150,17 @@ R1_TABLE = [
     ["player=Alpha#1"], ["player=Alpha#1", "kind=state"], ["player=Bravo#2", "kind=cast"],
     ["with=Echo#5"], ["with=Kilo#11", "kind=kill"], ["round=1..2", "after=10"], ["round=2", "kind=kill"],
     ["kind=kill", "first=1", "side=attack"], ["as=Alpha#1", "state=5v4"],
+    # the scalar filters pushed into SQL (R1.2)
+    ["ult=1"], ["ult=0", "kind=cast"], ["first=1"], ["first=0", "kind=kill"], ["planted=1"], ["planted=0", "kind=kill"],
+    ["post_plant=1"], ["post_plant=0", "kind=state"], ["site=a"], ["site=b", "kind=plant"], ["left=5"],
+    ["round=2"], ["round=1..1", "kind=kill"], ["after=22"], ["before=22"], ["after=10", "before=26", "kind=kill"],
+    ["as=Alpha#1", "state=4v5"], ["as=Foxtrot#6", "state=5v4"], ["side=attack", "state=5v5"],
+    ["side=defense", "state=4v5", "kind=kill"], ["as=Alpha#1", "our_score=0"], ["as=Foxtrot#6", "their_score=1"],
+    ["side=attack", "our_score=0..1", "their_score=0..1"], ["as=Alpha#1", "our_buy=full"],
+    ["as=Foxtrot#6", "their_buy=full"], ["side=attack", "their_buy=eco"], ["as=Alpha#1", "won=1"],
+    ["as=Alpha#1", "won=0"], ["ability=smoke"], ["ability=c"], ["ability=C", "kind=cast"], ["ability=sm", "kind=cast"],
+    ["ability=zzz"], ["tag=won"], ["tag=won", "kind=fight"], ["tag=nope"], ["as=Alpha#1", "team=ours"],
+    ["as=Alpha#1", "team=theirs", "kind=kill"],
 ]
 
 
@@ -163,6 +174,54 @@ def test_library_hits_equal_the_matcher_over_every_row(factory, args):
     assert got["total"] == len(want)
     assert [(h["uuid"], h["round"], h["t"], h["kind"]) for h in got["hits"]] == [
         (r["uuid"], r["round"], r["t"], r["kind"]) for r in want[:lib.PAGE_SIZE]]
+
+
+def prefiltered(db, args):
+    f = filters.parse(args)
+    ctx, actor = lib._context(db, f)
+    return lib._prefiltered_rows(db, f, ctx, actor)
+
+
+def row_key(r):
+    return (r["replay_id"], r["round"], r["seq"])
+
+
+@pytest.mark.parametrize("args", R1_TABLE, ids=lambda a: " ".join(a) or "none")
+def test_the_sql_prefilter_is_a_superset_of_the_matcher(factory, args):
+    with factory() as db:
+        f = filters.parse(args)
+        want = {row_key(r) for r in match.select(f, expected_ctx(db, f), all_rows(db))}
+        got = {row_key(r) for r in prefiltered(db, args)}
+    assert want <= got
+
+
+def test_ult_without_a_kind_reads_only_ult_rows(factory):
+    with factory() as db:
+        db.execute(text("UPDATE replay_moment_index SET ult=1 WHERE kind='cast'"))
+        db.commit()
+        total = len(all_rows(db))
+        rows = prefiltered(db, ["ult=1"])
+        assert 0 < len(rows) < total and all(r["ult"] for r in rows)
+        assert lib.search(db, ["ult=1"])["total"] == len(rows)
+
+
+@pytest.mark.parametrize("args,column", [
+    (["first=1"], lambda r: r["first"]), (["planted=1"], lambda r: r["planted"]),
+    (["round=2"], lambda r: r["round"] == 2), (["after=25"], lambda r: r["t"] >= 25),
+    (["before=11"], lambda r: r["t"] <= 11), (["ability=smoke"], lambda r: r["kind"] == "cast"),
+    (["as=Alpha#1", "state=4v5"], lambda r: {r["alive1"], r["alive2"]} == {4, 5}),
+])
+def test_scalar_filters_narrow_what_sql_reads(factory, args, column):
+    with factory() as db:
+        total = len(all_rows(db))
+        rows = prefiltered(db, args)
+        assert 0 < len(rows) < total and all(column(r) for r in rows)
+
+
+def test_prefiltered_rows_are_plain_dicts_with_the_row_keys(factory):
+    with factory() as db:
+        rows = prefiltered(db, ["kind=kill"])
+    assert rows and all(type(r) is dict and tuple(r) == ROW_KEYS for r in rows)
 
 
 def test_the_r1_table_is_not_vacuous(factory):
@@ -376,6 +435,13 @@ def test_cli_status(factory, monkeypatch, capsys):
     assert cli.main(["--status"]) == 0
     assert json.loads(capsys.readouterr().out) == {"linked": 2, "indexed": 2, "missing": 0, "stale": 0,
                                                     "failed": 0}
+
+
+def test_since_until_are_documented_as_utc_days_of_the_match_start():
+    from scripts import replay_search as cli
+
+    for doc in (cli.__doc__, filters.__doc__):
+        assert "UTC" in doc and "since" in doc and "until" in doc
 
 
 def test_index_revision_is_the_gate_constant():

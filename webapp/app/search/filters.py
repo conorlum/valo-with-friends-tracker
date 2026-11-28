@@ -2,6 +2,7 @@
 
 Standard library only. An unknown key, a bad value, a repeated key (except `tag`), `as` with `side`, or an
 our/their filter without `as`/`side` is a `FilterError` naming the key, never an empty result.
+`since` and `until` are UTC calendar days of the match start (an evening match in the US can fall on the next day).
 """
 
 from __future__ import annotations
