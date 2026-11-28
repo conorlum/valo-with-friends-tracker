@@ -12,6 +12,8 @@ Every route answers 404 unless REPLAY_ADMIN_TOKEN is set (and not in demo mode) 
     GET  /admin/replays/archive/{match_uuid}.vrf  stream an archived recording.
     POST /admin/replays/reparse      {"match_uuid"}: parse the archived file again; {"upload_id"}.
     GET  /admin/replays/uploads/{id} one poll of that reparse (the same refresh_job as an upload).
+    GET  /admin/replays/search?key=value&...  replay moment search (app/services/replay_search.py); 400 {"error"}
+                                     on a bad filter. `tag` may repeat.
     GET  /admin/replays/reparse/status  where the automatic re-parse queue stands
                                      (app/services/replay_reparse_auto.py, `status`). Read only.
 """
@@ -26,7 +28,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from app.config import settings
 from app.db import get_db
@@ -112,6 +114,18 @@ def delete_match(body: dict = Body(...), db: Session = Depends(get_db)):
             worker = {"told": False, "error": str(error)}
     return {"match_uuid": match_uuid, "tombstoned": True, "already_tombstoned": tombstone is not None,
             "replay_deleted": replay_deleted, "worker": worker}
+
+
+@router.get("/search", dependencies=[Depends(require_admin)])
+def search_moments(request: Request, db: Session = Depends(get_db)):
+    from app.search.filters import FilterError
+    from app.services import replay_search
+
+    args = [f"{key}={value}" for key, value in request.query_params.multi_items()]
+    try:
+        return replay_search.search(db, args)
+    except FilterError as error:
+        return JSONResponse({"error": str(error)}, status_code=400)
 
 
 @router.get("/archive", dependencies=[Depends(require_admin)])

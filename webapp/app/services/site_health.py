@@ -52,6 +52,7 @@ PAGE_ROUTES = {
     "/admin/replays/archive/{match_uuid}.vrf": "not_page",
     "/admin/replays/refused": "not_page",
     "/admin/replays/reparse/status": "not_page",
+    "/admin/replays/search": "not_page",
     "/admin/replays/uploads/{upload_id}": "not_page",
     "/friends": "page",
     "/gaps": "page",
