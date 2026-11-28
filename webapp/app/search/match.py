@@ -1,4 +1,4 @@
-﻿"""The one replay-search matcher (R1): decides every hit for the library, CLI, route and coach.
+"""The one replay-search matcher (R1): decides every hit for the library, CLI, route and coach.
 
 Standard library only; no database, no `app.services`. SQL is only a prefilter. A row is a dict with exactly
 `ROW_KEYS`; this module defines it, and the index producer, store and readers share it.

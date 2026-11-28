@@ -211,7 +211,8 @@ guards = ["tests/replays/layout_golden.py", "tests/fixtures/control/layout_golde
 [search]
 about = "Replay search: the filter parser and the one pure matcher that decides every hit."
 tests = ["tests/search/test_search_*.py"]
-guards = ["app/search/**"]
+guards = ["app/search/**", "app/models/replay_search.py", "app/services/replay_search_index.py",
+          "alembic/versions/0039_replay_moment_index.py"]
 
 [browser]
 about = "Real browser journeys (Playwright, network blocked): fragments, event wiring, the replay canvas. Needs a browser installed."

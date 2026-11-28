@@ -1,4 +1,4 @@
-﻿"""The pure replay-search matcher on hand-made rows (R1, R4, R5, R6)."""
+"""The pure replay-search matcher on hand-made rows (R1, R4, R5, R6)."""
 
 from app.search import match
 from app.search.filters import parse
