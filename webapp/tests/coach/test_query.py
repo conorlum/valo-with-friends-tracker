@@ -388,3 +388,120 @@ def test_where_lists_the_placed_util_standing_near_each_living_player(snap):
     assert [u["ability"] for u in query.where(snap, 1, 5.0)["players"][1]["util_near"]] == ["4_TripWire"]
     assert [u["ability"] for u in query.where(snap, 1, 19.0)["players"][1]["util_near"]] == ["E_Smoke"]  # trip shot
     assert "util_near" not in query.where(snap, 1, 25.0)["players"][0]          # dead by then
+
+
+# ---- ./q search (W7) ----
+
+import json  # noqa: E402
+
+from app.search.match import ROW_KEYS  # noqa: E402
+
+
+def _row(kind, rnd, t, *, slot=None, agent=None, other=None, other_agent=None, team=None, **over):
+    row = {k: None for k in ROW_KEYS}
+    row.update(replay_id=7, uuid="u-1", map="Toy", played_at="2026-11-01T10:00:00", match_id=1, round=rnd, seq=0,
+               attack_team="team-1", won_team="team-1", kind=kind, t=t, slot=slot, agent=agent, other_slot=other,
+               other_agent=other_agent, team=team, first=False, ult=False, post_plant=False, tags=[],
+               alive_slots=[])
+    row.update(over)
+    return row
+
+
+def _search_context():
+    players = {}
+    for s, p in CONTEXT["players"].items():
+        enemy = int(s) >= 5
+        players[s] = {**p, "name": "the enemy Neon" if enemy else p["name"], "agent": "Neon" if enemy else "Jett"}
+    return {**CONTEXT, "players": players}
+
+
+def _search_snap(tmp_path, rows, *, save=True):
+    blobs = {1: toys.round_blob(toys.ten(), n=1), 2: toys.round_blob(toys.ten(), n=2)}
+    controls = {1: ("ok", False, SHARES), 2: ("ok", False, SHARES)}
+    data = snapshot.assemble(_search_context(), blobs, controls, search=(True, {1: rows}))
+    snapshot.save(data, tmp_path)
+    return snapshot.load(tmp_path)
+
+
+ROWS = [
+    _row("death", 1, 20.0, slot=0, agent="Jett", other=5, other_agent="Neon", team="team-1", first=True),
+    _row("death", 1, 30.0, slot=3, agent="Jett", other=6, other_agent="Neon", team="team-1"),
+    _row("kill", 1, 25.0, slot=5, agent="Neon", other=3, other_agent="Jett", team="team-2"),
+    _row("state", 1, 10.0, alive1=3, alive2=4, seq=1),
+    _row("state", 1, 11.0, alive1=4, alive2=3, seq=2),
+]
+
+
+def test_search_finds_the_first_death_and_names_the_coached_player(tmp_path):
+    snap = _search_snap(tmp_path, ROWS)
+    out = query.answer(snap, "search", ["kind=death", "first=1"])
+    assert out["total"] == 1
+    hit = out["hits"][0]
+    assert (hit["round"], hit["t"], hit["kind"]) == (1, 20.0, "death")
+    assert "P0#T0" in hit["summary"] and "the enemy Neon" in hit["summary"] and "P5#T5" not in hit["summary"]
+
+
+def test_search_with_a_perspective_takes_our_team_from_the_rows(tmp_path):
+    snap = _search_snap(tmp_path, ROWS)
+    out = query.answer(snap, "search", ["kind=state", "state=3v4", "as=P0#T0"])
+    assert [h["t"] for h in out["hits"]] == [10.0] and out["total"] == 1
+    theirs = query.answer(snap, "search", ["kind=state", "state=3v4", "as=5"])      # team-2's view of the same rows
+    assert [h["t"] for h in theirs["hits"]] == [11.0]
+    assert query.answer(snap, "search", ["as=1"]) == {"error": "no rows for P1#T1"}
+
+
+@pytest.mark.parametrize("args, fragment", [
+    (["with=X"], "not available in ./q search"), (["circle=X"], "not available in ./q search"),
+    (["state=3v4"], "state"), (["kidn=1"], "kidn"), ([], "at least one"), (["player=nobody"], "nobody")])
+def test_search_errors_name_the_problem(tmp_path, args, fragment):
+    snap = _search_snap(tmp_path, ROWS)
+    out = query.answer(snap, "search", args)
+    assert set(out) == {"error"} and fragment in out["error"]
+
+
+def test_search_with_side_needs_no_name_and_player_filters(tmp_path):
+    snap = _search_snap(tmp_path, ROWS)
+    out = query.answer(snap, "search", ["kind=state", "state=3v4", "side=attack"])
+    assert [h["t"] for h in out["hits"]] == [10.0]
+    out = query.answer(snap, "search", ["kind=death", "player=P3"])
+    assert [h["t"] for h in out["hits"]] == [30.0]
+
+
+def test_search_returns_at_most_fifty_hits_and_the_total(tmp_path):
+    rows = [_row("death", 1, float(i), slot=0, agent="Jett", other=5, other_agent="Neon", team="team-1", seq=i)
+            for i in range(60)]
+    out = query.answer(_search_snap(tmp_path, rows), "search", ["kind=death"])
+    assert out["total"] == 60 and len(out["hits"]) == 50
+    assert set(out["hits"][0]) == {"round", "t", "kind", "summary"}
+
+
+def test_search_is_logged_like_every_answer(tmp_path):
+    snap = _search_snap(tmp_path, ROWS)
+    out = query.run(snap, tmp_path, "search", ["kind=death", "first=1"])
+    entry = query.read_log(tmp_path)[out["id"]]
+    assert entry["cmd"] == "search" and entry["args"] == ["kind=death", "first=1"] and entry["result"]["total"] == 1
+
+
+def test_a_saved_search_reads_only_its_own_file(tmp_path, monkeypatch):
+    from app.coach import snapfile
+    _search_snap(tmp_path, ROWS)
+    head = json.loads((tmp_path / snapshot.FILE).read_text(encoding="utf-8"))
+    assert head["search_file"] == "search.json" and (tmp_path / head["rounds_dir"] / "search.json").exists()
+
+    def forbidden(self, key):
+        raise AssertionError(f"round file {key} opened")
+
+    monkeypatch.setattr(snapfile._RoundFiles, "__getitem__", forbidden)
+    snap = snapshot.load(tmp_path)
+    assert query.answer(snap, "search", ["kind=death"])["total"] == 2
+    assert query.answer(snap, "search", ["kind=state", "state=3v4", "as=P0"])["total"] == 1
+
+
+def test_an_older_snapshot_without_a_search_file_finds_nothing(tmp_path):
+    blobs = {1: toys.round_blob(toys.ten(), n=1)}
+    snapshot.save(snapshot.assemble(_search_context(), blobs, {1: ("ok", False, SHARES)}), tmp_path)
+    head = json.loads((tmp_path / snapshot.FILE).read_text(encoding="utf-8"))
+    assert "search_file" not in head
+    snap = snapshot.load(tmp_path)
+    assert snap.search_rows() == []
+    assert query.answer(snap, "search", ["kind=death"]) == {"total": 0, "hits": []}

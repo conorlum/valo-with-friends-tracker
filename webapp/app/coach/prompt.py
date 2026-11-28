@@ -11,7 +11,8 @@ COMMANDS = """\
 ./q control <round> <t0> <t1> "<area>"     who held a named area over a span (t0 = t1 for one moment)
 ./q timeline <round> [<t0> <t1>]           kills, damage, utility (placed util with its area and how long it stood), the plant (who, where) and each defuse attempt (who, seconds, tap/half/defused, spike time left) in order
 ./q fight <round> <seconds> <player>       the player's fight containing that time or nearest within 3 s
-./q impact <round> <player>                the player's stored Impact row for the round"""
+./q impact <round> <player>                the player's stored Impact row for the round
+./q search <key=value> ...                 finds moments in the match: kind=state|kill|death|plant|defuse|cast|fight|backshot, state=3v4 (needs as=<player> or side=attack|defense), post_plant=1, left=<s on the spike>, player=, agent=, ability=, ult=1, first=1, tag=. It only finds them: cite the timeline/fight/where answer for each moment, not the search"""
 
 SHAPE = """\
 {"points": [

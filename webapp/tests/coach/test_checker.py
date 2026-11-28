@@ -1408,3 +1408,12 @@ def test_site_spellings_count_as_area_mentions(area, spelling):
     assert checker._area_problems(text, set(), [area], False)
     assert checker._area_problems(text, {area}, [area], False) == []
     assert checker._area_problems("A better trade", set(), [area], False) == []
+
+
+def test_a_search_entry_grounds_no_instance(snap, tmp_path):
+    out = query.run(snap, tmp_path, "search", ["kind=death"])
+    log = checker.trusted_log(query.read_log(tmp_path), snap, {})
+    assert out["id"] in log and checker._round_of(log[out["id"]]) is None
+    found = checker.check_point(point(instances=[{"round": 1, "t": 20.0, "caption": "first death",
+                                                  "evidence": [out["id"]]}]), log, snap, THEMES, 0)
+    assert any(out["id"] in p and "round None" in p for p in found)

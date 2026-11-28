@@ -260,8 +260,41 @@ def fight(snap, n: int, t: float, player) -> dict:
     return {**{key: value for key, value in nearest.items() if key != "flags"}, "round": int(n), "t": t}
 
 
+SEARCH_HITS = 50
+
+
+def search(snap, *args) -> dict:
+    """Moments in this match from the stored replay-search index, found by the one matcher the site uses. It only
+    finds them: the model cites a timeline/fight/where answer for each moment."""
+    from app.search import filters, match
+
+    try:
+        f = filters.parse(list(args))
+    except filters.FilterError as error:
+        return {"error": str(error)}
+    if f.with_ is not None or f.circle is not None:
+        return {"error": "with and circle are not available in ./q search"}
+    rows = snap.search_rows()
+    replay_ids = {row["replay_id"] for row in rows}
+    ours, player_slots = {}, {}
+    if f.player is not None:
+        player_slots = {rid: _slot(snap, f.player) for rid in replay_ids}
+    if f.as_ is not None:
+        slot = _slot(snap, f.as_)
+        # our team is the one the index rows record for that slot, not the snapshot context's team string
+        team = next((row["team"] for row in rows if row.get("slot") == slot and row.get("team")), None)
+        if team is None:
+            return {"error": f"no rows for {snap.names[slot]}"}
+        ours = {rid: team for rid in replay_ids}
+    chosen = match.select(f, match.Context(ours, player_slots, None), rows)
+    our = lambda row: match.our_team(f, match.Context(ours, player_slots, None), row)      # noqa: E731
+    return {"total": len(chosen),
+            "hits": [{"round": row["round"], "t": row["t"], "kind": row["kind"],
+                      "summary": match.summary(row, snap.names.get, our(row))} for row in chosen[:SEARCH_HITS]]}
+
+
 COMMANDS = {"where": where, "knew": knew, "distance": distance, "control": control, "timeline": timeline,
-            "impact": impact, "fight": fight}
+            "impact": impact, "fight": fight, "search": search}
 
 # Which positions of each command's arguments are whole numbers or seconds (converted before the call).
 _INT, _SEC, _TXT = int, float, str
@@ -291,6 +324,13 @@ def answer(snap, command: str, args: list[str]) -> dict:
     if command not in COMMANDS:
         return {"error": f"unknown command {command!r}; commands: {', '.join(sorted(COMMANDS))}"}
     args = args if isinstance(args, list) else []
+    if command == "search":         # variadic key=value filters, passed through as text
+        if not args:
+            return {"error": "search needs at least one key=value argument, e.g. kind=death first=1"}
+        try:
+            return search(snap, *[str(arg) for arg in args])
+        except (QueryError, SnapshotError) as error:
+            return {"error": str(error)}
     kinds = _SIGNATURES[command]
     try:
         if len(args) > len(kinds) or len(args) < (1 if command == "timeline" else len(kinds)):

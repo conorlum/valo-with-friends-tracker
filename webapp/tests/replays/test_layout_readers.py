@@ -71,6 +71,7 @@ def test_snapshot_shares_roundview_and_brief_follow_layout(monkeypatch, layout_a
     monkeypatch.setattr(snapshot.replays, "round_blob", lambda *args: b"synthetic")
     monkeypatch.setattr(snapshot.fmt, "decode_blob", lambda data: blob)
     monkeypatch.setattr(rc, "round_link", lambda *args: {})
+    monkeypatch.setattr(snapshot.replay_search_index, "rows_for_replay", lambda db, replay_id: (True, {}))
     monkeypatch.setattr(rc, "round_control", lambda *args: rc.RoundControlAnswer(
         "ok", SimpleNamespace(data=control_bytes([(1, 4)], [0]))))
     # the stored Critical Util build is current and empty (the wait itself is tests/coach/test_util_read.py's)
