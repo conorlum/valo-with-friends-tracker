@@ -47,6 +47,7 @@ def reader(monkeypatch):
     monkeypatch.setattr(snapshot.replays, "round_blob", lambda *a: state.events.append("round") or {})
     monkeypatch.setattr(snapshot.fmt, "decode_blob", lambda blob: {"players": []})
     monkeypatch.setattr(snapshot.replay_control, "round_link", lambda *a: {})
+    monkeypatch.setattr(snapshot.replay_search_index, "rows_for_replay", lambda db, replay_id: (True, {}))
     monkeypatch.setattr(snapshot.replay_control, "round_control",
                         lambda *a: SimpleNamespace(status="not_ready", stale=False))
 

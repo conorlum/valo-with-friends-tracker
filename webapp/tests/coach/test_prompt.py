@@ -99,3 +99,10 @@ def test_the_match_prompt_carries_every_report_and_marks_them_all_handled_in_one
 def test_the_match_prompt_with_no_open_feedback_says_so():
     text = prompt.prompt_out_match("abc", [], ["Owner#1", "Friend#2"])
     assert "No open feedback on any report of this match." in text and "left out: Owner#1, Friend#2." in text
+
+
+def test_the_commands_text_lists_search():
+    line = next(x for x in prompt.COMMANDS.splitlines() if x.startswith("./q search"))
+    assert "kind=state|kill|death|plant|defuse|cast|fight|backshot" in line
+    assert "state=3v4 (needs as=<player> or side=attack|defense)" in line
+    assert "It only finds them: cite the timeline/fight/where answer for each moment, not the search" in line

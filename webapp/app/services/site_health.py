@@ -52,6 +52,7 @@ PAGE_ROUTES = {
     "/admin/replays/archive/{match_uuid}.vrf": "not_page",
     "/admin/replays/refused": "not_page",
     "/admin/replays/reparse/status": "not_page",
+    "/admin/replays/search": "not_page",
     "/admin/replays/uploads/{upload_id}": "not_page",
     "/friends": "page",
     "/gaps": "page",
@@ -806,7 +807,7 @@ CACHE_FALLBACK_KEYS = frozenset({
 RECORDED_KINDS = frozenset({
     "page_error", "loop_failed", "util_build_failed", "cache_fallback", "worker_overrun", "worker_refused",
     "slow_page", "warm_vanished", "map_layout_walls", "agent_unsupported", "trip_too_long", "forced_deploy",
-    "held_ability_unnamed",
+    "held_ability_unnamed", "search_index_failed",
 })
 KNOWN_KINDS = RECORDED_KINDS | frozenset({
     # checked (read live when the card is computed)

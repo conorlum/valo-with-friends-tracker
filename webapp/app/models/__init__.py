@@ -27,6 +27,7 @@ from app.models.site_events import SiteEvent, SiteEventMark, SiteEventResolution
 from app.models.deploy_drain import DeployDrain
 from app.models.upload_token import UploadToken
 from app.models.replay_postplant import ReplayRoundPostplant, PostplantStatsCache
+from app.models.replay_search import ReplayMomentIndex, ReplayMomentIndexState
 from app.models import indexes  # noqa: F401  (attaches indexes kept out of digested model files)
 
 __all__ = [
@@ -60,4 +61,5 @@ __all__ = [
     "DeployDrain",
     "UploadToken",
     "ReplayRoundPostplant", "PostplantStatsCache",
+    "ReplayMomentIndex", "ReplayMomentIndexState",
 ]

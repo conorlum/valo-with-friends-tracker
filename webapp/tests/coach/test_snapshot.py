@@ -225,3 +225,52 @@ def test_read_refuses_an_unlinked_replay(monkeypatch):
     monkeypatch.setattr(snapshot.replays, "find_replay", lambda db, uuid: None)
     with pytest.raises(snapshot.SnapshotError, match="no replay"):
         snapshot.read(None, "u-1")
+
+
+# ---- search rows (W7) ----
+
+
+def test_assemble_adds_no_search_key_or_gap_without_an_index():
+    data = built()
+    assert "search" not in data and all(r["gaps"] == [] for r in data["rounds"].values())
+
+
+def test_assemble_flattens_the_rows_and_flags_a_stale_index():
+    blobs = {1: toys.round_blob(toys.ten(), n=1), 2: toys.round_blob(toys.ten(), n=2)}
+    controls = {1: ("ok", False, SHARES), 2: ("ok", False, SHARES)}
+    rows = {1: [{"round": 1, "t": 1.0}], 2: [{"round": 2, "t": 2.0}]}
+    current = snapshot.assemble(CONTEXT, blobs, controls, search=(True, rows))
+    assert current["search"] == [{"round": 1, "t": 1.0}, {"round": 2, "t": 2.0}]
+    assert all("search_index" not in r["gaps"] for r in current["rounds"].values())
+    stale = snapshot.assemble(CONTEXT, blobs, controls, search=(False, rows))
+    assert all(r["gaps"] == ["search_index"] for r in stale["rounds"].values())
+    assert "search" in stale
+
+
+def test_an_index_read_that_raises_rolls_back_and_never_fails_the_run(monkeypatch, caplog):
+    from unittest.mock import Mock
+
+    def boom(db, replay_id):
+        raise RuntimeError("relation replay_moment_index_state does not exist")
+
+    monkeypatch.setattr(snapshot.replay_search_index, "rows_for_replay", boom)
+    db = Mock()
+    context = {"match": {"asset_key": None, "rounds": []}, "players": {}}
+    with caplog.at_level("WARNING"):
+        data = snapshot._read_rounds(db, Mock(id=5), context, {"rounds": {}})
+    db.rollback.assert_called_once_with()
+    assert data["search"] == [] and data["rounds"] == {}
+    assert len([r for r in caplog.records if "search index" in r.getMessage().lower()]) == 1
+
+
+def test_a_snapshot_without_search_rows_saves_exactly_what_it_did(tmp_path):
+    snapshot.save(built(), tmp_path)
+    head = json.loads((tmp_path / snapshot.FILE).read_text(encoding="utf-8"))
+    assert "search_file" not in head
+
+
+def test_a_snapshot_built_from_a_dict_serves_its_search_rows():
+    data = built()
+    data["search"] = [{"round": 1}]
+    assert snapshot.Snapshot(data).search_rows() == [{"round": 1}]
+    assert snapshot.Snapshot(built()).search_rows() == []

@@ -5,9 +5,9 @@ import pytest
 from app import main
 from app.config import settings
 from app.db import SessionLocal
-from app.services import kill_impact_sweep, agent_check, map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states, util_build_remote, site_health
+from app.services import kill_impact_sweep, agent_check, map_pool_refresh, replay_archive_sync, replay_control_remote, replay_match_states, util_build_remote, site_health, replay_search_sweep
 
-SERVICES = (replay_control_remote, replay_archive_sync, map_pool_refresh, agent_check, replay_match_states, util_build_remote, kill_impact_sweep)
+SERVICES = (replay_control_remote, replay_archive_sync, map_pool_refresh, agent_check, replay_match_states, util_build_remote, kill_impact_sweep, replay_search_sweep)
 
 
 @pytest.mark.parametrize("failure", [None, "request", *range(len(SERVICES))])
@@ -207,4 +207,26 @@ def test_kill_impact_sweep_demo_starts_no_thread(monkeypatch):
     thread = Mock()
     monkeypatch.setattr(threading, "Thread", thread)
     assert kill_impact_sweep.start(SessionLocal) is None
+    thread.assert_not_called()
+
+
+def test_search_sweep_starts_daemon_and_returns_stop(monkeypatch):
+    from unittest.mock import Mock
+    monkeypatch.setattr(settings, "demo_mode", False)
+    thread = Mock()
+    monkeypatch.setattr(threading, "Thread", thread)
+    stop = replay_search_sweep.start(SessionLocal)
+    assert isinstance(stop, threading.Event)
+    assert not stop.is_set()
+    thread.assert_called_once_with(target=replay_search_sweep.run_forever,
+                                   args=(SessionLocal, stop), name="search-index", daemon=True)
+    thread.return_value.start.assert_called_once_with()
+
+
+def test_search_sweep_demo_starts_no_thread(monkeypatch):
+    from unittest.mock import Mock
+    monkeypatch.setattr(settings, "demo_mode", True)
+    thread = Mock()
+    monkeypatch.setattr(threading, "Thread", thread)
+    assert replay_search_sweep.start(SessionLocal) is None
     thread.assert_not_called()

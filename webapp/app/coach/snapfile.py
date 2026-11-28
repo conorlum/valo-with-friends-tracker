@@ -19,6 +19,7 @@ from app.coach.roundview import RoundView
 VERSION = 1
 FILE = "snapshot.json"
 ROUNDS_DIR = "rounds"
+SEARCH_FILE = "search.json"
 
 
 class SnapshotError(Exception):
@@ -94,6 +95,9 @@ def save(data: dict, directory: Path) -> None:
             (rounds_dir / f"{n}.json").write_text(json.dumps(entry, separators=(",", ":")), encoding="utf-8")
         head = {"v": data["v"], "context": data["context"], "round_files": list(data["rounds"]),
                 "rounds_dir": rounds_dir.name}
+        if "search" in data:        # one file for the whole match's index rows, read only by `./q search`
+            (rounds_dir / SEARCH_FILE).write_text(json.dumps(data["search"], separators=(",", ":")), encoding="utf-8")
+            head["search_file"] = SEARCH_FILE
         manifest = rounds_dir / FILE
         manifest.write_text(json.dumps(head, separators=(",", ":")), encoding="utf-8")
         _replace(manifest, directory / FILE)
@@ -110,7 +114,10 @@ def load(directory: Path) -> Snapshot:
     data = json.loads((directory / FILE).read_text(encoding="utf-8"))
     if "round_files" in data:
         rounds_dir = directory / data.get("rounds_dir", ROUNDS_DIR)
-        data = {"v": data.get("v"), "context": data["context"], "rounds": _RoundFiles(rounds_dir, data["round_files"])}
+        found = {"v": data.get("v"), "context": data["context"], "rounds": _RoundFiles(rounds_dir, data["round_files"])}
+        if data.get("search_file"):
+            found["_search_path"] = rounds_dir / data["search_file"]
+        data = found
     return Snapshot(data)
 
 
@@ -154,6 +161,21 @@ class Snapshot:
     def util(self, n: int) -> dict | None:
         """The round's Critical Util ({"casts", "unused", "avail"}), or None when the snapshot has none."""
         return self._round(n).get("util")
+
+    def search_rows(self) -> list[dict]:
+        """The match's replay-search index rows. [] for a snapshot saved without any; only the search file is read."""
+        if "search" in self.data:
+            return self.data["search"]
+        path = self.data.get("_search_path")
+        if path is None:
+            return []
+        if "_search_rows" not in self.__dict__:
+            try:
+                self._search_rows = json.loads(Path(path).read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                raise SnapshotError(f"the search file {path} could not be read "
+                                    f"({type(error).__name__}: {error})") from None
+        return self._search_rows
 
     def gaps(self, n: int) -> list[str]:
         return list(self._round(n)["gaps"])

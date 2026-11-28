@@ -11,15 +11,17 @@ from pathlib import Path
 from app.coach import control_areas
 from app.coach.snapfile import FILE, ROUNDS_DIR, VERSION, Snapshot, SnapshotError, _groups, load, save  # noqa: F401
 from app.replays import format as fmt
-from app.services import enemy_names, replay_control, replays
+from app.services import enemy_names, replay_control, replay_search_index, replays
 
 log = logging.getLogger(__name__)
 
 
 def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple], links: dict | None = None,
-             util: dict | None = None) -> dict:
+             util: dict | None = None, search: tuple[bool, dict] | None = None) -> dict:
     """`util`: the replay's Critical Util per round (app/services/replay_util.py match_payload's `rounds`), or None
-    when the caller has none; a round missing from it names the gap."""
+    when the caller has none; a round missing from it names the gap.
+    `search`: (is the stored index current, {round: rows}) from `replay_search_index.rows_for_replay`, or None.
+    The rows go in one top-level `search` list; an index that is not current names the gap on every round."""
     rounds = {}
     for n, blob in sorted(blobs.items()):
         status, stale, shares = controls.get(n, ("not_ready", False, None))
@@ -39,8 +41,13 @@ def assemble(context: dict, blobs: dict[int, dict], controls: dict[int, tuple], 
         round_util = (util or {}).get(str(n))
         if util is not None and round_util is None:
             gaps.append("critical_util")
+        if search is not None and not search[0]:
+            gaps.append("search_index")
         rounds[str(n)] = {"blob": blob, "control": shares, "link": link, "gaps": gaps, "util": round_util}
-    return {"v": VERSION, "context": context, "rounds": rounds}
+    data = {"v": VERSION, "context": context, "rounds": rounds}
+    if search is not None:
+        data["search"] = [row for n in sorted(search[1]) for row in search[1][n]]
+    return data
 
 
 def _replay_identity(replay):
@@ -199,7 +206,13 @@ def _read_rounds(db, replay, context, util):
         controls[n] = (answer.status, bool(answer.stale), shares)
     # Context is stored once in snapshot.json; each round file keeps only that round's casts.
     context = {**context, "util_info": util.get("info") or {}}
-    return assemble(context, blobs, controls, links, util.get("rounds"))
+    try:
+        search = replay_search_index.rows_for_replay(db, replay.id)
+    except Exception:  # noqa: BLE001 - the index is an extra; a missing table or a bad read never fails a run
+        db.rollback()
+        log.warning("coach snapshot: the search index could not be read; reading the match without it", exc_info=True)
+        search = (False, {})
+    return assemble(context, blobs, controls, links, util.get("rounds"), search)
 
 
 def hide_enemy_names(data: dict, player_id: int) -> dict:
